@@ -37,7 +37,7 @@ def test_claude_wake_never_sends_terminal_input(monkeypatch: pytest.MonkeyPatch)
 
     monkeypatch.setattr(shutil, "which", herdr_path)
     monkeypatch.setattr(llm_bus_wake, "_run", run)
-    result = llm_bus_wake.wake("claude:target", 7)
+    result = llm_bus_wake.wake("claude:target", 7, "codex:source")
     assert commands == []
     assert result["status"] == "unsupported"
     assert result["via"] == "none"
@@ -63,7 +63,9 @@ def test_claude_native_wake_uses_socket_and_targets_exact_session(
         endpoint.chmod(0o600)
         server.listen(1)
         server.settimeout(2)
-        assert llm_bus_wake.wake("claude:target", 7, claude_socket=str(endpoint)) == {
+        assert llm_bus_wake.wake(
+            "claude:target", 7, "codex:source", claude_socket=str(endpoint)
+        ) == {
             "status": "requested",
             "via": "Claude inbox socket",
         }
@@ -77,11 +79,14 @@ def test_claude_native_wake_uses_socket_and_targets_exact_session(
             "session_id": "target",
             "message": {
                 "role": "user",
-                "content": "Read and handle llm-bus message #7 in your inbox.",
+                "content": "llm-bus message #7 from codex:source. Read and handle it with `llm-bus inbox`.",
             },
             "priority": "next",
         }
-    assert llm_bus_wake.wake("claude:target", 8, claude_socket=str(endpoint))["status"] == "failed"
+    assert (
+        llm_bus_wake.wake("claude:target", 8, "codex:source", claude_socket=str(endpoint))["status"]
+        == "failed"
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Unix sockets required")
@@ -91,11 +96,17 @@ def test_claude_wake_refuses_non_socket_and_symlink(tmp_path: Path) -> None:
     link = tmp_path / "link"
     link.symlink_to(endpoint)
     for path in (endpoint, link):
-        assert llm_bus_wake.wake("claude:target", 7, claude_socket=str(path))["status"] == "failed"
+        assert (
+            llm_bus_wake.wake("claude:target", 7, "codex:source", claude_socket=str(path))["status"]
+            == "failed"
+        )
     assert endpoint.read_text() == "user draft"
 
 
-def test_codex_wake_queues_message_id(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("sender", ["claude:source", "codex:source"])
+def test_codex_wake_queues_message_id_and_sender(
+    monkeypatch: pytest.MonkeyPatch, sender: str
+) -> None:
     commands: list[list[str]] = []
 
     def codex_path(_name: str) -> str:
@@ -108,7 +119,7 @@ def test_codex_wake_queues_message_id(monkeypatch: pytest.MonkeyPatch) -> None:
         return subprocess.CompletedProcess(command, 0, "Queued", "")
 
     monkeypatch.setattr(llm_bus_wake, "_run", run)
-    assert llm_bus_wake.wake("codex:session-123", 42) == {
+    assert llm_bus_wake.wake("codex:session-123", 42, sender) == {
         "status": "requested",
         "via": "codex queue",
     }
@@ -119,7 +130,7 @@ def test_codex_wake_queues_message_id(monkeypatch: pytest.MonkeyPatch) -> None:
             "--thread",
             "session-123",
             "--message",
-            "Read and handle llm-bus message #42 in your inbox.",
+            f"llm-bus message #42 from {sender}. Read and handle it with `llm-bus inbox`.",
         ]
     ]
 
@@ -129,8 +140,8 @@ def test_missing_host_and_timeout_report_wake_state(monkeypatch: pytest.MonkeyPa
         return None
 
     monkeypatch.setattr(shutil, "which", missing_path)
-    assert llm_bus_wake.wake("codex:one", 1)["status"] == "failed"
-    assert llm_bus_wake.wake("claude:two", 2)["status"] == "unsupported"
+    assert llm_bus_wake.wake("codex:one", 1, "codex:source")["status"] == "failed"
+    assert llm_bus_wake.wake("claude:two", 2, "codex:source")["status"] == "unsupported"
 
     def codex_path(_name: str) -> str:
         return "/bin/codex"
@@ -141,4 +152,4 @@ def test_missing_host_and_timeout_report_wake_state(monkeypatch: pytest.MonkeyPa
         raise subprocess.TimeoutExpired(command, 10)
 
     monkeypatch.setattr(llm_bus_wake, "_run", timeout)
-    assert llm_bus_wake.wake("codex:one", 1)["status"] == "unknown"
+    assert llm_bus_wake.wake("codex:one", 1, "codex:source")["status"] == "unknown"

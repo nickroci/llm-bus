@@ -232,10 +232,11 @@ def _send(store: Store, args: dict[str, object], sender: SenderContext) -> objec
             wake_result = wake(
                 sent["recipient"],
                 sent["id"],
+                sent["sender"],
                 claude_socket=store.messaging_socket(sent["recipient"]),
             )
         else:
-            wake_result = wake(sent["recipient"], sent["id"])
+            wake_result = wake(sent["recipient"], sent["id"], sent["sender"])
     except Exception as exc:  # pylint: disable=broad-exception-caught
         # Delivery already committed; always report message ID.
         wake_result = {

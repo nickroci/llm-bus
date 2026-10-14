@@ -20,6 +20,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+@pytest.fixture(autouse=True)
+def isolate_codex_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep installer tests in their temporary homes, not the running host settings."""
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+
+
 def test_messages_survive_reopen_until_recipient_acknowledges(tmp_path: Path) -> None:
     """Both providers share mailbox; reads never consume messages."""
     path = tmp_path / "bus.sqlite3"
@@ -756,10 +762,10 @@ def test_cli_filters_peers_and_requires_cross_folder_flag(
     monkeypatch.setenv("LLM_BUS_DB", str(tmp_path / "bus.sqlite3"))
     monkeypatch.setenv("CODEX_THREAD_ID", "codex-one")
 
-    wakes: list[tuple[str, int]] = []
+    wakes: list[tuple[str, int, str]] = []
 
-    def fake_wake(_recipient: str, _message_id: int) -> dict[str, str]:
-        wakes.append((_recipient, _message_id))
+    def fake_wake(_recipient: str, _message_id: int, sender: str) -> dict[str, str]:
+        wakes.append((_recipient, _message_id, sender))
         return {"status": "requested"}
 
     monkeypatch.setattr("llm_bus.wake", fake_wake)
@@ -782,7 +788,7 @@ def test_cli_filters_peers_and_requires_cross_folder_flag(
     assert main(["send", "codex:codex-one", "--body", "hello", "--cross-folder"]) == 0
     sent = cast("dict[str, object]", json.loads(capsys.readouterr().out))
     assert sent["sender_cwd"] == str(second)
-    assert wakes == [("codex:codex-one", sent["id"])]
+    assert wakes == [("codex:codex-one", sent["id"], "claude:claude-two")]
 
 
 def test_claude_deferred_wake_preserves_message_for_next_prompt_hook(
@@ -857,7 +863,7 @@ def test_send_keeps_message_when_wake_fails(
     monkeypatch.chdir(folder)
     called: list[tuple[str, int]] = []
 
-    def fail_wake(address: str, message_id: int) -> dict[str, str]:
+    def fail_wake(address: str, message_id: int, _sender: str) -> dict[str, str]:
         called.append((address, message_id))
         return {"status": "failed", "via": "codex queue", "reason": "not reachable"}
 
@@ -891,7 +897,7 @@ def test_send_to_ended_session_stores_message_without_wake(
     monkeypatch.setenv("CODEX_THREAD_ID", "sender")
     monkeypatch.chdir(folder)
 
-    def unexpected_wake(_address: str, _message_id: int) -> dict[str, str]:
+    def unexpected_wake(_address: str, _message_id: int, _sender: str) -> dict[str, str]:
         pytest.fail("ended session must not be woken")
 
     monkeypatch.setattr("llm_bus.wake", unexpected_wake)
@@ -913,7 +919,7 @@ def test_send_reports_message_id_when_wake_raises(
     monkeypatch.setenv("CODEX_THREAD_ID", "sender")
     monkeypatch.chdir(folder)
 
-    def broken_wake(_address: str, _message_id: int) -> dict[str, str]:
+    def broken_wake(_address: str, _message_id: int, _sender: str) -> dict[str, str]:
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
 
     monkeypatch.setattr("llm_bus.wake", broken_wake)
@@ -942,7 +948,7 @@ def test_send_reports_message_id_when_wake_recording_fails(
     monkeypatch.setenv("CODEX_THREAD_ID", "sender")
     monkeypatch.chdir(folder)
 
-    def requested_wake(_address: str, _id: int) -> dict[str, str]:
+    def requested_wake(_address: str, _id: int, _sender: str) -> dict[str, str]:
         return {"status": "requested", "via": "codex queue"}
 
     monkeypatch.setattr("llm_bus.wake", requested_wake)

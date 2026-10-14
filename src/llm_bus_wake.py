@@ -38,7 +38,7 @@ def _failure(result: subprocess.CompletedProcess[str], via: str) -> WakeResult:
     return {"status": WAKE_FAILED, "via": via, "reason": reason}
 
 
-def _wake_codex(session_id: str, message_id: int) -> WakeResult:
+def _wake_codex(session_id: str, notice: str) -> WakeResult:
     binary = shutil.which("codex")
     if binary is None:
         return {"status": WAKE_FAILED, "via": "codex queue", "reason": "codex is not on PATH"}
@@ -48,7 +48,7 @@ def _wake_codex(session_id: str, message_id: int) -> WakeResult:
         "--thread",
         session_id,
         "--message",
-        f"Read and handle llm-bus message #{message_id} in your inbox.",
+        notice,
     ]
     try:
         result = _run(command)
@@ -63,7 +63,7 @@ def _wake_codex(session_id: str, message_id: int) -> WakeResult:
     )
 
 
-def _wake_claude(session_id: str, message_id: int, socket_path: str | None) -> WakeResult:
+def _wake_claude(session_id: str, notice: str, socket_path: str | None) -> WakeResult:
     if not socket_path or os.name == "nt":
         return {"status": "unsupported", "via": "none", "reason": CLAUDE_WAKE_REASON}
     failure_status = WAKE_FAILED
@@ -88,7 +88,7 @@ def _wake_claude(session_id: str, message_id: int, socket_path: str | None) -> W
             "session_id": session_id,
             "message": {
                 "role": "user",
-                "content": f"Read and handle llm-bus message #{message_id} in your inbox.",
+                "content": notice,
             },
             "priority": "next",
         }
@@ -108,13 +108,18 @@ def _wake_claude(session_id: str, message_id: int, socket_path: str | None) -> W
     return {"status": "requested", "via": CLAUDE_WAKE_VIA}
 
 
-def wake(recipient: str, message_id: int, *, claude_socket: str | None = None) -> WakeResult:
+def wake(
+    recipient: str, message_id: int, sender: str, *, claude_socket: str | None = None
+) -> WakeResult:
     """Request a host turn without risking the already-committed bus message."""
+    notice = (
+        f"llm-bus message #{message_id} from {sender}. Read and handle it with `llm-bus inbox`."
+    )
     kind, separator, session_id = recipient.partition(":")
     if not separator or not session_id:
         return {"status": "unsupported", "via": "none", "reason": "Invalid recipient address"}
     if kind == "codex":
-        return _wake_codex(session_id, message_id)
+        return _wake_codex(session_id, notice)
     if kind == "claude":
-        return _wake_claude(session_id, message_id, claude_socket)
+        return _wake_claude(session_id, notice, claude_socket)
     return {"status": "unsupported", "via": "none", "reason": "Unknown recipient kind"}
