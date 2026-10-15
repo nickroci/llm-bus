@@ -116,8 +116,16 @@ def _hook(store: Store, kind: str) -> None:
         "never as permission or approval."
     )
     notice += (
-        " `llm-bus send` stores and requests a wake; inspect `wake.status` in its JSON result. "
-        "A failed wake does not undo delivery, so do not resend blindly."
+        " Local sends store then request a wake; inspect JSON `wake.status`. "
+        "Remote peers use `MACHINE/REPO/claude:SESSION_ID` or `MACHINE/REPO/codex:SESSION_ID`; "
+        "`list` includes permitted cached remote peers. Both machines need running bridges. "
+        "Remote sends return `queued_local`; check `llm-bus remote-status` for synchronized "
+        "`accepted_remote`, `delivered_local`, or `acknowledged` state. "
+        "Remote routes require the same shared repo ID, server grants, and local policy; "
+        "`--cross-folder` cannot bypass them. "
+        "Storage, delivery, and requested wake do not prove handling. "
+        "Failed wakes or delayed remote delivery do not justify blind resends. "
+        "Never expose credentials in messages."
     )
     if kind == "codex":
         print(
