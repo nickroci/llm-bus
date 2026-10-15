@@ -5,13 +5,23 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
-from typing import TYPE_CHECKING, cast
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
+from typing import TYPE_CHECKING, cast, final, override
 from uuid import uuid4
 
 import pytest
 
 from llm_bus import main
-from llm_bus_remote import Bridge, Config, Repository, enqueue_remote, load_config, read_token
+from llm_bus_remote import (
+    Bridge,
+    Config,
+    Repository,
+    enqueue_remote,
+    load_config,
+    read_token,
+    run_bridge,
+)
 from llm_bus_remote_store import Delivery, RemoteStore
 from llm_bus_store import BusError, SenderContext, Store, routing_scope
 
@@ -206,3 +216,77 @@ repo_id = "xyz"
     assert result["status"] == "queued_local"
     assert main(["send", "b/other/claude:recipient", "--cross-folder", "--body", "deny"]) == 1
     assert len(RemoteStore(store, config.connection).outgoing()) == 1
+
+
+def test_continuous_bridge_retries_truncated_http_response(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store, config = setup_machine(tmp_path, "a")
+    uploads: list[object] = []
+
+    @final
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"[]")
+
+        def do_POST(self) -> None:
+            payload = cast(
+                "object", json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            )
+            self.send_response(200)
+            if self.path == "/v1/messages":
+                uploads.append(payload)
+                if len(uploads) == 1:
+                    self.send_header("Transfer-Encoding", "chunked")
+                    self.end_headers()
+                    self.wfile.write(b'20\r\n{"status":')
+                    self.close_connection = True
+                    return
+            self.end_headers()
+            self.wfile.write(b'{"status":"accepted_remote"}')
+
+        @override
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    config = replace(
+        config,
+        url=f"http://127.0.0.1:{server.server_port}",
+        repositories=(replace(config.repositories[0], receive=False),),
+    )
+    sender = SenderContext("codex", "sender", str(tmp_path / "repo"))
+    sent = enqueue_remote(store, config, sender, "b/xyz/claude:recipient", "retry me")
+    states: list[str] = []
+
+    def next_pass(_seconds: float) -> None:
+        states.append(RemoteStore(Store(store.path), config.connection).outgoing()[0][1])
+        if len(states) == 2:
+            raise KeyboardInterrupt
+
+    def forbid_wake(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("HTTP retries must not wake a real agent")
+
+    monkeypatch.setattr("llm_bus_remote.load_config", lambda: config)
+    monkeypatch.setattr("llm_bus_remote.time.sleep", next_pass)
+    monkeypatch.setattr("llm_bus_remote.wake", forbid_wake)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_bridge(store, once=False)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert states == ["queued_local", "accepted_remote"]
+    assert len(uploads) == 2
+    assert uploads[0] == uploads[1]
+    assert cast("dict[str, object]", uploads[1])["id"] == sent["remote_id"]
+    results = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert results == [
+        {"uploaded": 0, "imported": 0, "acknowledged": 0, "errors": 1},
+        {"uploaded": 1, "imported": 0, "acknowledged": 0, "errors": 0},
+    ]

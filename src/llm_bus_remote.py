@@ -12,6 +12,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from http.client import HTTPException
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, cast, override
 
@@ -213,7 +214,7 @@ class Relay:
                 payload = response.read(MAX_RESPONSE_BYTES + 1)
         except urllib.error.HTTPError as error:
             raise BusError(f"Relay rejected request (HTTP {error.code})") from None  # pylint: disable=clean-code-business-policy-literal
-        except (OSError, urllib.error.URLError) as error:
+        except (OSError, urllib.error.URLError, HTTPException) as error:
             raise BusError("Relay unavailable; local transport state retained") from error
         if len(payload) > MAX_RESPONSE_BYTES:
             raise BusError("Relay response exceeds size limit")
