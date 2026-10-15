@@ -1,5 +1,8 @@
 """Focused local mailbox and host identity tests."""
 
+# pylint: disable=too-many-lines
+# Installer rollback scenarios share fixtures in this behavior suite.
+
 from __future__ import annotations
 
 import io
@@ -83,6 +86,8 @@ def test_folder_scope_requires_explicit_cross_folder_send(tmp_path: Path) -> Non
 def test_linked_worktrees_share_routing_scope_but_keep_their_folders(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # pylint: disable=too-many-locals
+    # Separate paths and agents make the routing and historical-folder assertions explicit.
     git = shutil.which("git")
     if git is None:
         pytest.skip("Git is required for worktree routing")

@@ -7,6 +7,7 @@ import os
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast, final, override
 from uuid import uuid4
 
@@ -226,6 +227,8 @@ def test_continuous_bridge_retries_truncated_http_response(
 
     @final
     class Handler(BaseHTTPRequestHandler):
+        # These method names, parameter names, and connection state belong to the stdlib API.
+        # pylint: disable=invalid-name,redefined-builtin,attribute-defined-outside-init
         def do_GET(self) -> None:
             self.send_response(200)
             self.end_headers()
@@ -272,7 +275,8 @@ def test_continuous_bridge_retries_truncated_http_response(
         pytest.fail("HTTP retries must not wake a real agent")
 
     monkeypatch.setattr("llm_bus_remote.load_config", lambda: config)
-    monkeypatch.setattr("llm_bus_remote.time.sleep", next_pass)
+    # Subprocess timeout waits need the real clock.
+    monkeypatch.setattr("llm_bus_remote.time", SimpleNamespace(sleep=next_pass))
     monkeypatch.setattr("llm_bus_remote.wake", forbid_wake)
     try:
         with pytest.raises(KeyboardInterrupt):

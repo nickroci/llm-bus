@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.27.0"]
+requires = ["hatchling==1.32.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -59,7 +59,7 @@ docstring-code-format = true
 line-ending = "lf"
 
 [tool.basedpyright]
-include = ["src", "tests", "plugins/herdr-history"]
+include = ["src", "tests", "plugins/herdr-history", "tools"]
 exclude = ["**/__pycache__", "**/.venv", "**/build", "**/dist"]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
@@ -85,6 +85,7 @@ testpaths = ["tests"]
 pythonpath = ["src", "plugins/herdr-history"]
 
 [tool.pylint.main]
+init-hook = "import sys; sys.path.insert(0, 'plugins/herdr-history')"
 py-version = "3.12"
 jobs = 0
 recursive = true
@@ -119,12 +120,19 @@ score = false
 known_first_party = ["llm_bus", "llm_bus_install", "llm_bus_store", "llm_bus_wake", "llm_bus_remote", "llm_bus_remote_store"]
 
 [tool.poe.tasks]
-format = "ruff format src tests plugins/herdr-history"
-format-check = "ruff format --check src tests plugins/herdr-history"
-lint = "ruff check src tests plugins/herdr-history"
+format = "ruff format src tests plugins/herdr-history tools"
+format-check = "ruff format --check src tests plugins/herdr-history tools"
+lint = "ruff check --no-fix src tests plugins/herdr-history tools"
 type-check = "basedpyright"
-pylint = "pylint src"
+pylint.sequence = [
+    { cmd = "pylint src" },
+    # Viewer JSON records intentionally mirror the CLI contract without importing its code.
+    { cmd = "pylint plugins/herdr-history tools" },
+    # Ruff owns fixture formatting; literals and exact list assertions state expected results.
+    { cmd = "pylint --disable=clean-code-business-policy-literal,use-implicit-booleaness-not-comparison,line-too-long tests" },
+]
 deptry = "deptry ."
 test = "pytest"
 build = "uv build"
-check.sequence = ["format-check", "lint", "type-check", "pylint", "deptry", "test"]
+package-check = "python tools/check_package.py"
+check.sequence = ["format-check", "lint", "type-check", "pylint", "deptry", "test", "package-check"]

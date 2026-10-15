@@ -149,12 +149,18 @@ Run `llm-bus uninstall` to remove the user-level bus hooks and Claude allow rule
 
 ## Development
 
+Use Python 3.12. CI pins uv 0.13.1; to use the same version without replacing your installed uv, prefix commands with `uv tool run --from uv==0.13.1 uv` instead of `uv`.
+
 ```text
 uv sync --frozen
-uv run poe check
+uv run --frozen poe check
 ```
 
-Application modules live directly in `src/`; tests live in `tests/`. `poe check` runs Ruff formatting and lint, strict BasedPyright, Pylint, deptry, and pytest.
+Application modules live directly in `src/`; tests live in `tests/`. `poe check` runs Ruff formatting and read-only lint, strict BasedPyright, Pylint, deptry, pytest, and the package check. Formatting, lint, types, and Pylint cover application code, tests, the Herdr viewer, and maintained Python tools. Pylint allows fixture literals and exact empty-list assertions in tests; Ruff owns test formatting. Existing viewer contract and platform API exceptions remain local to their declarations.
+
+Run `uv run --frozen poe package-check` for the packaging check alone. It builds an sdist and a wheel from that sdist, installs the wheel into a fresh temporary environment outside the checkout, imports every application module under Python's isolated mode, and checks the installed `llm-bus --help` entry point. The package has no runtime dependencies, so installation uses `--no-deps` to catch accidental reliance on development packages. The temporary environment is removed afterward. This smoke check does not install agent hooks or access the user's mailbox.
+
+Use `uv run --frozen poe format` to apply formatting. Checks remain manual and in CI; repository Git hooks are not installed. `.editorconfig` and `.gitattributes` define shared text defaults. Local `.env` files are ignored; secret-free `.env.example` and `.env.*.example` templates may be tracked. Never put credentials in those templates.
 
 ## Branch workflow
 

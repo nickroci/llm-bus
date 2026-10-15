@@ -6,7 +6,8 @@ import pytest
 
 pytest.importorskip("curses")
 
-import viewer
+# Windows must skip this module before loading the viewer.
+import viewer  # pylint: disable=C0413
 
 
 def row(message_id: int, **changes: object) -> dict[str, object]:
