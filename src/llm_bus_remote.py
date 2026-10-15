@@ -29,6 +29,7 @@ CONFIG_ENV = "LLM_BUS_CONFIG"
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43,128}")
 IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,128}")
 NATIVE = re.compile(r"(claude|codex):[A-Za-z0-9_-]{1,128}")
+CLIENT_USER_AGENT = "llm-bus/0.1"
 HTTP_GET = "GET"
 HTTP_POST = "POST"
 WAKE_FAILED = "failed"
@@ -206,7 +207,11 @@ class Relay:
             self.config.url + path,
             data=body,
             method=method,
-            headers={"Authorization": f"Bearer {self.token}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/json",
+                "User-Agent": CLIENT_USER_AGENT,
+            },
         )
         opener = urllib.request.build_opener(NoRedirect())
         try:
