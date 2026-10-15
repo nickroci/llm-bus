@@ -19,7 +19,8 @@ MIN_WIDTH = 20
 
 
 @dataclass(frozen=True)
-class Message:
+class Message:  # pylint: disable=too-many-instance-attributes
+    # Fields mirror the history JSON contract, including nullable legacy wake metadata.
     id: int
     sender: str
     recipient: str
@@ -57,6 +58,8 @@ def folder_from_context(raw: str | None) -> str | None:
 
 
 def parse_messages(raw: str) -> list[Message]:
+    # pylint: disable=too-many-locals
+    # Validate the full record before constructing a typed message.
     try:
         records = cast("object", json.loads(raw))
     except json.JSONDecodeError as exc:
@@ -145,6 +148,7 @@ def fetch_history(binary: str, folder: str | None, before: int | None = None) ->
         detail = (
             clean(result.stderr.strip().splitlines()[-1]) if result.stderr.strip() else "no details"
         )
+        # pylint: disable-next=clean-code-business-policy-literal
         raise ValueError(f"llm-bus history failed ({result.returncode}): {detail}")
     return parse_messages(result.stdout)
 
@@ -277,7 +281,8 @@ class Viewer:
         return max(0, len(lines) - visible)
 
     def handle_key(self, key: int, max_offset: int, height: int) -> bool:  # noqa: C901
-        if key in (ord("q"), 27):
+        if key in (ord("q"), 27):  # pylint: disable=clean-code-business-policy-literal
+            # Escape is also a quit key.
             return False
         if key in (ord("j"), curses.KEY_DOWN):
             self.offset = min(max_offset, self.offset + 1)
@@ -301,6 +306,7 @@ class Viewer:
 
     def run(self, screen: curses.window) -> None:
         curses.curs_set(0)
+        # pylint: disable-next=clean-code-boolean-flag-argument
         screen.keypad(True)  # noqa: FBT003 - curses API
         self.load()
         while True:
@@ -311,6 +317,8 @@ class Viewer:
 
 def main() -> int:
     binary = shutil.which("llm-bus") or ""
+    # Herdr owns this environment-variable name.
+    # pylint: disable-next=clean-code-business-policy-literal
     folder = folder_from_context(os.environ.get("HERDR_PLUGIN_CONTEXT_JSON"))
     try:
         curses.wrapper(Viewer(binary, folder).run)
