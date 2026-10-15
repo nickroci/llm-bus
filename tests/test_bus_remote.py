@@ -223,7 +223,7 @@ def test_continuous_bridge_retries_truncated_http_response(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     store, config = setup_machine(tmp_path, "a")
-    uploads: list[object] = []
+    uploads: list[tuple[object, str | None]] = []
 
     @final
     class Handler(BaseHTTPRequestHandler):
@@ -240,7 +240,7 @@ def test_continuous_bridge_retries_truncated_http_response(
             )
             self.send_response(200)
             if self.path == "/v1/messages":
-                uploads.append(payload)
+                uploads.append((payload, self.headers.get("User-Agent")))
                 if len(uploads) == 1:
                     self.send_header("Transfer-Encoding", "chunked")
                     self.end_headers()
@@ -285,10 +285,11 @@ def test_continuous_bridge_retries_truncated_http_response(
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+    assert {agent for _, agent in uploads} == {"llm-bus/0.1"}
     assert states == ["queued_local", "accepted_remote"]
     assert len(uploads) == 2
     assert uploads[0] == uploads[1]
-    assert cast("dict[str, object]", uploads[1])["id"] == sent["remote_id"]
+    assert cast("dict[str, object]", uploads[1][0])["id"] == sent["remote_id"]
     results = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert results == [
         {"uploaded": 0, "imported": 0, "acknowledged": 0, "errors": 1},
