@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from llm_bus_install import configure_hosts, restore_bus_settings, snapshot_host_settings
+from llm_bus_remote import enqueue_remote, load_config, remote_peers, require_config, run_bridge
+from llm_bus_remote_store import RemoteStore
 from llm_bus_store import BusError, SenderContext, Store, default_path
 from llm_bus_wake import wake
 
@@ -74,6 +76,11 @@ def _parser() -> argparse.ArgumentParser:
     hook.add_argument("kind", choices=("claude", "codex"))
     commands.add_parser("install", help="Activate user-level Codex and Claude hooks")
     commands.add_parser("uninstall", help="Remove hooks and uninstall the uv tool")
+    bridge = commands.add_parser(
+        "bridge", help="Synchronize remote messages without a host session"
+    )
+    bridge.add_argument("--once", action="store_true", help="Synchronize once and exit")
+    commands.add_parser("remote-status", help="Show the latest 100 outgoing remote delivery states")
     return parser
 
 
@@ -159,11 +166,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             _configure_host_hooks(install=command == "install")
             return 0
         store = Store(default_path())
-        if command == "hook":
-            _hook(store, cast("str", args["kind"]))
+        if command in {"bridge", "hook"}:
+            if command == "bridge":
+                run_bridge(store, once=cast("bool", args["once"]))
+            else:
+                _hook(store, cast("str", args["kind"]))
             return 0
-        if command == "agents":
-            print(json.dumps(store.all_agents()))
+        if command in {"agents", "remote-status"}:
+            if command == "agents":
+                result: object = store.all_agents()
+            else:
+                config = require_config()
+                result = RemoteStore(store, config.connection).statuses()
+            print(json.dumps(result))
             return 0
         if command == "history":
             selected_folder = cast("str | None", args["folder"])
@@ -193,7 +208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         kind, session_id = host_identity(dict(os.environ))
         project = str(Path.cwd().resolve())
         if command == "send":
-            result: object = _send(store, args, SenderContext(kind, session_id, project))
+            result = _send(store, args, SenderContext(kind, session_id, project))
         else:
             agent_address = store.register(
                 kind, session_id, project, messaging_socket=_claude_socket(kind)
@@ -215,6 +230,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _send(store: Store, args: dict[str, object], sender: SenderContext) -> object:
     configured_body = args["body"]
     body = cast("str", configured_body) if configured_body is not None else sys.stdin.read()
+    if "/" in cast("str", args["to"]):
+        config = load_config()
+        if config is None:
+            raise BusError("Remote sending requires a remote configuration file")
+        return enqueue_remote(store, config, sender, cast("str", args["to"]), body)
     sent = store.send(
         sender,
         cast("str", args["to"]),
@@ -272,7 +292,12 @@ def _registered_command(
     if command == "whoami":
         result: object = {"address": agent_address}
     elif command == "list":
-        result = store.agents(None if args["all"] else project)
+        selected = None if args["all"] else project
+        peers: list[object] = list(store.agents(selected))
+        config = load_config()
+        if config is not None:
+            peers.extend(remote_peers(store, config, selected))
+        result = peers
     elif command == "inbox":
         result = store.inbox(agent_address, cast("int", args["limit"]))
     elif command == "ack":

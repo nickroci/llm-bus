@@ -4,6 +4,10 @@
 
 `llm-bus send` saves a message, then requests a wake for its recipient. The recipient can read and acknowledge the bus message in the new turn. If wake fails, the message stays pending for a later turn. [Wake behavior](#wake-behavior) explains the supported hosts and result status.
 
+## Cross-machine messaging
+
+An optional Cloudflare relay connects sessions on different machines. Each machine uses its own static bearer token and explicit repository grants. A local policy file further restricts which repositories participate. See [remote bus setup and behavior](docs/remote-bus.md).
+
 ## Install and verify
 
 Install [uv](https://docs.astral.sh/uv/), clone this repository, and run these commands from its root:

@@ -24,7 +24,10 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/llm_bus.py", "src/llm_bus_install.py", "src/llm_bus_store.py", "src/llm_bus_wake.py"]
+packages = ["src/llm_bus.py", "src/llm_bus_install.py", "src/llm_bus_store.py", "src/llm_bus_wake.py", "src/llm_bus_remote.py", "src/llm_bus_remote_store.py"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/cloudflare/node_modules", "/cloudflare/.wrangler", "/cloudflare/dist", "/cloudflare/.dev.vars"]
 
 [tool.ruff]
 target-version = "py312"
@@ -45,6 +48,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["PLR2004", "S101", "S603"]
+"src/llm_bus_remote.py" = ["T201"]
 "src/llm_bus.py" = ["T201"] # Printing is the CLI and hook output boundary.
 
 [tool.ruff.lint.mccabe]
@@ -112,7 +116,7 @@ max-line-length = 100
 score = false
 
 [tool.deptry]
-known_first_party = ["llm_bus", "llm_bus_install", "llm_bus_store", "llm_bus_wake"]
+known_first_party = ["llm_bus", "llm_bus_install", "llm_bus_store", "llm_bus_wake", "llm_bus_remote", "llm_bus_remote_store"]
 
 [tool.poe.tasks]
 format = "ruff format src tests plugins/herdr-history"
