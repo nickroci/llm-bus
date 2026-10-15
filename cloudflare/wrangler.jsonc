@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "llm-bus-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "workers_dev": false,
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "llm-bus",
+    "database_id": "00000000-0000-0000-0000-000000000000",
+    "migrations_dir": "migrations"
+  }],
+  "queues": {
+    "producers": [{"binding": "DELIVERY", "queue": "llm-bus-delivery"}],
+    "consumers": [{"queue": "llm-bus-delivery", "max_batch_size": 100, "max_batch_timeout": 1, "max_retries": 5, "dead_letter_queue": "llm-bus-dead-letter"}]
+  },
+  "triggers": {"crons": ["* * * * *"]}
+}

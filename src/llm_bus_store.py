@@ -259,7 +259,7 @@ class Store:
         return db
 
     @contextmanager
-    def _transaction(self) -> Generator[sqlite3.Connection]:
+    def transaction(self) -> Generator[sqlite3.Connection]:
         with closing(self._connect()) as db:
             try:
                 yield db
@@ -273,7 +273,7 @@ class Store:
     ) -> str:
         """Upsert session address without deleting its pending messages."""
         scope = routing_scope(project)
-        with self._transaction() as db:
+        with self.transaction() as db:
             agent_address = self._upsert_agent(db, kind, session_id, project, scope)
             db.execute(
                 "UPDATE agents SET messaging_socket = ? WHERE address = ?",
@@ -310,7 +310,7 @@ class Store:
 
     def end_session(self, kind: str, session_id: str) -> None:
         """Mark a registered session closed without consuming its pending messages."""
-        with self._transaction() as db:
+        with self.transaction() as db:
             db.execute(
                 "UPDATE agents SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), "
                 "messaging_socket = NULL "
@@ -332,7 +332,7 @@ class Store:
         return self._read_agents([], [])
 
     def _read_agents(self, clauses: list[str], parameters: list[str]) -> list[Agent]:
-        with self._transaction() as db:
+        with self.transaction() as db:
             self._expire_idle_agents(db)
             query = "SELECT address, kind, project, last_seen, ended_at FROM agents"
             if clauses:
@@ -357,7 +357,7 @@ class Store:
 
     def is_ended(self, agent_address: str) -> bool:
         """Whether a session ended or has been idle for a day."""
-        with self._transaction() as db:
+        with self.transaction() as db:
             self._expire_idle_agents(db)
             row = cast(
                 "tuple[str | None] | None",
@@ -381,7 +381,7 @@ class Store:
         if len(body.encode("utf-8")) > MAX_MESSAGE_BYTES:
             raise BusError("Message body exceeds 64 KiB")
         sender_scope = routing_scope(sender_context.project)
-        with self._transaction() as db:
+        with self.transaction() as db:
             sender = self._upsert_agent(
                 db,
                 sender_context.kind,
@@ -437,7 +437,7 @@ class Store:
 
     def record_wake(self, message_id: int, status: str, via: str, reason: str | None) -> None:
         """Save the outcome after delivery without changing acknowledgement state."""
-        with self._transaction() as db:
+        with self.transaction() as db:
             cursor = db.execute(
                 "UPDATE messages SET wake_status = ?, wake_via = ?, wake_reason = ?, "
                 "wake_checked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?",
@@ -564,7 +564,7 @@ class Store:
         ):
             raise BusError("Provide 1-100 positive integer message IDs")
         unique_ids = list(dict.fromkeys(ids))
-        with self._transaction() as db:
+        with self.transaction() as db:
             acknowledged = 0
             for message_id in unique_ids:
                 exists = cast(
