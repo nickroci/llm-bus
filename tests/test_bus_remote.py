@@ -74,6 +74,12 @@ receive_messages = "inbox"
     return Store(tmp_path / f"{machine}.sqlite3"), config
 
 
+def assert_config_scope(folder: Path) -> None:
+    current = load_config()
+    assert current is not None
+    assert current.repositories[0].scope == routing_scope(str(folder))
+
+
 def delivery(remote_id: str | None = None) -> Delivery:
     return Delivery(
         id=remote_id or str(uuid4()),
@@ -440,7 +446,11 @@ def test_pending_uses_original_identity_scope_and_current_recipient_scope(tmp_pa
     assert store.pending_count("claude:recipient") == 0
     path.write_text(original.replace('repo_id = "xyz"', 'repo_id = "other"'), encoding="utf-8")
     assert store.pending_count("claude:recipient") == 0
-    path.write_text(original.replace(folder, str(tmp_path / "other")), encoding="utf-8")
+    path.write_text(
+        original.replace((tmp_path / "repo").as_posix(), (tmp_path / "other").as_posix()),
+        encoding="utf-8",
+    )
+    assert_config_scope(tmp_path / "other")
     assert store.pending_count("claude:recipient") == 0
 
 
@@ -474,10 +484,11 @@ def test_revoked_outgoing_is_held_while_other_peer_uploads(
     assert [state for _, state in rows] == ["queued_local", "accepted_remote"]
     path.write_text(
         path.read_text(encoding="utf-8").replace(
-            str(tmp_path / "repo"), str(tmp_path / "different")
+            (tmp_path / "repo").as_posix(), (tmp_path / "different").as_posix()
         ),
         encoding="utf-8",
     )
+    assert_config_scope(tmp_path / "different")
     assert Bridge(store, config).sync()["uploaded"] == 0
     assert len(RemoteStore(store, config.connection).outgoing()) == 2
 
@@ -503,7 +514,9 @@ def test_policy_change_during_sender_publication_holds_body_upload(
         "peer": original.replace("send_messages = true", "send_messages = false", 1),
         "invalid": "broken = [",
         "connection": original.replace("https://bus.test", "https://different.test"),
-        "scope": original.replace(str(tmp_path / "repo"), str(tmp_path / "different")),
+        "scope": original.replace(
+            (tmp_path / "repo").as_posix(), (tmp_path / "different").as_posix()
+        ),
     }
     uploaded: list[object] = []
     publications: list[object] = []
@@ -525,6 +538,8 @@ def test_policy_change_during_sender_publication_holds_body_upload(
         "acknowledged": 0,
         "errors": 0,
     }
+    if change == "scope":
+        assert_config_scope(tmp_path / "different")
     assert len(publications) == 1
     assert [cast("dict[str, object]", item)["id"] for item in uploaded] == (
         [allowed["remote_id"]] if other_uploads else []
@@ -757,7 +772,9 @@ def test_report_permission_revoked_during_receipt_prevents_submission(
         if route == "/v1/receipts":
             receipts.append(data)
             replacements = {
-                "scope": original.replace(str(tmp_path / "repo"), str(tmp_path / "elsewhere")),
+                "scope": original.replace(
+                    (tmp_path / "repo").as_posix(), (tmp_path / "elsewhere").as_posix()
+                ),
                 "connection": original.replace("https://bus.test", "https://different.test"),
                 "capability": original.replace('send_reports = ["received"]', "send_reports = []"),
                 "peer": original.replace('machine_id = "a"', 'machine_id = "c"'),
@@ -771,6 +788,8 @@ def test_report_permission_revoked_during_receipt_prevents_submission(
 
     monkeypatch.setattr("llm_bus_remote.Relay.request", request)
     assert Bridge(store, config).sync()["errors"] == 0
+    if change == "scope":
+        assert_config_scope(tmp_path / "elsewhere")
     assert receipts == [{"id": item["id"]}]
     assert submissions == []
     assert reports.pending() == [(local_id, queued)]
@@ -961,7 +980,9 @@ def test_report_upload_reloads_all_binding_policy_at_final_guard(
     def mutate_after_binding(reports: Reports, message: int, native: str | None = None) -> Delivery:
         item = imported(reports, message, native)
         replacements = {
-            "scope": original.replace(str(tmp_path / "repo"), str(tmp_path / "elsewhere")),
+            "scope": original.replace(
+                (tmp_path / "repo").as_posix(), (tmp_path / "elsewhere").as_posix()
+            ),
             "connection": original.replace("https://bus.test", "https://different.test"),
             "capability": original.replace('send_reports = ["received"]', "send_reports = []"),
         }
@@ -975,6 +996,8 @@ def test_report_upload_reloads_all_binding_policy_at_final_guard(
     monkeypatch.setattr(Reports, "imported", mutate_after_binding)
     monkeypatch.setattr("llm_bus_remote.Relay.request", request)
     assert Bridge(store, config).sync()["errors"] == 0
+    if change == "scope":
+        assert_config_scope(tmp_path / "elsewhere")
     assert len(Reports(store, config.connection).pending()) == 1
 
 
