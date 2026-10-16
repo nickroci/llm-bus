@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from llm_bus_install import configure_hosts, restore_bus_settings, snapshot_host_settings
-from llm_bus_remote import enqueue_remote, load_config, remote_peers, require_config, run_bridge
+from llm_bus_policy import REPORT_REASONS, load_config, optional_config, require_config
+from llm_bus_remote import enqueue_remote, remote_peers, run_bridge
 from llm_bus_remote_store import RemoteStore
+from llm_bus_reports import Reports
 from llm_bus_store import BusError, SenderContext, Store, default_path
 from llm_bus_wake import wake
 
@@ -70,6 +72,14 @@ def _parser() -> argparse.ArgumentParser:
     cursor.add_argument("--before", type=int, help="Show older messages below this ID")
     cursor.add_argument("--after", type=int, help="Show newer messages above this ID")
     history.add_argument("--limit", type=int, default=100)
+    monitor = commands.add_parser("monitor", help="Read separate remote human monitoring history")
+    monitor_scope = monitor.add_mutually_exclusive_group()
+    monitor_scope.add_argument(
+        "--repository", help="Repository path; defaults to current repository"
+    )
+    monitor_scope.add_argument("--all", action="store_true", help="Read every retained repository")
+    monitor.add_argument("--before", type=int, help="Read rows below this monitor ID")
+    monitor.add_argument("--limit", type=int, default=100)
     acknowledge = commands.add_parser("ack", help="Acknowledge handled messages")
     acknowledge.add_argument("ids", type=int, nargs="+")
     hook = commands.add_parser("hook", help="Register session and notify agent at turn boundary")
@@ -81,6 +91,10 @@ def _parser() -> argparse.ArgumentParser:
     )
     bridge.add_argument("--once", action="store_true", help="Synchronize once and exit")
     commands.add_parser("remote-status", help="Show the latest 100 outgoing remote delivery states")
+    report = commands.add_parser("report", help="Queue a typed work report for an imported message")
+    report.add_argument("message_id", type=int)
+    report.add_argument("--status", required=True, choices=tuple(REPORT_REASONS))
+    report.add_argument("--reason")
     return parser
 
 
@@ -127,6 +141,17 @@ def _hook(store: Store, kind: str) -> None:
         "Failed wakes or delayed remote delivery do not justify blind resends. "
         "Never expose credentials in messages."
     )
+    config = optional_config()
+    repo = config.repository(project) if config else None
+    if repo is not None:
+        for peer in repo.peers:
+            capability = "allowed" if peer.send_messages else "denied; do not use alternate routes"
+            statuses = ", ".join(peer.send_reports) or "none"
+            notice += (
+                f" Local policy for {peer.machine_id}/{repo.repo_id}: "
+                f"message replies {capability}; "
+                f"allowed report statuses: {statuses}."
+            )
     if kind == "codex":
         print(
             json.dumps(
@@ -180,38 +205,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 _hook(store, cast("str", args["kind"]))
             return 0
-        if command in {"agents", "remote-status"}:
-            if command == "agents":
-                result: object = store.all_agents()
-            else:
-                config = require_config()
-                result = RemoteStore(store, config.connection).statuses()
-            print(json.dumps(result))
-            return 0
-        if command == "history":
-            selected_folder = cast("str | None", args["folder"])
-            selected_repository = cast("str | None", args["repository"])
-            folder = (
-                None
-                if args["all"] or selected_repository is not None
-                else str(Path(selected_folder or Path.cwd()).resolve())
-            )
-            repository = (
-                str(Path(selected_repository).resolve())
-                if selected_repository is not None
-                else None
-            )
-            print(
-                json.dumps(
-                    store.history(
-                        folder=folder,
-                        repository=repository,
-                        before=cast("int | None", args["before"]),
-                        after=cast("int | None", args["after"]),
-                        limit=cast("int", args["limit"]),
-                    )
-                )
-            )
+        if _human_command(store, command, args):
             return 0
         kind, session_id = host_identity(dict(os.environ))
         project = str(Path.cwd().resolve())
@@ -233,6 +227,68 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"llm-bus: {error}", file=sys.stderr)
         return 1
     return 0
+
+
+def _human_command(store: Store, command: object, args: dict[str, object]) -> bool:
+    if command == "monitor":
+        _monitor(store, args)
+        return True
+    if command in {"agents", "remote-status"}:
+        if command == "agents":
+            result: object = store.all_agents()
+        else:
+            config = require_config()
+            result = Reports(store, config.connection).statuses()
+        print(json.dumps(result))
+        return True
+    if command == "history":
+        selected_folder = cast("str | None", args["folder"])
+        selected_repository = cast("str | None", args["repository"])
+        folder = (
+            None
+            if args["all"] or selected_repository is not None
+            else str(Path(selected_folder or Path.cwd()).resolve())
+        )
+        repository = (
+            str(Path(selected_repository).resolve()) if selected_repository is not None else None
+        )
+        print(
+            json.dumps(
+                store.history(
+                    folder=folder,
+                    repository=repository,
+                    before=cast("int | None", args["before"]),
+                    after=cast("int | None", args["after"]),
+                    limit=cast("int", args["limit"]),
+                )
+            )
+        )
+        return True
+    return False
+
+
+def _monitor(store: Store, args: dict[str, object]) -> None:
+    repository = (
+        None
+        if args["all"]
+        else str(Path(cast("str | None", args["repository"]) or Path.cwd()).resolve())
+    )
+    rows = RemoteStore.monitor_history(
+        store,
+        repository=repository,
+        before=cast("int | None", args["before"]),
+        limit=cast("int", args["limit"]),
+    )
+    for key, scope, connection, item in rows:
+        # JSON string escaping covers control characters and Unicode formatting controls.
+        # Escape every remote field, including metadata; render no terminal links or markup.
+        escaped = {name: json.dumps(value, ensure_ascii=True) for name, value in item.items()}
+        print(f"#{key} {escaped['sent_at']}  {escaped['id']}")
+        print(f"{escaped['sender']} to {escaped['recipient']}")
+        print(f"repository: {escaped['repo_id']} scope: {json.dumps(scope, ensure_ascii=True)}")
+        print(f"connection: {json.dumps(connection, ensure_ascii=True)}")
+        print(escaped["body"])
+        print()
 
 
 def _send(store: Store, args: dict[str, object], sender: SenderContext) -> object:
@@ -302,12 +358,17 @@ def _registered_command(
     elif command == "list":
         selected = None if args["all"] else project
         peers: list[object] = list(store.agents(selected))
-        config = load_config()
+        config = optional_config()
         if config is not None:
             peers.extend(remote_peers(store, config, selected))
         result = peers
     elif command == "inbox":
         result = store.inbox(agent_address, cast("int", args["limit"]))
+    elif command == "report":
+        config = require_config()
+        result = Reports(store, config.connection).enqueue(
+            cast("int", args["message_id"]), agent_address, args["status"], args["reason"]
+        )
     elif command == "ack":
         result = {"acknowledged": store.acknowledge(agent_address, cast("list[int]", args["ids"]))}
     else:

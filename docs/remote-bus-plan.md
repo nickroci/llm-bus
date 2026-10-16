@@ -1,5 +1,7 @@
 # Remote bus implementation plan
 
+Historical initial v1 implementation plan. Its repository-wide policy examples describe that original design; use the [current remote guide](remote-bus.md) for version 2 peer policy, monitoring, reports, and migration.
+
 ## Features and effects
 
 ### F1: Machine authentication and repository isolation

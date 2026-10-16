@@ -1235,3 +1235,21 @@ def test_failed_uninstall_restores_standalone_before_shared_bus_group(
     assert json.loads(codex.read_text()) == {
         "hooks": {"SessionStart": [concurrent, standalone, shared, tail]}
     }
+
+
+def test_monitor_without_native_identity_validates_and_does_not_register(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "bus.sqlite3"
+    monkeypatch.setenv("LLM_BUS_DB", str(path))
+    monkeypatch.setenv("LLM_BUS_CONFIG", str(tmp_path / "absent.toml"))
+    for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
+    assert main(["monitor", "--all"]) == 0
+    assert capsys.readouterr().out == ""
+    for options in (["--limit", "0"], ["--limit", "101"], ["--before", "0"]):
+        assert main(["monitor", *options]) == 1
+        assert "Monitor" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        main(["monitor", "--repository", str(tmp_path), "--all"])
+    assert Store(path).all_agents() == []

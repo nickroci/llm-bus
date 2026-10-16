@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -12,8 +13,12 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
+import llm_bus_policy
+
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+    from llm_bus_policy import MessageIdentity
 
 SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 MAX_MESSAGE_BYTES = 64 * 1024
@@ -446,6 +451,47 @@ class Store:
             if cursor.rowcount != 1:
                 raise BusError(f"Unknown message ID {message_id}")
 
+    def pending_allowed(self, message_id: int) -> bool:
+        """Recheck remote pending exposure against fresh machine-owned policy."""
+        with closing(self._connect()) as db:
+            row = cast(
+                "tuple[str, str, str | None, str | None] | None",
+                db.execute(
+                    "SELECT m.sender,m.recipient,m.recipient_scope,a.scope FROM messages m "
+                    "JOIN agents a ON a.address=m.recipient WHERE m.id=?",
+                    (message_id,),
+                ).fetchone(),
+            )
+            if row is None:
+                return False
+            if "/" not in row[0]:
+                return True
+            if (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='remote_imports'"
+                ).fetchone()
+                is None
+            ):
+                return False
+            imported = cast(
+                "tuple[str, str] | None",
+                db.execute(
+                    "SELECT r.envelope,b.connection FROM remote_imports r "
+                    "CROSS JOIN remote_binding b "
+                    "WHERE r.local_id=? AND b.id=1",
+                    (message_id,),
+                ).fetchone(),
+            )
+        sender, recipient, stored_scope, current_scope = row
+        if imported is None or stored_scope is None or current_scope is None:
+            return False
+        envelope = cast("MessageIdentity", json.loads(imported[0]))
+        return (
+            sender == envelope["sender"]
+            and recipient == envelope["recipient"].rsplit("/", 1)[-1]
+            and llm_bus_policy.permits_inbox(envelope, stored_scope, current_scope, imported[1])
+        )
+
     def inbox(self, recipient: str, limit: int = MAX_BATCH) -> list[Message]:
         """Read pending messages without consuming them."""
         if not 1 <= limit <= MAX_BATCH:
@@ -456,8 +502,8 @@ class Store:
                 db.execute(
                     "SELECT id, sender, recipient, body, sender_cwd, recipient_cwd, sent_at "
                     "FROM messages "
-                    "WHERE recipient = ? AND acknowledged_at IS NULL ORDER BY id LIMIT ?",
-                    (recipient, limit),
+                    "WHERE recipient = ? AND acknowledged_at IS NULL ORDER BY id",
+                    (recipient,),
                 ).fetchall(),
             )
         return [
@@ -471,7 +517,8 @@ class Store:
                 sent_at=row[6],
             )
             for row in rows
-        ]
+            if "/" not in row[1] or self.pending_allowed(row[0])
+        ][:limit]
 
     def history(
         self,
@@ -544,16 +591,16 @@ class Store:
     def pending_count(self, recipient: str) -> int:
         """Count unread messages for low-context hook notification."""
         with closing(self._connect()) as db:
-            row = cast(
-                "tuple[int] | None",
+            rows = cast(
+                "list[tuple[int, str]]",
                 db.execute(
-                    "SELECT count(*) FROM messages WHERE recipient = ? AND acknowledged_at IS NULL",
+                    "SELECT id,sender FROM messages WHERE recipient=? AND acknowledged_at IS NULL",
                     (recipient,),
-                ).fetchone(),
+                ).fetchall(),
             )
-        if row is None:
-            raise RuntimeError("SQLite count query returned no row")
-        return int(row[0])
+        return sum(
+            "/" not in sender or self.pending_allowed(message_id) for message_id, sender in rows
+        )
 
     def acknowledge(self, recipient: str, ids: list[int]) -> int:
         """Acknowledge only own messages; reject mixed or unknown batches atomically."""

@@ -6,7 +6,8 @@ import json
 from typing import TYPE_CHECKING, TypedDict, cast
 from uuid import uuid4
 
-from llm_bus_store import MAX_MESSAGE_BYTES, BusError, Store, address, routing_scope
+from llm_bus_policy import receive_mode
+from llm_bus_store import MAX_BATCH, MAX_MESSAGE_BYTES, BusError, Store, address, routing_scope
 
 if TYPE_CHECKING:
     from sqlite3 import Connection
@@ -36,7 +37,15 @@ class Delivery(Envelope):
     sent_at: str
 
 
+MONITOR_TABLE = (
+    "CREATE TABLE IF NOT EXISTS remote_monitor "
+    "(monitor_id INTEGER PRIMARY KEY, id TEXT UNIQUE NOT NULL, envelope TEXT NOT NULL, "
+    "scope TEXT NOT NULL, connection TEXT NOT NULL)"
+)
+
+
 TABLES = (
+    MONITOR_TABLE,
     (
         "CREATE TABLE IF NOT EXISTS remote_publications "
         "(address TEXT PRIMARY KEY, payload TEXT NOT NULL)"
@@ -66,9 +75,11 @@ class RemoteStore:
     """Atomic UUID deduplication and durable outbox; native message IDs stay integers."""
 
     store: Store
+    connection: str
 
     def __init__(self, store: Store, connection: str) -> None:
         self.store = store
+        self.connection = connection
         with store.transaction() as db:
             for statement in TABLES:
                 db.execute(statement)
@@ -204,6 +215,18 @@ class RemoteStore:
             )
         return row[0]
 
+    def source_scope(self, remote_id: str) -> str | None:
+        with self.store.transaction() as db:
+            row = cast(
+                "tuple[str | None]",
+                db.execute(
+                    "SELECT m.sender_scope FROM messages m JOIN remote_outbox o ON o.local_id=m.id "
+                    "WHERE o.id=?",
+                    (remote_id,),
+                ).fetchone(),
+            )
+        return row[0]
+
     def statuses(self) -> list[dict[str, object]]:
         with self.store.transaction() as db:
             rows = cast(
@@ -229,21 +252,12 @@ class RemoteStore:
                     (remote_id,),
                 )
 
-    def import_message(self, item: Delivery, scope: str) -> int | None:
+    def admit_message(self, item: Delivery, scope: str) -> tuple[str, int | None] | None:
+        """Commit exactly one delivery class under the current machine policy."""
         native = item["recipient"].split("/", 2)[2]
         payload = json.dumps(item, sort_keys=True)
         with self.store.transaction() as db:
             db.execute("BEGIN IMMEDIATE")
-            prior = cast(
-                "tuple[int, str] | None",
-                db.execute(
-                    "SELECT local_id,envelope FROM remote_imports WHERE id=?", (item["id"],)
-                ).fetchone(),
-            )
-            if prior is not None:
-                if prior[1] != payload:
-                    raise BusError("Remote message ID was reused with different content")
-                return prior[0]
             recipient = cast(
                 "tuple[str, str] | None",
                 db.execute(
@@ -252,8 +266,30 @@ class RemoteStore:
                     (native,),
                 ).fetchone(),
             )
-            if recipient is None or recipient[1] != scope:
+            if recipient is None:
                 return None
+            mode = receive_mode(item, scope, recipient[1], self.connection)
+            if mode == "deny":
+                return None
+            prior = cast(
+                "tuple[str, int | None, str] | None",
+                db.execute(
+                    "SELECT 'inbox',local_id,envelope FROM remote_imports WHERE id=? "
+                    "UNION ALL SELECT 'monitor',NULL,envelope FROM remote_monitor WHERE id=?",
+                    (item["id"], item["id"]),
+                ).fetchone(),
+            )
+            if prior is not None:
+                prior_mode, prior_id, prior_payload = prior
+                if prior_payload != payload:
+                    raise BusError("Remote message ID was reused with different content")
+                return prior_mode, prior_id
+            if mode == "monitor":
+                db.execute(
+                    "INSERT INTO remote_monitor(id,envelope,scope,connection) VALUES (?,?,?,?)",
+                    (item["id"], payload, scope, self.connection),
+                )
+                return "monitor", None
             self._proxy(db, item["sender"], item["repo_id"])
             cursor = db.execute(
                 "INSERT INTO messages(sender,recipient,body,recipient_cwd,"
@@ -276,7 +312,42 @@ class RemoteStore:
                 "INSERT INTO remote_imports(id,local_id,envelope) VALUES (?,?,?)",
                 (item["id"], local_id, payload),
             )
-            return local_id
+            return "inbox", local_id
+
+    @staticmethod
+    def monitor_history(
+        store: Store, *, repository: str | None, before: int | None = None, limit: int = 100
+    ) -> list[tuple[int, str, str, Delivery]]:
+        """Read retained monitoring without requiring current configuration or a host identity."""
+        if not 1 <= limit <= MAX_BATCH:
+            raise BusError("Monitor limit must be between 1 and 100")
+        if before is not None and before < 1:
+            raise BusError("Monitor cursor must be a positive ID")
+        clauses: list[str] = []
+        parameters: list[str | int] = []
+        if repository is not None:
+            clauses.append("scope=?")
+            parameters.append(routing_scope(repository))
+        if before is not None:
+            clauses.append("monitor_id<?")
+            parameters.append(before)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        parameters.append(limit)
+        with store.transaction() as db:
+            db.execute(MONITOR_TABLE)
+            rows = cast(
+                "list[tuple[int, str, str, str]]",
+                db.execute(
+                    "SELECT monitor_id,scope,connection,envelope FROM remote_monitor"  # noqa: S608
+                    + where
+                    + " ORDER BY monitor_id DESC LIMIT ?",
+                    parameters,
+                ).fetchall(),
+            )
+        return [
+            (key, scope, connection, cast("Delivery", json.loads(payload)))
+            for key, scope, connection, payload in rows
+        ]
 
     def claim_wake(self, remote_id: str) -> bool:
         with self.store.transaction() as db:
@@ -302,6 +373,16 @@ class RemoteStore:
             (remote_id, cast("Delivery", json.loads(payload))["repo_id"])
             for remote_id, payload in rows
         ]
+
+    def permits_ack(self, remote_id: str) -> bool:
+        with self.store.transaction() as db:
+            row = cast(
+                "tuple[int] | None",
+                db.execute(
+                    "SELECT local_id FROM remote_imports WHERE id=?", (remote_id,)
+                ).fetchone(),
+            )
+        return row is not None and self.store.pending_allowed(row[0])
 
     def mark_acknowledged(self, remote_id: str) -> None:
         with self.store.transaction() as db:

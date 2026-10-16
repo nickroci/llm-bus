@@ -134,7 +134,7 @@ async function send(request: Request, env: Env, machine: string): Promise<Respon
     if (prior.sender !== sender || prior.recipient !== recipient || prior.repo_id !== repo || prior.body !== body) {
       throw new HttpError(409, 'Message ID already used');
     }
-    return Response.json({id, status: messageStatus(prior)});
+    return Response.json(transportResult(prior));
   }
   const result = await env.DB.prepare(`INSERT INTO messages(id,sender,recipient,repo_id,body)
     SELECT ?,s.address,r.address,?,? FROM sessions s JOIN sessions r ON r.address=?
@@ -147,13 +147,18 @@ async function send(request: Request, env: Env, machine: string): Promise<Respon
   if (!result.meta.changes) {
     const raced = await env.DB.prepare('SELECT * FROM messages WHERE id=?').bind(id).first<MessageRow>();
     if (raced && raced.sender === sender && raced.recipient === recipient && raced.body === body && raced.repo_id === repo) {
-      return Response.json({id, status: messageStatus(raced)});
+      return Response.json(transportResult(raced));
     }
     throw new HttpError(raced ? 409 : 403, 'Recipient or sender not allowed');
   }
   // A failed enqueue cannot undo the durable acceptance. The scheduled scan repairs it.
   try { await env.DELIVERY.send(id); } catch { /* durable pending row is the outbox */ }
-  return Response.json({id, status: 'accepted_remote'}, {status: 202});
+  const accepted = await env.DB.prepare('SELECT * FROM messages WHERE id=?').bind(id).first<MessageRow>();
+  if (!accepted) throw new HttpError(503, 'Message unavailable');
+  return Response.json(transportResult(accepted), {status: 202});
+}
+function transportResult(row: MessageRow): {id: string; status: string; report_expires_at: string} {
+  return {id:row.id,status:messageStatus(row),report_expires_at:new Date(Date.parse(row.sent_at) + 30 * 86400_000).toISOString()};
 }
 function messageStatus(row: MessageRow): string {
   if (row.acknowledged_at) return 'acknowledged';
@@ -206,7 +211,63 @@ async function status(url: URL, env: Env, machine: string): Promise<Response> {
     WHERE m.id=? AND s.machine_id=? AND ${ACTIVE_GRANT.replace('g.repo_id=?', 'g.repo_id=m.repo_id')}`)
     .bind(id, machine, machine).first<MessageRow>();
   if (!row) throw new HttpError(403, 'Message not allowed');
-  return Response.json({id, status: messageStatus(row)});
+  return Response.json(transportResult(row));
+}
+const REPORT_REASONS: Record<string, readonly (string | null)[]> = {
+  received: [null], proceeding: ['started', 'resumed'],
+  not_proceeding: ['needs_approval', 'missing_information', 'dependency_blocked', 'out_of_scope', 'declined'],
+  completed: [null], failed: ['validation_failed', 'execution_failed', 'permission_denied', 'unavailable'],
+};
+interface ReportRow {message_id: string; revision: number; status: string; reason: string | null; expected_revision: number}
+// Both participants must retain current grants; identities come only from stored messages.
+const REPORT_OWNER = `SELECT m.id FROM messages m
+  JOIN sessions s ON s.address=m.sender JOIN sessions r ON r.address=m.recipient
+  JOIN machines sm ON sm.id=s.machine_id AND sm.revoked_at IS NULL
+  JOIN machines rm ON rm.id=r.machine_id AND rm.revoked_at IS NULL
+  JOIN repo_grants sg ON sg.machine_id=s.machine_id AND sg.repo_id=m.repo_id
+  JOIN repo_grants rg ON rg.machine_id=r.machine_id AND rg.repo_id=m.repo_id
+  WHERE m.id=? AND m.received_at IS NOT NULL AND ${LIVE_MESSAGE}`;
+function reportResult(id: string, row: ReportRow | null): Response {
+  return Response.json({message_id:id, revision:row?.revision ?? 0, status:row?.status ?? null, reason:row?.reason ?? null});
+}
+async function readReport(url: URL, env: Env, machine: string): Promise<Response> {
+  const id = text(url.searchParams.get('message_id'), UUID);
+  // Before receipt, an authorized sender still sees the revision-zero snapshot.
+  const query = REPORT_OWNER.replace('SELECT m.id', 'SELECT p.*')
+    .replace('WHERE m.id', 'LEFT JOIN message_reports p ON p.message_id=m.id WHERE m.id')
+    .replace('AND m.received_at IS NOT NULL', '') + ' AND s.machine_id=?';
+  const row = await env.DB.prepare(query).bind(id,machine).first<ReportRow>();
+  if (!row) throw new HttpError(403, 'Message not allowed');
+  return reportResult(id,row);
+}
+async function submitReport(request: Request, env: Env, machine: string): Promise<Response> {
+  const data = await jsonBody(request);
+  if (Object.keys(data).sort().join(',') !== 'expected_revision,message_id,reason,status') throw new HttpError(400, 'Invalid report fields');
+  const id = text(data.message_id, UUID);
+  const expected = data.expected_revision;
+  const status = data.status;
+  const reason = data.reason;
+  if (typeof expected !== 'number' || !Number.isSafeInteger(expected) || expected < 0 || expected >= Number.MAX_SAFE_INTEGER ||
+      typeof status !== 'string' || !Object.hasOwn(REPORT_REASONS, status) ||
+      (reason !== null && typeof reason !== 'string') || !REPORT_REASONS[status].includes(reason)) throw new HttpError(400, 'Invalid report');
+  const owner = REPORT_OWNER + ' AND r.machine_id=?';
+  if (!await env.DB.prepare(owner).bind(id,machine).first()) throw new HttpError(403, 'Message not allowed');
+  // One atomic SQL compare-and-set handles first reports and competing updates.
+  const accepted = await env.DB.prepare(`INSERT INTO message_reports(message_id,revision,status,reason,expected_revision)
+    SELECT ?,?+1,?,?,? WHERE EXISTS (${owner}) AND (?=0 OR EXISTS (SELECT 1 FROM message_reports WHERE message_id=?))
+    ON CONFLICT(message_id) DO UPDATE SET revision=message_reports.revision+1,
+      status=excluded.status,reason=excluded.reason,expected_revision=excluded.expected_revision
+    WHERE message_reports.revision=? AND message_reports.status NOT IN ('completed','failed')
+      AND (?<>'received' OR message_reports.status='received') AND EXISTS (${owner})
+    RETURNING message_id,revision,status,reason,expected_revision`)
+    .bind(id,expected,status,reason,expected,id,machine,expected,id,expected,status,id,machine).first<ReportRow>();
+  if (accepted) return reportResult(id,accepted);
+  const retryQuery = owner.replace('SELECT m.id', 'SELECT p.*')
+    .replace('WHERE m.id', 'LEFT JOIN message_reports p ON p.message_id=m.id WHERE m.id');
+  const row = await env.DB.prepare(retryQuery).bind(id,machine).first<ReportRow>();
+  if (!row) throw new HttpError(403, 'Message not allowed');
+  if (!row || row.expected_revision !== expected || row.status !== status || row.reason !== reason) throw new HttpError(409, 'Report revision conflict');
+  return reportResult(id,row);
 }
 export async function dispatch(env: Env, id: string): Promise<void> {
   // Mailbox authorization is checked again at fetch time, including token revocation.
@@ -231,6 +292,8 @@ export default {
         case 'GET /v1/inbox': return await inbox(url, env, machine);
         case 'POST /v1/receipts': return await receipt(request, env, machine, false);
         case 'POST /v1/ack': return await receipt(request, env, machine, true);
+        case 'POST /v1/reports': return await submitReport(request, env, machine);
+        case 'GET /v1/reports': return await readReport(url, env, machine);
         case 'GET /v1/status': return await status(url, env, machine);
         default: throw new HttpError(404, 'Unknown endpoint');
       }
