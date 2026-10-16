@@ -2,7 +2,7 @@ import { Miniflare } from 'miniflare';
 import { readFileSync } from 'node:fs';
 import { beforeEach, beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import worker, { dispatch, repair, tokenHash, type Env } from '../src/index';
-const migration = readFileSync(new URL('../migrations/0001_bus.sql', import.meta.url), 'utf8');
+const migration = ['0001_bus.sql', '0002_reports.sql'].map(name => readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
 
 const miniflare = new Miniflare({modules: true, scriptPath: 'dist/index.js', compatibilityDate: '2026-08-01', d1Databases: ['DB'], queueProducers: {DELIVERY: 'delivery'}});
 let bindings: Env;
@@ -26,7 +26,7 @@ async function send(id = crypto.randomUUID()) {
   return {message, response: await request('a', 'messages', message)};
 }
 beforeEach(async () => {
-  await bindings.DB.exec('DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS repo_grants; DROP TABLE IF EXISTS machines;');
+  await bindings.DB.exec('DROP TABLE IF EXISTS message_reports; DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS repo_grants; DROP TABLE IF EXISTS machines;');
   for (const statement of migration.split(';').filter(s => s.trim())) await bindings.DB.prepare(statement).run();
   for (const machine of ['a', 'b', 'c'] as const) {
     await bindings.DB.prepare('INSERT INTO machines(id,token_hash) VALUES (?,?)').bind(machine, await tokenHash(tokens[machine])).run();
@@ -78,7 +78,7 @@ describe('durability and receipts', () => {
     expect((await request('b', 'receipts', {id: message.id})).status).toBe(200);
     expect(await (await request('b', 'inbox?repo_id=xyz')).json()).toEqual([]);
     expect((await request('b', 'ack', {id: message.id})).status).toBe(200);
-    expect(await (await request('a', `status?id=${message.id}`)).json()).toEqual({id: message.id, status: 'acknowledged'});
+    expect(await (await request('a', `status?id=${message.id}`)).json()).toMatchObject({id: message.id, status: 'acknowledged', report_expires_at: expect.any(String)});
   });
   it('finds earlier messages when queue delivery is reversed and a new scan starts', async () => {
     const first = await send(); const second = await send();
@@ -95,7 +95,7 @@ describe('durability and receipts', () => {
     await repair(bindings);
     expect(await bindings.DB.prepare('SELECT id FROM messages WHERE ready=0').first()).not.toBeNull();
     await bindings.DB.prepare("UPDATE messages SET sent_at='2020-01-01T00:00:00.000Z' WHERE id=?").bind(message.id).run();
-    expect(await (await request('a', `status?id=${message.id}`)).json()).toEqual({id: message.id, status: 'expired'});
+    expect(await (await request('a', `status?id=${message.id}`)).json()).toEqual({id: message.id, status: 'expired', report_expires_at: '2020-01-31T00:00:00.000Z'});
     expect(await (await request('b', 'inbox?repo_id=xyz')).json()).toEqual([]);
   });
 });
@@ -107,4 +107,88 @@ it('accepts valid escaped payloads and durable sends after sessions end', async 
   const unicode = {...message,id:crypto.randomUUID(),body:'界'.repeat(16000)};
   expect((await request('a','messages',unicode)).status).toBe(202);
   expect((await request('a','messages',{...message,id:crypto.randomUUID(),body:'界'.repeat(22000)})).status).toBe(400);
+});
+
+const reportCases = JSON.parse(readFileSync(new URL('../../tests/fixtures/report-cases.json', import.meta.url), 'utf8')) as {status: unknown; reason: unknown; valid: boolean}[];
+describe('typed reports', () => {
+  it.each(reportCases)('validates vocabulary $status $reason', async ({status, reason, valid}) => {
+    const {message} = await send(); await dispatch(bindings, message.id);
+    await request('b', 'receipts', {id: message.id});
+    expect((await request('b', 'reports', {message_id: message.id, expected_revision: 0, status, reason})).status).toBe(valid ? 200 : 400);
+  });
+  it('binds ownership, receipt, exact fields and revision types', async () => {
+    const {message} = await send();
+    const report = {message_id: message.id, expected_revision: 0, status: 'received', reason: null};
+    expect((await request('b', 'reports', report)).status).toBe(403);
+    await dispatch(bindings, message.id); await request('b', 'receipts', {id: message.id});
+    expect((await request('a', 'reports', report)).status).toBe(403);
+    expect((await request('b', 'reports', {...report, message_id: crypto.randomUUID()})).status).toBe(403);
+    expect((await request('b', 'reports', {...report, body: 'text'})).status).toBe(400);
+    expect((await request('b', 'reports', {...report, expected_revision: true})).status).toBe(400);
+    expect((await request('b', `reports?message_id=${message.id}`)).status).toBe(403);
+    expect(await (await request('a', `reports?message_id=${message.id}`)).json()).toEqual({message_id:message.id,revision:0,status:null,reason:null});
+  });
+  it('atomically rejects competing revisions and preserves terminal states', async () => {
+    const {message} = await send(); await dispatch(bindings, message.id); await request('b','receipts',{id:message.id});
+    const first = {message_id:message.id,expected_revision:0,status:'proceeding',reason:'started'};
+    const results = await Promise.all([request('b','reports',first), request('b','reports',{...first,status:'not_proceeding',reason:'declined'})]);
+    expect(results.map(r=>r.status).sort()).toEqual([200,409]);
+    const latest = await (await request('a',`reports?message_id=${message.id}`)).json() as {status:string;reason:string};
+    expect((await request('b','reports',{...first,status:latest.status,reason:latest.reason})).status).toBe(200);
+    expect((await request('b','reports',{...first,expected_revision:1,status:'received',reason:null})).status).toBe(409);
+    const terminal={...first,expected_revision:1,status:'completed',reason:null};
+    expect((await request('b','reports',terminal)).status).toBe(200);
+    expect((await request('b','reports',terminal)).status).toBe(200);
+    expect((await request('b','reports',{...terminal,expected_revision:2,status:'failed',reason:'execution_failed'})).status).toBe(409);
+    await request('b','ack',{id:message.id});
+    expect(await (await request('a',`reports?message_id=${message.id}`)).json()).toEqual({message_id:message.id,revision:2,status:'completed',reason:null});
+    await bindings.DB.prepare("DELETE FROM repo_grants WHERE machine_id='b'").run();
+    expect((await request('a',`reports?message_id=${message.id}`)).status).toBe(403);
+  });
+});
+
+it('returns its own CAS result when a newer revision commits before response delivery', async () => {
+  const {message} = await send(); await dispatch(bindings,message.id); await request('b','receipts',{id:message.id});
+  const original = bindings.DB;
+  let advance = true;
+  bindings.DB = new Proxy(original, {get(target,key) {
+    if (key !== 'prepare') return Reflect.get(target,key,target);
+    return (sql:string) => {
+      const statement = target.prepare(sql);
+      if (!sql.includes('RETURNING message_id')) return statement;
+      return new Proxy(statement,{get(inner,key) {
+        if (key !== 'bind') return Reflect.get(inner,key,inner);
+        return (...args:unknown[]) => {
+          const bound=inner.bind(...args);
+          return new Proxy(bound,{get(query,key) {
+            if (key !== 'first') return Reflect.get(query,key,query);
+            return async () => {
+              const row=await query.first<{revision:number}>();
+              if (advance && row?.revision===1) {
+                advance=false;
+                expect((await request('b','reports',{message_id:message.id,expected_revision:1,status:'completed',reason:null})).status).toBe(200);
+              }
+              return row;
+            };
+          }});
+        };
+      }});
+    };
+  }});
+  try {
+    const response=await request('b','reports',{message_id:message.id,expected_revision:0,status:'proceeding',reason:'started'});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({message_id:message.id,revision:1,status:'proceeding',reason:'started'});
+    expect(await (await request('a',`reports?message_id=${message.id}`)).json()).toEqual({message_id:message.id,revision:2,status:'completed',reason:null});
+  } finally {bindings.DB=original;}
+});
+it('keeps relay-owned report deadlines stable on retries and refuses expired reports', async () => {
+  const {message,response}=await send();
+  const accepted=await response.json() as {report_expires_at:string};
+  expect(accepted.report_expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  expect(await (await request('a','messages',message)).json()).toMatchObject({report_expires_at:accepted.report_expires_at});
+  await dispatch(bindings,message.id);await request('b','receipts',{id:message.id});
+  await bindings.DB.prepare("UPDATE messages SET sent_at='2020-01-01T00:00:00.000Z' WHERE id=?").bind(message.id).run();
+  expect((await request('a',`reports?message_id=${message.id}`)).status).toBe(403);
+  expect((await request('b','reports',{message_id:message.id,expected_revision:0,status:'received',reason:null})).status).toBe(403);
 });

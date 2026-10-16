@@ -3,21 +3,28 @@
 from __future__ import annotations
 
 import json
-import os
-import re
-import stat
 import time
-import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
 from http.client import HTTPException
-from pathlib import Path
 from typing import IO, TYPE_CHECKING, cast, override
 
+from llm_bus_policy import (
+    IDENTIFIER,
+    NATIVE,
+    Config,
+    Repository,
+    array_values,
+    identifier,
+    load_config,
+    object_fields,
+    read_token,
+    required_text,
+)
 from llm_bus_remote_store import Delivery, Envelope, Peer, RemoteStore
-from llm_bus_store import MAX_MESSAGE_BYTES, BusError, Store, routing_scope
+from llm_bus_reports import Reports
+from llm_bus_store import MAX_MESSAGE_BYTES, BusError, Store
 from llm_bus_wake import wake
 
 if TYPE_CHECKING:
@@ -25,10 +32,6 @@ if TYPE_CHECKING:
 
     from llm_bus_store import SenderContext
 
-CONFIG_ENV = "LLM_BUS_CONFIG"
-TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{43,128}")
-IDENTIFIER = re.compile(r"[A-Za-z0-9_-]{1,128}")
-NATIVE = re.compile(r"(claude|codex):[A-Za-z0-9_-]{1,128}")
 CLIENT_USER_AGENT = "llm-bus/0.1"
 HTTP_GET = "GET"
 HTTP_POST = "POST"
@@ -38,141 +41,6 @@ WAKE_ERROR_REASON = "wake adapter failed; message remains pending"
 POLL_SECONDS = 5
 ADDRESS_PARTS = 3
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-
-
-def _mapping(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise BusError("Remote data must be an object")
-    return cast("dict[str, object]", value)
-
-
-def _text(value: object) -> str:
-    if not isinstance(value, str) or not value:
-        raise BusError("Remote field must be a nonempty string")
-    return value
-
-
-def _identifier(value: object) -> str:
-    result = _text(value)
-    if not IDENTIFIER.fullmatch(result):
-        raise BusError("Invalid remote machine/repository ID")
-    return result
-
-
-def _array(value: object) -> list[object]:
-    if not isinstance(value, list):
-        raise BusError("Remote field must be an array")
-    return cast("list[object]", value)
-
-
-@dataclass(frozen=True)
-class Repository:
-    scope: str
-    repo_id: str
-    send: bool
-    receive: bool
-
-
-@dataclass(frozen=True)
-class Config:
-    url: str
-    machine_id: str
-    credential_file: Path
-    repositories: tuple[Repository, ...]
-
-    @property
-    def connection(self) -> str:
-        return f"{self.url}|{self.machine_id}"
-
-    def repository(self, project: str) -> Repository | None:
-        scope = routing_scope(project)
-        return next((repo for repo in self.repositories if repo.scope == scope), None)
-
-
-def _repository(value: object, base: Path) -> Repository:
-    data = _mapping(value)
-    repo_id = _identifier(data.get("repo_id"))
-    path = Path(_text(data.get("path"))).expanduser()
-    if not path.is_absolute():
-        path = base / path
-    permissions: list[bool] = []
-    for key in ("send_to", "receive_from"):
-        allowed = [_identifier(item) for item in _array(data.get(key, [repo_id]))]
-        if any(item != repo_id for item in allowed):
-            raise BusError("Remote v1 permits same-repository routes only")
-        permissions.append(repo_id in allowed)
-    return Repository(
-        routing_scope(str(path.resolve())), repo_id, send=permissions[0], receive=permissions[1]
-    )
-
-
-def load_config() -> Config | None:
-    configured = os.environ.get(CONFIG_ENV)
-    path = (
-        Path(configured).expanduser() if configured else Path.home() / ".config/llm-bus/config.toml"
-    )
-    if not path.exists() and configured is None:
-        return None
-    try:
-        data = cast("dict[str, object]", tomllib.loads(path.read_text(encoding="utf-8")))
-    except tomllib.TOMLDecodeError as error:
-        raise BusError("Invalid remote configuration TOML") from error
-    remote = _mapping(data.get("remote"))
-    url = _text(remote.get("url")).rstrip("/")
-    parsed = urllib.parse.urlsplit(url)
-    local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
-    # Origins cannot carry credentials, paths, queries, or fragments.
-    if (  # pylint: disable=too-many-boolean-expressions
-        (parsed.scheme != "https" and not local_http)
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-        or parsed.path
-    ):
-        raise BusError("Relay URL must be an HTTPS origin (HTTP allowed only on loopback)")
-    credential = Path(_text(remote.get("credential_file"))).expanduser()
-    if not credential.is_absolute():
-        credential = path.parent / credential
-    repositories = tuple(
-        _repository(item, path.parent) for item in _array(data.get("repositories"))
-    )
-    if len({repo.scope for repo in repositories}) != len(repositories) or len(
-        {repo.repo_id for repo in repositories}
-    ) != len(repositories):
-        raise BusError("Duplicate remote repository mappings; map linked worktrees once")
-    return Config(url, _identifier(remote.get("machine_id")), credential, repositories)
-
-
-def require_config() -> Config:
-    config = load_config()
-    if config is None:
-        raise BusError("Remote command requires a remote configuration file")
-    return config
-
-
-def read_token(path: Path) -> str:
-    if path.is_symlink():
-        raise BusError("Credential file must not be a symlink")
-    # Platform flag names are fixed OS APIs, not configurable policy.
-    # pylint: disable-next=clean-code-business-policy-literal
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    descriptor = os.open(path, flags)
-    with os.fdopen(descriptor, "rb") as stream:
-        metadata = os.fstat(stream.fileno())
-        if not stat.S_ISREG(metadata.st_mode):
-            raise BusError("Credential must be a regular file")
-        if os.name == "posix" and (metadata.st_mode & 0o077 or metadata.st_uid != os.getuid()):
-            raise BusError("Credential file must be owned by this user with mode 600")
-        token = stream.read(129).strip()
-    try:
-        result = token.decode("ascii")
-    except UnicodeDecodeError as error:
-        raise BusError("Invalid machine credential format") from error
-    if not TOKEN_PATTERN.fullmatch(result):
-        raise BusError("Invalid machine credential format")
-    return result
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -230,10 +98,10 @@ class Relay:
 
 
 def parse_peer(value: object, repo_id: str, machine_id: str) -> Peer:
-    data = _mapping(value)
-    machine = _identifier(data.get("machine_id"))
-    native = _text(data.get("native_address"))
-    peer_address = _text(data.get("address"))
+    data = object_fields(value)
+    machine = identifier(data.get("machine_id"))
+    native = required_text(data.get("native_address"))
+    peer_address = required_text(data.get("address"))
     if (
         data.get("repo_id") != repo_id
         or machine == machine_id
@@ -246,7 +114,7 @@ def parse_peer(value: object, repo_id: str, machine_id: str) -> Peer:
         machine_id=machine,
         repo_id=repo_id,
         native_address=native,
-        last_seen=_text(data.get("last_seen")),
+        last_seen=required_text(data.get("last_seen")),
         ended=0,
     )
 
@@ -254,19 +122,24 @@ def parse_peer(value: object, repo_id: str, machine_id: str) -> Peer:
 def remote_peers(store: Store, config: Config, project: str | None) -> list[Peer]:
     selected = config.repository(project) if project is not None else None
     allowed = {
-        repo.repo_id
-        for repo in config.repositories
-        if repo.send and (project is None or repo == selected)
+        repo.repo_id for repo in config.repositories if (project is None or repo == selected)
     }
     peers = RemoteStore(store, config.connection).peers()
-    return [peer for peer in peers if peer["repo_id"] in allowed and not peer["ended"]]
+    return [
+        peer
+        for peer in peers
+        if peer["repo_id"] in allowed
+        and not peer["ended"]
+        and (policy := config.peer(peer["repo_id"], peer["machine_id"])) is not None
+        and policy.send_messages
+    ]
 
 
 def enqueue_remote(
     store: Store, config: Config, sender: SenderContext, recipient: str, body: str
 ) -> dict[str, object]:
     repo = config.repository(sender.project)
-    if repo is None or not repo.send:
+    if repo is None:
         raise BusError("Remote sending is disabled for this repository")
     parts = recipient.split("/")
     if (
@@ -277,13 +150,16 @@ def enqueue_remote(
         or not NATIVE.fullmatch(parts[2])
     ):
         raise BusError("Remote recipient must belong to another machine in the same repository")
+    peer = config.peer(repo.repo_id, parts[0])
+    if peer is None or not peer.send_messages:
+        raise BusError("Local capability policy: message sending is disabled for this peer")
     return RemoteStore(store, config.connection).enqueue(sender, recipient, repo.repo_id, body)
 
 
 def parse_delivery(value: object, repo: Repository, machine: str) -> Delivery:
-    data = _mapping(value)
-    recipient = _text(data.get("recipient"))
-    sender = _text(data.get("sender"))
+    data = object_fields(value)
+    recipient = required_text(data.get("recipient"))
+    sender = required_text(data.get("sender"))
     for qualified in (sender, recipient):
         parts = qualified.split("/")
         if (
@@ -302,17 +178,17 @@ def parse_delivery(value: object, repo: Repository, machine: str) -> Delivery:
     sequence = data.get("sequence")
     if isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 1:
         raise BusError("Invalid remote mailbox cursor")
-    body = _text(data.get("body"))
+    body = required_text(data.get("body"))
     if len(body.encode()) > MAX_MESSAGE_BYTES:
         raise BusError("Remote message exceeds 64 KiB")
     return Delivery(
-        id=_text(data.get("id")),
+        id=required_text(data.get("id")),
         sender=sender,
         recipient=recipient,
         repo_id=repo.repo_id,
         body=body,
         sequence=sequence,
-        sent_at=_text(data.get("sent_at")),
+        sent_at=required_text(data.get("sent_at")),
     )
 
 
@@ -328,12 +204,22 @@ class Bridge:
         self.remote = RemoteStore(store, config.connection)
         self.relay = Relay(config)
 
+    def _current_config(self) -> Config | None:
+        config = load_config()
+        if config is None or config.connection != self.config.connection:
+            return None
+        return config
+
     def sync(self) -> dict[str, int]:
+        current = self._current_config()
+        if current is None:
+            raise BusError("Remote policy unavailable or connection changed")
+        self.config = current
         counts = {"uploaded": 0, "imported": 0, "acknowledged": 0, "errors": 0}
         counts["errors"] += self._publish_sessions()
         for repo in self.config.repositories:
             try:
-                if repo.send:
+                if any(peer.send_messages for peer in repo.peers):
                     self._cache_peers(repo)
             except BusError:
                 counts["errors"] += 1
@@ -341,13 +227,64 @@ class Bridge:
         counts["errors"] += failures
         for repo in self.config.repositories:
             try:
-                if repo.receive:
+                if any(peer.receive_messages in {"inbox", "monitor"} for peer in repo.peers):
                     counts["imported"] += self._receive(repo)
             except BusError:
                 counts["errors"] += 1
         counts["acknowledged"], failures = self._sync_acknowledgements()
         counts["errors"] += failures
+        counts["errors"] += self._submit_reports()
+        counts["errors"] += self._poll_reports()
         return counts
+
+    def _submit_reports(self) -> int:
+        reports = Reports(self.store, self.config.connection)
+        failures = 0
+        for local_id, submission in reports.pending():
+            try:
+                item = reports.imported(local_id)
+                status = cast("str", submission["status"])
+                if not reports.permitted(item, status):
+                    continue
+                # Retry durable delivery independently of current text reception policy.
+                self.relay.request(HTTP_POST, "/v1/receipts", {"id": item["id"]})
+                if reports.permitted(item, status):
+                    reports.accepted(
+                        submission, self.relay.request(HTTP_POST, "/v1/reports", submission)
+                    )
+            except BusError:
+                failures += 1
+        return failures
+
+    def _poll_reports(self) -> int:
+        reports = Reports(self.store, self.config.connection)
+        failures = 0
+        for envelope in reports.pollable():
+            try:
+                current = self._current_config()
+                if current is None:
+                    continue
+                peer = current.peer(envelope["repo_id"], envelope["recipient"].split("/", 1)[0])
+                repo = next(
+                    (r for r in current.repositories if r.repo_id == envelope["repo_id"]), None
+                )
+                if (
+                    peer is None
+                    or not peer.receive_reports
+                    or repo is None
+                    or repo.scope != self.remote.source_scope(envelope["id"])
+                ):
+                    continue
+                value = self.relay.request(
+                    HTTP_GET,
+                    "/v1/reports?" + urllib.parse.urlencode({"message_id": envelope["id"]}),
+                )
+                current = self._current_config()
+                if current is not None:
+                    reports.receive(envelope, value, current)
+            except BusError:
+                failures += 1
+        return failures
 
     def _publish_sessions(self) -> int:
         failures = 0
@@ -373,8 +310,8 @@ class Bridge:
 
     def _sync_acknowledgements(self) -> tuple[int, int]:
         acknowledged = failures = 0
-        for remote_id, repo_id in self.remote.acknowledgements():
-            if any(repo.repo_id == repo_id and repo.receive for repo in self.config.repositories):
+        for remote_id, _repo_id in self.remote.acknowledgements():
+            if self.remote.permits_ack(remote_id):
                 try:
                     self.relay.request(HTTP_POST, "/v1/ack", {"id": remote_id})
                     self.remote.mark_acknowledged(remote_id)
@@ -386,7 +323,7 @@ class Bridge:
     def _cache_peers(self, repo: Repository) -> None:
         peers = [
             parse_peer(item, repo.repo_id, self.config.machine_id)
-            for item in _array(
+            for item in array_values(
                 self.relay.request(
                     HTTP_GET, "/v1/sessions?" + urllib.parse.urlencode({"repo_id": repo.repo_id})
                 )
@@ -397,30 +334,53 @@ class Bridge:
     def _sync_outgoing(self) -> tuple[int, int]:
         uploaded = failures = 0
         for envelope, state in self.remote.outgoing():
-            repo = next(
-                (repo for repo in self.config.repositories if repo.repo_id == envelope["repo_id"]),
-                None,
-            )
-            if repo is not None and repo.send:
+            if self._permits_outgoing(envelope):
                 try:
-                    self._upload(envelope, state)
-                    uploaded += 1
+                    if self._upload(envelope, state):
+                        uploaded += 1
                 except BusError:
                     failures += 1
         return uploaded, failures
 
-    def _upload(self, envelope: Envelope, state: str) -> None:
+    def _permits_outgoing(self, envelope: Envelope) -> bool:
+        try:
+            current = self._current_config()
+        except BusError:
+            return False
+        if current is None:
+            return False
+        peer = current.peer(envelope["repo_id"], envelope["recipient"].split("/", 1)[0])
+        repo = next(
+            (item for item in current.repositories if item.repo_id == envelope["repo_id"]),
+            None,
+        )
+        return (
+            peer is not None
+            and peer.send_messages
+            and repo is not None
+            and repo.scope == self.remote.source_scope(envelope["id"])
+        )
+
+    def _upload(self, envelope: Envelope, state: str) -> bool:
         if state == "queued_local":
             self._publish_original_sender(envelope)
+            if not self._permits_outgoing(envelope):
+                return False
             result = self.relay.request(HTTP_POST, "/v1/messages", envelope)
         else:
             result = self.relay.request(
                 HTTP_GET, "/v1/status?" + urllib.parse.urlencode({"id": envelope["id"]})
             )
-        status = _mapping(result).get("status")
+        status = object_fields(result).get("status")
         if status not in {"accepted_remote", "delivered_local", "acknowledged", "expired"}:
             raise BusError("Invalid remote message status")
+        data = object_fields(result)
+        if "report_expires_at" in data:
+            Reports(self.store, self.config.connection).deadline(
+                envelope["id"], data["report_expires_at"]
+            )
         self.remote.set_state(envelope["id"], cast("str", status))
+        return True
 
     def _publish_original_sender(self, envelope: Envelope) -> None:
         key = f"{envelope['repo_id']}/{envelope['sender']}"
@@ -441,7 +401,7 @@ class Bridge:
         after = 0
         imported = 0
         while True:
-            values = _array(
+            values = array_values(
                 self.relay.request(
                     HTTP_GET,
                     "/v1/inbox?"
@@ -455,15 +415,23 @@ class Bridge:
                 if item["sequence"] <= after:
                     raise BusError("Remote mailbox cursor did not advance")
                 after = item["sequence"]
-                local_id = self.remote.import_message(item, repo.scope)
-                if local_id is not None:
-                    if self.remote.claim_wake(item["id"]):
+                admitted = self.remote.admit_message(item, repo.scope)
+                if admitted is not None:
+                    mode, local_id = admitted
+                    if (
+                        mode == "inbox"
+                        and local_id is not None
+                        and self.store.pending_allowed(local_id)
+                        and self.remote.claim_wake(item["id"])
+                    ):
                         self._wake(item, local_id)
                         imported += 1
                     self.relay.request(HTTP_POST, "/v1/receipts", {"id": item["id"]})
 
     def _wake(self, item: Delivery, local_id: int) -> None:
         native = item["recipient"].split("/", 2)[2]
+        if not self.store.pending_allowed(local_id):
+            return
         if self.store.is_ended(native):
             self.store.record_wake(
                 local_id, WAKE_FAILED, "remote bridge", "recipient session ended"

@@ -1,0 +1,107 @@
+[
+  {
+    "status": "received",
+    "reason": null,
+    "valid": true
+  },
+  {
+    "status": "proceeding",
+    "reason": "started",
+    "valid": true
+  },
+  {
+    "status": "proceeding",
+    "reason": "resumed",
+    "valid": true
+  },
+  {
+    "status": "not_proceeding",
+    "reason": "needs_approval",
+    "valid": true
+  },
+  {
+    "status": "not_proceeding",
+    "reason": "missing_information",
+    "valid": true
+  },
+  {
+    "status": "not_proceeding",
+    "reason": "dependency_blocked",
+    "valid": true
+  },
+  {
+    "status": "not_proceeding",
+    "reason": "out_of_scope",
+    "valid": true
+  },
+  {
+    "status": "not_proceeding",
+    "reason": "declined",
+    "valid": true
+  },
+  {
+    "status": "completed",
+    "reason": null,
+    "valid": true
+  },
+  {
+    "status": "failed",
+    "reason": "validation_failed",
+    "valid": true
+  },
+  {
+    "status": "failed",
+    "reason": "execution_failed",
+    "valid": true
+  },
+  {
+    "status": "failed",
+    "reason": "permission_denied",
+    "valid": true
+  },
+  {
+    "status": "failed",
+    "reason": "unavailable",
+    "valid": true
+  },
+  {
+    "status": "received",
+    "reason": "started",
+    "valid": false
+  },
+  {
+    "status": "proceeding",
+    "reason": null,
+    "valid": false
+  },
+  {
+    "status": "completed",
+    "reason": "ok",
+    "valid": false
+  },
+  {
+    "status": "failed",
+    "reason": "other",
+    "valid": false
+  },
+  {
+    "status": "custom",
+    "reason": null,
+    "valid": false
+  },
+  {
+    "status": true,
+    "reason": null,
+    "valid": false
+  },
+  {
+    "status": "received",
+    "reason": false,
+    "valid": false
+  },
+  {
+    "status": "received",
+    "reason": [],
+    "valid": false
+  }
+]

@@ -6,14 +6,22 @@
 
 ## Cross-machine messaging
 
-An optional Cloudflare relay connects sessions on different machines. Each machine uses its own static bearer token and explicit repository grants. A local policy file further restricts which repositories participate. See [remote bus setup and behavior](docs/remote-bus.md).
+An optional Cloudflare relay connects sessions on different machines. Each owner chooses exact peers and capabilities in a local version 2 TOML policy. Relay machine credentials and repository admission grants remain separately required; there is no shared topology configuration or central topology administrator. [Contributor rules](AGENTS.md#decentralized-machine-configuration) preserve this ownership model.
+
+Normal incoming text has one mode per peer: `inbox`, `monitor`, or `deny`. Monitoring stores text for explicit human reading, outside native inboxes, pending counts, hooks, and wakes. Structured work reports use fixed status/reason pairs for existing messages and never wake agents or execute work. Outbound permission grants no reverse permission.
+
+A PC can send tasks to its VPS, deny all normal incoming text, and accept only built-in reports. The VPS can independently accept teammates' messages. Forwarded text is still normal incoming text at the PC; arbitrary report fields fail validation. Reports remain recipient claims, not proof of completed work or user approval.
+
+See the [remote guide](docs/remote-bus.md) for complementary endpoint policies, relay setup, commands, retained monitoring, and safe migration/rollback. Old repository-wide configuration fails closed and requires explicit peer choices. Stop bridges before downgrading to an older client.
+
+This protects bus delivery and notification, not processes sharing an OS account or machine credential. Monitoring does not isolate files from those processes. Fixed report choices and timing still convey information, and the relay operator can read plaintext.
 
 ## Install and verify
 
 Install [uv](https://docs.astral.sh/uv/), clone this repository, and run these commands from its root:
 
 ```text
-uv tool install --from . llm-bus
+uv tool install .
 llm-bus install
 ```
 

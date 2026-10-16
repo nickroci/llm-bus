@@ -24,7 +24,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/llm_bus.py", "src/llm_bus_install.py", "src/llm_bus_store.py", "src/llm_bus_wake.py", "src/llm_bus_remote.py", "src/llm_bus_remote_store.py"]
+packages = ["src/llm_bus.py", "src/llm_bus_install.py", "src/llm_bus_store.py", "src/llm_bus_wake.py", "src/llm_bus_policy.py", "src/llm_bus_remote.py", "src/llm_bus_remote_store.py", "src/llm_bus_reports.py"]
 
 [tool.hatch.build.targets.sdist]
 exclude = ["/cloudflare/node_modules", "/cloudflare/.wrangler", "/cloudflare/dist", "/cloudflare/.dev.vars"]
@@ -117,7 +117,7 @@ max-line-length = 100
 score = false
 
 [tool.deptry]
-known_first_party = ["llm_bus", "llm_bus_install", "llm_bus_store", "llm_bus_wake", "llm_bus_remote", "llm_bus_remote_store"]
+known_first_party = ["llm_bus", "llm_bus_install", "llm_bus_store", "llm_bus_wake", "llm_bus_policy", "llm_bus_remote", "llm_bus_remote_store", "llm_bus_reports"]
 
 [tool.poe.tasks]
 format = "ruff format src tests plugins/herdr-history tools"
