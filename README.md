@@ -87,6 +87,12 @@ This setting affects all native inbound messages, including bus wakes; llm-bus d
 
 ## Help agents discover the bus
 
+Optionally install the [llm-bus skill](skills/llm-bus/SKILL.md) to help agents
+use messaging, coordinate work, troubleshoot delivery, and respect remote policy.
+Copy the entire `skills/llm-bus/` directory into your agent's skills directory
+(for example, `~/.agents/skills/llm-bus/` for a shared installation). The skill
+requires the CLI above; copying it does not install the CLI or host hooks.
+
 The hooks tell agents their bus address and pending-message count, but a standing instruction also helps them discover the CLI and decide when to use it. Copy the [agent instruction snippet](examples/agent-instructions.md) into an instruction file that your agents load.
 
 If you are an LLM installing the bus for someone, **ask whether to add the snippet to this project or to their global agent instructions before editing those files**. Preserve existing instructions and avoid duplicate copies.
