@@ -32,6 +32,7 @@ AUTO_REPLIES_PER_HOUR = 20
 INVITE_PREFIX = "llmbus-invite-v0:"
 NOTICE_SENDER = "collab:_daemon"
 FORWARD_SENDER = "collab:_owner"
+REPLY_SENDER_PREFIX = "collab:reply:"
 SENDER_PREFIX = "collab:"
 WINDOWS_DATA_ENV = "LOCALAPPDATA"
 JOIN_AWAITING = "awaiting_owner"
@@ -58,6 +59,8 @@ SCHEMA = """
         mode TEXT NOT NULL,
         full_until TEXT,
         review_replies INTEGER NOT NULL,
+        agent_replies INTEGER NOT NULL DEFAULT 0,
+        wake_on_answer INTEGER NOT NULL DEFAULT 0,
         repository TEXT NOT NULL,
         session TEXT,
         created_at TEXT NOT NULL,
@@ -72,6 +75,8 @@ SCHEMA = """
         mode TEXT,
         full_until TEXT,
         review_replies INTEGER NOT NULL DEFAULT 1,
+        agent_replies INTEGER NOT NULL DEFAULT 0,
+        wake_on_answer INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL,
         detail TEXT,
         created_at TEXT NOT NULL
@@ -87,6 +92,8 @@ SCHEMA = """
         mode TEXT NOT NULL,
         full_until TEXT,
         review_replies INTEGER NOT NULL,
+        agent_replies INTEGER NOT NULL DEFAULT 0,
+        wake_on_answer INTEGER NOT NULL DEFAULT 0,
         their_grant TEXT,
         session TEXT,
         confirm_code TEXT NOT NULL,
@@ -107,6 +114,12 @@ SCHEMA = """
         UNIQUE (peer_id, direction, uid)
     );
 """
+# Columns added after the first release; existing databases gain them on open.
+ADDED_COLUMNS = [
+    (table, f"{name} INTEGER NOT NULL DEFAULT 0")
+    for table in ("invites", "joins", "peers")
+    for name in ("agent_replies", "wake_on_answer")
+]
 
 
 class CollabError(ValueError):
@@ -134,6 +147,8 @@ class Peer(TypedDict):
     mode: str
     full_until: str | None
     review_replies: bool
+    agent_replies: bool
+    wake_on_answer: bool
     their_grant: str | None
     session: str | None
     confirm_code: str
@@ -160,11 +175,13 @@ class Grant(NamedTuple):
     mode: str
     full_until: str | None
     review_replies: bool
+    agent_replies: bool = False
+    wake_on_answer: bool = False
 
 
 PEER_COLUMNS = (
     "id, pair, github_user, repository, endpoint_id, ticket, mode, full_until, review_replies, "
-    "their_grant, session, confirm_code, created_at, revoked_at"
+    "their_grant, session, confirm_code, created_at, revoked_at, agent_replies, wake_on_answer"
 )
 MESSAGE_COLUMNS = "id, peer_id, direction, kind, uid, in_reply_to, body, state, detail, created_at"
 type PeerRow = tuple[
@@ -182,7 +199,10 @@ type PeerRow = tuple[
     str,
     str,
     str | None,
+    int,
+    int,
 ]
+type InviteRow = tuple[str, str, str | None, int, str, str | None, str, str | None, int, int]
 type MessageRow = tuple[int, int, str, str, str, str | None, str, str, str | None, str]
 
 
@@ -215,7 +235,14 @@ def github_user(value: object) -> str:
     return value
 
 
-def grant(mode: object, full_minutes: object = None, *, review_replies: bool = True) -> Grant:
+def grant(
+    mode: object,
+    full_minutes: object = None,
+    *,
+    review_replies: bool = True,
+    agent_replies: bool = False,
+    wake_on_answer: bool = False,
+) -> Grant:
     """Validate a human's mode choice; full access always expires."""
     if mode not in MODES:
         raise CollabError(f"Mode must be one of {', '.join(MODES)}")
@@ -224,7 +251,7 @@ def grant(mode: object, full_minutes: object = None, *, review_replies: bool = T
         if not isinstance(full_minutes, int) or not 1 <= full_minutes <= FULL_MAX_MINUTES:
             raise CollabError(f"Full mode needs an expiry between 1 and {FULL_MAX_MINUTES} minutes")
         full_until = stamp(now() + timedelta(minutes=full_minutes))
-    return Grant(cast("str", mode), full_until, review_replies)
+    return Grant(cast("str", mode), full_until, review_replies, agent_replies, wake_on_answer)
 
 
 def effective_mode(peer: Peer) -> str | None:
@@ -305,6 +332,8 @@ def _peer(row: PeerRow) -> Peer:
         confirm_code=row[11],
         created_at=row[12],
         revoked_at=row[13],
+        agent_replies=bool(row[14]),
+        wake_on_answer=bool(row[15]),
     )
 
 
@@ -371,6 +400,14 @@ class CollabState:  # pylint: disable=too-many-public-methods
         self.path = self.home / "collab.sqlite3"
         with closing(self._connect()) as db:
             db.executescript(SCHEMA)
+            for table, column in ADDED_COLUMNS:
+                info = cast(
+                    "list[tuple[int, str]]", db.execute(f"PRAGMA table_info({table})").fetchall()
+                )
+                names = {row[1] for row in info}
+                if column.split()[0] not in names:
+                    db.execute(f"ALTER TABLE {table} ADD COLUMN {column}")
+            db.commit()
         self.path.chmod(0o600)
 
     def _connect(self) -> sqlite3.Connection:
@@ -415,13 +452,16 @@ class CollabState:  # pylint: disable=too-many-public-methods
         with self.transaction() as db:
             db.execute(
                 "INSERT INTO invites(nonce, peer_user, mode, full_until, review_replies, "
-                "repository, session, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "agent_replies, wake_on_answer, repository, session, created_at, expires_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     nonce,
                     github_user(peer_user),
                     choice.mode,
                     choice.full_until,
                     int(choice.review_replies),
+                    int(choice.agent_replies),
+                    int(choice.wake_on_answer),
                     repository,
                     session,
                     stamp(created),
@@ -434,22 +474,24 @@ class CollabState:  # pylint: disable=too-many-public-methods
         """Consume an unexpired invite for exactly its GitHub user; single use."""
         with self.transaction() as db:
             row = cast(
-                "tuple[str, str, str | None, int, str, str | None, str, str | None] | None",
+                "InviteRow | None",
                 db.execute(
                     "SELECT peer_user, mode, full_until, review_replies, repository, session, "
-                    "expires_at, used_at FROM invites WHERE nonce = ?",
+                    "expires_at, used_at, agent_replies, wake_on_answer FROM invites "
+                    "WHERE nonce = ?",
                     (nonce,),
                 ).fetchone(),
             )
             if row is None:
                 raise CollabError("Invite is unknown, already used, or for another user")
-            invited, mode, full_until, review, repository, session, expires_at, used_at = row
+            invited, mode, full_until, review, repository, session, expires_at, used_at = row[:8]
             if used_at is not None or invited != peer_user:
                 raise CollabError("Invite is unknown, already used, or for another user")
             if parse_stamp(expires_at) <= now():
                 raise CollabError("Invite has expired")
             db.execute("UPDATE invites SET used_at = ? WHERE nonce = ?", (stamp(now()), nonce))
-        return Grant(mode, full_until, bool(review)), repository, session
+        choice = Grant(mode, full_until, bool(review), bool(row[8]), bool(row[9]))
+        return choice, repository, session
 
     def invite_is_open(self, nonce: str, peer_user: str) -> bool:
         with closing(self._connect()) as db:
@@ -492,8 +534,16 @@ class CollabState:  # pylint: disable=too-many-public-methods
         with self.transaction() as db:
             cursor = db.execute(
                 "UPDATE joins SET status = 'approved', mode = ?, full_until = ?, "
-                "review_replies = ? WHERE id = ? AND status = 'awaiting_owner'",
-                (choice.mode, choice.full_until, int(choice.review_replies), join_id),
+                "review_replies = ?, agent_replies = ?, wake_on_answer = ? "
+                "WHERE id = ? AND status = 'awaiting_owner'",
+                (
+                    choice.mode,
+                    choice.full_until,
+                    int(choice.review_replies),
+                    int(choice.agent_replies),
+                    int(choice.wake_on_answer),
+                    join_id,
+                ),
             )
             if cursor.rowcount != 1:
                 raise CollabError("Join request is not awaiting approval")
@@ -501,13 +551,19 @@ class CollabState:  # pylint: disable=too-many-public-methods
     def approved_joins(self) -> list[ApprovedJoin]:
         with closing(self._connect()) as db:
             rows = cast(
-                "list[tuple[int, str, str, str | None, str, str | None, int]]",
+                "list[tuple[int, str, str, str | None, str, str | None, int, int, int]]",
                 db.execute(
-                    "SELECT id, invite, repository, session, mode, full_until, review_replies "
-                    "FROM joins WHERE status = 'approved' ORDER BY id"
+                    "SELECT id, invite, repository, session, mode, full_until, review_replies, "
+                    "agent_replies, wake_on_answer FROM joins WHERE status = 'approved' "
+                    "ORDER BY id"
                 ).fetchall(),
             )
-        return [ApprovedJoin(r[0], r[1], r[2], r[3], Grant(r[4], r[5], bool(r[6]))) for r in rows]
+        return [
+            ApprovedJoin(
+                r[0], r[1], r[2], r[3], Grant(r[4], r[5], bool(r[6]), bool(r[7]), bool(r[8]))
+            )
+            for r in rows
+        ]
 
     def finish_join(self, join_id: int, status: str, detail: str) -> None:
         with self.transaction() as db:
@@ -519,8 +575,9 @@ class CollabState:  # pylint: disable=too-many-public-methods
         with self.transaction() as db:
             db.execute(
                 "INSERT INTO peers(pair, github_user, repository, endpoint_id, ticket, "
-                "key_fingerprint, mode, full_until, review_replies, their_grant, session, "
-                "confirm_code, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "key_fingerprint, mode, full_until, review_replies, agent_replies, wake_on_answer, "
+                "their_grant, session, confirm_code, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     facts.pair,
                     github_user(facts.github_user),
@@ -531,6 +588,8 @@ class CollabState:  # pylint: disable=too-many-public-methods
                     choice.mode,
                     choice.full_until,
                     int(choice.review_replies),
+                    int(choice.agent_replies),
+                    int(choice.wake_on_answer),
                     facts.their_grant,
                     facts.session,
                     facts.confirm_code,
@@ -572,8 +631,16 @@ class CollabState:  # pylint: disable=too-many-public-methods
     def set_mode(self, peer_id: int, choice: Grant) -> None:
         with self.transaction() as db:
             db.execute(
-                "UPDATE peers SET mode = ?, full_until = ?, review_replies = ? WHERE id = ?",
-                (choice.mode, choice.full_until, int(choice.review_replies), peer_id),
+                "UPDATE peers SET mode = ?, full_until = ?, review_replies = ?, agent_replies = ?, "
+                "wake_on_answer = ? WHERE id = ?",
+                (
+                    choice.mode,
+                    choice.full_until,
+                    int(choice.review_replies),
+                    int(choice.agent_replies),
+                    int(choice.wake_on_answer),
+                    peer_id,
+                ),
             )
 
     def set_session(self, peer_id: int, session: str) -> None:
@@ -670,6 +737,27 @@ class CollabState:  # pylint: disable=too-many-public-methods
             )
         return cursor.rowcount == 1
 
+    def first_answer(self, peer_id: int, message: Message) -> bool:
+        """True when an incoming reply is the first one to a question this side sent."""
+        with closing(self._connect()) as db:
+            asked = cast(
+                "tuple[int] | None",
+                db.execute(
+                    "SELECT 1 FROM messages WHERE peer_id = ? AND direction = 'out' "
+                    "AND kind = 'request' AND uid = ?",
+                    (peer_id, message["in_reply_to"]),
+                ).fetchone(),
+            )
+            earlier = cast(
+                "tuple[int] | None",
+                db.execute(
+                    "SELECT 1 FROM messages WHERE peer_id = ? AND direction = 'in' "
+                    "AND kind = 'reply' AND in_reply_to = ? AND id < ?",
+                    (peer_id, message["in_reply_to"], message["id"]),
+                ).fetchone(),
+            )
+        return asked is not None and earlier is None
+
     def recent_auto_replies(self, peer_id: int) -> int:
         since = stamp(now() - timedelta(hours=1))
         with closing(self._connect()) as db:
@@ -689,12 +777,14 @@ def exposure_allowed(sender: str, recipient: str, home: Path | None = None) -> b
     """Recheck owner policy before a collaboration message is shown to a local agent.
 
     Daemon notices carry no peer text, and owner forwards are the owner's explicit choice.
-    Other peer text reaches an agent inbox only while that peer is in unexpired full mode for
-    the same local session.
+    Answers to this side's own questions reach the asking session while the owner allows agent
+    replies for that peer. Other peer text reaches an agent inbox only while that peer is in
+    unexpired full mode for the same local session.
     """
     if sender in {NOTICE_SENDER, FORWARD_SENDER}:
         return True
-    user = sender.removeprefix(SENDER_PREFIX)
+    answer = sender.startswith(REPLY_SENDER_PREFIX)
+    user = sender.removeprefix(REPLY_SENDER_PREFIX if answer else SENDER_PREFIX)
     state_home = home or default_home()
     if not (state_home / "collab.sqlite3").exists():
         return False
@@ -703,7 +793,13 @@ def exposure_allowed(sender: str, recipient: str, home: Path | None = None) -> b
     except (sqlite3.Error, OSError):
         return False
     return any(
-        p["github_user"] == user and p["session"] == recipient and effective_mode(p) == FULL_MODE
+        p["github_user"] == user
+        and p["session"] == recipient
+        and (
+            (p["agent_replies"] and effective_mode(p) is not None)
+            if answer
+            else effective_mode(p) == FULL_MODE
+        )
         for p in peers
     )
 

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
+import hashlib
 import http.client
 import os
 import shutil
@@ -16,7 +18,7 @@ import pytest
 
 import llm_bus_collab_identity as identity
 from llm_bus_collab_daemon import Daemon
-from llm_bus_collab_responder import command, secret_findings
+from llm_bus_collab_responder import Reply, command, secret_findings
 from llm_bus_collab_state import (
     CollabError,
     CollabState,
@@ -35,6 +37,8 @@ from llm_bus_store import BusError, SenderContext, Store
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+
+    from llm_bus_collab_transport import Frame
 
 needs_ssh = pytest.mark.skipif(shutil.which("ssh-keygen") is None, reason="ssh-keygen missing")
 posix_only = pytest.mark.skipif(os.name == "nt", reason="fake responder is a POSIX script")
@@ -94,6 +98,8 @@ def sample_peer(
         mode=mode,
         full_until=full_until,
         review_replies=True,
+        agent_replies=False,
+        wake_on_answer=False,
         their_grant=None,
         session=session,
         confirm_code="c",
@@ -196,15 +202,134 @@ def test_responder_tool_limits_are_cli_flags(monkeypatch: pytest.MonkeyPatch) ->
         command(responder_peer("codex:abc"), "readonly", "hi")
 
 
-def add_full_peer(state: CollabState, session: str, *, mode: str = "full") -> None:
+def add_full_peer(
+    state: CollabState, session: str, *, mode: str = "full", agent_replies: bool = False
+) -> None:
     with contextlib.closing(sqlite3.connect(state.path)) as db:
         db.execute(
             "INSERT INTO peers(pair, github_user, repository, endpoint_id, key_fingerprint, mode, "
-            "full_until, review_replies, session, confirm_code, created_at) "
-            "VALUES ('p', 'bob', '/repo', 'e', 'f', ?, ?, 1, ?, 'c', 'now')",
-            (mode, grant("full", 5).full_until, session),
+            "full_until, review_replies, agent_replies, session, confirm_code, created_at) "
+            "VALUES ('p', 'bob', '/repo', 'e', 'f', ?, ?, 1, ?, ?, 'c', 'now')",
+            (mode, grant("full", 5).full_until, int(agent_replies), session),
         )
         db.commit()
+
+
+def test_answers_reach_the_asking_agent_only_while_allowed(
+    tmp_path: Path, isolated_collab: Path
+) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    me = store.register("claude", "me", str(tmp_path))
+    state = CollabState(isolated_collab)
+    add_full_peer(state, me, mode="readonly", agent_replies=True)
+    store.deliver_collab("collab:reply:bob", me, "answer")
+    store.deliver_collab("collab:bob", me, "unsolicited")
+    assert [m["sender"] for m in store.inbox(me)] == ["collab:reply:bob"]
+    assert not exposure_allowed("collab:reply:bob", "claude:someone-else")
+    state.set_mode(state.peers()[0]["id"], grant("readonly"))
+    assert store.inbox(me) == []
+    state.set_mode(state.peers()[0]["id"], grant("readonly", agent_replies=True))
+    state.revoke(state.peers()[0]["id"])
+    assert store.inbox(me) == []
+
+
+def test_only_the_first_answer_to_an_own_question_is_delivered(
+    tmp_path: Path, isolated_collab: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_wake(*_args: object, **_kwargs: object) -> dict[str, str]:
+        return {"status": "skipped", "via": "test"}
+
+    monkeypatch.setattr("llm_bus_collab_daemon.wake", no_wake)
+    store = Store(tmp_path / "bus.sqlite3")
+    me = store.register("claude", "me", str(tmp_path))
+    state = CollabState(isolated_collab)
+    add_full_peer(state, me, mode="monitor", agent_replies=True)
+    peer = state.peers()[0]
+    daemon = Daemon(state, store)
+    _ = state.add_message(peer["id"], NewMessage("out", "request", "q1", "How?", "sent"))
+
+    def arrive(uid: str, in_reply_to: str | None) -> str:
+        frame: Frame = {
+            "type": "msg",
+            "pair": "p",
+            "uid": uid,
+            "kind": "reply" if in_reply_to else "request",
+            "in_reply_to": in_reply_to,
+            "body": f"text {uid}",
+        }
+        assert asyncio.run(daemon.handle("e", frame)) == {"ok": True}
+        return next(m["state"] for m in state.messages() if m["uid"] == uid)
+
+    assert arrive("a1", "q1") == "delivered"
+    assert arrive("a2", "q1") == "unread"
+    assert arrive("a3", "never-asked") == "unread"
+    assert arrive("a4", None) == "unread"
+    answers = [m for m in store.inbox(me) if m["sender"] == "collab:reply:bob"]
+    assert len(answers) == 1
+    assert "untrusted peer data" in answers[0]["body"]
+    assert "text a1" in answers[0]["body"]
+    state.set_mode(peer["id"], grant("monitor"))
+    _ = state.add_message(peer["id"], NewMessage("out", "request", "q2", "And?", "sent"))
+    assert arrive("a5", "q2") == "unread"
+    assert all(m["sender"] != "collab:reply:bob" for m in store.inbox(me))
+
+
+def test_automatic_answers_wake_the_owner_agent_only_when_held_or_chosen(
+    tmp_path: Path, isolated_collab: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def no_wake(*_args: object, **_kwargs: object) -> dict[str, str]:
+        return {"status": "skipped", "via": "test"}
+
+    replies = iter(["We use iroh.", "token ghp_" + "a" * 36, "Still iroh."])
+
+    def fake_respond(*_args: object) -> Reply:
+        return Reply(next(replies), None)
+
+    monkeypatch.setattr("llm_bus_collab_daemon.wake", no_wake)
+    monkeypatch.setattr("llm_bus_collab_daemon.respond", fake_respond)
+    store = Store(tmp_path / "bus.sqlite3")
+    me = store.register("claude", "me", str(tmp_path))
+    state = CollabState(isolated_collab)
+    add_full_peer(state, me, mode="readonly")
+    state.set_mode(state.peers()[0]["id"], grant("readonly", review_replies=False))
+    daemon = Daemon(state, store)
+
+    async def ask(uid: str) -> None:
+        frame: Frame = {"type": "msg", "pair": "p", "uid": uid, "kind": "request", "body": "?"}
+        assert await daemon.handle("e", frame) == {"ok": True}
+        await wait_until(
+            lambda: next(m for m in state.messages() if m["uid"] == uid)["state"] != "responding"
+        )
+
+    asyncio.run(ask("plain"))
+    assert store.inbox(me) == []
+    asyncio.run(ask("secret"))
+    notices = store.inbox(me)
+    assert len(notices) == 1
+    assert "review" in notices[0]["body"]
+    state.set_mode(
+        state.peers()[0]["id"], grant("readonly", review_replies=False, wake_on_answer=True)
+    )
+    asyncio.run(ask("woken"))
+    assert len(store.inbox(me)) == 2
+
+
+def test_existing_state_gains_agent_replies_column(tmp_path: Path) -> None:
+    home = tmp_path / "old"
+    home.mkdir()
+    with contextlib.closing(sqlite3.connect(home / "collab.sqlite3")) as db:
+        db.executescript(
+            "CREATE TABLE peers (id INTEGER PRIMARY KEY, pair TEXT NOT NULL UNIQUE, "
+            "github_user TEXT NOT NULL, repository TEXT NOT NULL, endpoint_id TEXT NOT NULL, "
+            "ticket TEXT, key_fingerprint TEXT NOT NULL, mode TEXT NOT NULL, full_until TEXT, "
+            "review_replies INTEGER NOT NULL, their_grant TEXT, session TEXT, "
+            "confirm_code TEXT NOT NULL, created_at TEXT NOT NULL, revoked_at TEXT);"
+            "INSERT INTO peers(pair, github_user, repository, endpoint_id, key_fingerprint, mode, "
+            "review_replies, confirm_code, created_at) "
+            "VALUES ('p', 'bob', '/repo', 'e', 'f', 'readonly', 1, 'c', 'now');"
+        )
+    peer = CollabState(home).peers()[0]
+    assert (peer["agent_replies"], peer["wake_on_answer"]) == (False, False)
 
 
 def test_peer_text_reaches_agents_only_in_full_mode(tmp_path: Path, isolated_collab: Path) -> None:
@@ -252,7 +377,19 @@ def test_owner_page_requires_token_host_and_origin(tmp_path: Path, isolated_coll
         add_full_peer(state, "claude:me", mode="monitor")
         unconfirmed = b"mode=full&full_minutes=5"
         assert fetch(f"{base}/{'t' * 24}/peer/1/mode", data=unconfirmed) == 400
+        same_origin = {"Origin": base}
+        assert fetch(f"{base}/{'t' * 24}/peer/1/mode", data=unconfirmed, headers=same_origin) == 400
         assert effective_mode(state.peers()[0]) == "monitor"
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("GET", f"/{'t' * 24}/")
+        response = connection.getresponse()
+        assert response.getheader("Referrer-Policy") == "same-origin"
+        script = response.read().decode().split("<script>")[1].split("</script>")[0]
+        digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+        assert f"script-src 'sha256-{digest}'" in (
+            response.getheader("Content-Security-Policy") or ""
+        )
+        connection.close()
     finally:
         server.shutdown()
 

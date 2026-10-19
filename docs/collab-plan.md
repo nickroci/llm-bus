@@ -74,10 +74,10 @@ Each side picks, per peer, what that peer's messages may cause on **its own** ma
 Rules:
 
 - New peers default to `monitor`. `full` is never a default, requires typed confirmation, expires (default: 1 hour), and is revocable.
-- Modes apply to all incoming text, including replies to questions the owner's agent asked. Below `full`, peer text never enters the main session's context automatically. The owner sees it in the terminal (via a Claude Code mod pane or toast, to verify) and may forward it.
+- Modes apply to all incoming text. Below `full`, peer text enters the main session's context automatically only through **agent answers**: an owner-set, per-peer option (default off) that delivers the first reply to a question the local agent sent, labeled as untrusted. Unsolicited messages, later replies to the same question, and replies to unknown questions still go to the owner page. The inbox rechecks the option and revocation before exposure, so turning it off stops pending answers; already shown text cannot be recalled.
 - Only a person can create, approve, or raise a mode. Agents may run `collab invite`, but approval needs a human-only step. Open question: whether `! llm-bus collab approve` provides a TTY in Claude Code, or a one-time localhost confirmation page is needed.
 - Fork output goes back through the daemon, never through an agent tool call. The fork never writes back into the main session.
-- Replies from `readonly`/`readwrite` forks pass a secret scan. Matches are held for owner approval. An owner may choose to approve every reply.
+- Replies from `readonly`/`readwrite` forks pass a secret scan. Matches are held for owner approval. An owner may choose to approve every reply; this is off by default.
 
 ### Enforcing the restricted fork (Claude Code)
 
@@ -117,6 +117,7 @@ Fork spike: a base Haiku session holding a code word, a fake token, and "current
 ## Open questions and gaps
 
 - Resolved: approval and peer text use a token-protected loopback owner page. The agent prints its links; processes running as the same OS user can still read the token, consistent with the same-user trust model.
+- Agent answers are a prompt-injection channel into the main session, narrowed to replies the agent solicited. A hostile or compromised peer can still put instructions in an answer; the label and the main session's own permissions are the only defenses. Answers go to the peer's most recently bound session, not necessarily the one that asked.
 - Showing peer text inside Claude Code without adding it to agent context (mod pane or toast) instead of a browser page.
 - Secret scanner choice and false-positive handling.
 - Per-peer rate and cost limits for forks; batching messages into threads.
