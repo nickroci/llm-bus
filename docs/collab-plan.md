@@ -1,6 +1,6 @@
 # Ad hoc collaboration plan
 
-Status: proposal with spike results. Nothing here is implemented in the CLI yet.
+Status: first implementation on `feat/collab` (`llm-bus collab`). Claude Code responders only; see [Open questions and gaps](#open-questions-and-gaps).
 
 ## Goal
 
@@ -116,8 +116,8 @@ Fork spike: a base Haiku session holding a code word, a fake token, and "current
 
 ## Open questions and gaps
 
-- Human-only approval channel inside Claude Code (TTY via `!`, or localhost confirmation page).
-- Showing peer text to the owner without adding it to agent context (mod pane or toast).
+- Resolved: approval and peer text use a token-protected loopback owner page. The agent prints its links; processes running as the same OS user can still read the token, consistent with the same-user trust model.
+- Showing peer text inside Claude Code without adding it to agent context (mod pane or toast) instead of a browser page.
 - Secret scanner choice and false-positive handling.
 - Per-peer rate and cost limits for forks; batching messages into threads.
 - Fork context trimming (for example, only the last N turns) to reduce what can leak.

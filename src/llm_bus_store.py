@@ -13,6 +13,7 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
+import llm_bus_collab_state
 import llm_bus_policy
 
 if TYPE_CHECKING:
@@ -400,7 +401,7 @@ class Store:
                     "SELECT project, scope FROM agents WHERE address = ?", (recipient,)
                 ).fetchone(),
             )
-            if recipient_row is None:
+            if recipient_row is None or recipient.startswith(llm_bus_collab_state.SENDER_PREFIX):
                 raise BusError(f"Unknown recipient {recipient!r}; run `llm-bus list` first")
             if sender_scope != recipient_row[1] and not cross_folder:
                 raise BusError("Recipient is in another repository or folder; use --cross-folder")
@@ -492,6 +493,47 @@ class Store:
             and llm_bus_policy.permits_inbox(envelope, stored_scope, current_scope, imported[1])
         )
 
+    def _exposable(self, message_id: int, sender: str, recipient: str) -> bool:
+        """Apply the owner's current remote or collaboration policy before showing text."""
+        if sender.startswith(llm_bus_collab_state.SENDER_PREFIX):
+            return llm_bus_collab_state.exposure_allowed(sender, recipient)
+        return "/" not in sender or self.pending_allowed(message_id)
+
+    def deliver_collab(self, sender: str, recipient: str, body: str) -> int:
+        """Store daemon-delivered collaboration text for a registered local session.
+
+        The sender row is marked ended so it never appears in `list` and cannot be addressed.
+        """
+        if not sender.startswith(llm_bus_collab_state.SENDER_PREFIX):
+            raise BusError("Collaboration sender must use the collab: prefix")
+        if not body.strip() or len(body.encode("utf-8")) > MAX_MESSAGE_BYTES:
+            raise BusError("Collaboration message is empty or exceeds 64 KiB")
+        with self.transaction() as db:
+            recipient_row = cast(
+                "tuple[str, str] | None",
+                db.execute(
+                    "SELECT project, scope FROM agents WHERE address = ? AND kind != 'collab'",
+                    (recipient,),
+                ).fetchone(),
+            )
+            if recipient_row is None:
+                raise BusError(f"Unknown recipient {recipient!r}")
+            db.execute(
+                "INSERT INTO agents(address, kind, project, scope, last_seen, ended_at) "
+                "VALUES (?, 'collab', '', 'collab', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), "
+                "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) "
+                "ON CONFLICT(address) DO UPDATE SET last_seen = excluded.last_seen",
+                (sender,),
+            )
+            cursor = db.execute(
+                "INSERT INTO messages(sender, recipient, body, recipient_cwd, recipient_scope) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (sender, recipient, body, recipient_row[0], recipient_row[1]),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("SQLite did not return a message ID")
+            return cursor.lastrowid
+
     def inbox(self, recipient: str, limit: int = MAX_BATCH) -> list[Message]:
         """Read pending messages without consuming them."""
         if not 1 <= limit <= MAX_BATCH:
@@ -517,7 +559,7 @@ class Store:
                 sent_at=row[6],
             )
             for row in rows
-            if "/" not in row[1] or self.pending_allowed(row[0])
+            if self._exposable(row[0], row[1], row[2])
         ][:limit]
 
     def history(
@@ -598,9 +640,7 @@ class Store:
                     (recipient,),
                 ).fetchall(),
             )
-        return sum(
-            "/" not in sender or self.pending_allowed(message_id) for message_id, sender in rows
-        )
+        return sum(self._exposable(message_id, sender, recipient) for message_id, sender in rows)
 
     def acknowledge(self, recipient: str, ids: list[int]) -> int:
         """Acknowledge only own messages; reject mixed or unknown batches atomically."""

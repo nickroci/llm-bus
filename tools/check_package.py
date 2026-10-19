@@ -9,6 +9,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+COLLAB_EXTRA_MODULES = frozenset({"llm_bus_collab_daemon", "llm_bus_collab_transport"})
+
 
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
@@ -44,14 +46,19 @@ def main() -> None:
             check=True,
         )
         modules = sorted(path.stem for path in (root / "src").glob("*.py"))
+        core = [name for name in modules if name not in COLLAB_EXTRA_MODULES]
+        importer = "import importlib, sys; [importlib.import_module(n) for n in sys.argv[1:]]"
         subprocess.run(  # noqa: S603 - fixed argv, no shell
-            [
-                str(python),
-                "-I",
-                "-c",
-                "import importlib, sys; [importlib.import_module(name) for name in sys.argv[1:]]",
-                *modules,
-            ],
+            [str(python), "-I", "-c", importer, *core], cwd=sandbox, env=environment, check=True
+        )
+        subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [uv, "pip", "install", "--python", str(python), f"{wheel}[collab]"],
+            cwd=sandbox,
+            env=environment,
+            check=True,
+        )
+        subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [str(python), "-I", "-c", importer, *sorted(COLLAB_EXTRA_MODULES)],
             cwd=sandbox,
             env=environment,
             check=True,

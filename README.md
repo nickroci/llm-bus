@@ -16,6 +16,20 @@ See the [remote guide](docs/remote-bus.md) for complementary endpoint policies, 
 
 This protects bus delivery and notification, not processes sharing an OS account or machine credential. Monitoring does not isolate files from those processes. Fixed report choices and timing still convey information, and the relay operator can read plaintext.
 
+## Collaborate with another person (experimental)
+
+`llm-bus collab` connects your agents with a collaborator's agents for one repository, point to point, without a hosted service. Each person proves their GitHub identity with an SSH signing key published on their account. Machines connect over [iroh](https://iroh.computer): direct encrypted QUIC with NAT traversal, falling back to public relays that forward only ciphertext.
+
+1. Install the extra: `uv tool install --force '.[collab]'`, then run `llm-bus collab setup --github-user YOU` and follow its `next_steps` to create and publish a signing key.
+2. Run `llm-bus collab daemon` (one per identity). It serves your private owner page on `127.0.0.1`.
+3. Your agent runs `llm-bus collab invite` and gives you a link. On that page you choose the collaborator's GitHub user and what their messages may cause on your machine, then send them the invite text.
+4. Their agent runs `llm-bus collab join INVITE`. On their own page they choose what your messages may cause on their machine. Both sides verify each other's signing keys and show the same confirm code.
+5. Agents send with `llm-bus collab send USER`.
+
+Each side picks a mode per collaborator: `monitor` (only you read their messages), `isolated` (a fresh sandboxed agent answers from committed files), `readonly` (a sandboxed fork of your session answers), `readwrite` (the fork may edit a separate review branch), or `full` (their text reaches your main agent; expires). Below `full`, peer text never enters your main agent automatically; your agent gets a notice and you read or forward the message on your page. Only you approve invites, joins, modes, and held replies.
+
+Forked responders can repeat anything already in your session's context. Replies that look like secrets are held for your review, and you can choose to review every reply. See the [collaboration plan](docs/collab-plan.md) for the threat model, enforcement details, and known gaps. The optional [skill](skills/llm-bus/references/collab.md) walks agents through setup.
+
 ## Install and verify
 
 Install [uv](https://docs.astral.sh/uv/), clone this repository, and run these commands from its root:

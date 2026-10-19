@@ -9,6 +9,9 @@ description = "Durable communication bus for coding agents"
 requires-python = ">=3.12,<3.13"
 dependencies = []
 
+[project.optional-dependencies]
+collab = ["iroh==1.1.0"]
+
 [project.scripts]
 llm-bus = "llm_bus:main"
 
@@ -17,6 +20,7 @@ dev = [
     "basedpyright==1.40.1",
     "clean-code-tools-python==1.0.7",
     "deptry==0.25.1",
+    "iroh==1.1.0",
     "poethepoet==0.48.0",
     "pylint==4.0.8",
     "pytest==9.1.1",
@@ -24,7 +28,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/llm_bus.py", "src/llm_bus_install.py", "src/llm_bus_store.py", "src/llm_bus_wake.py", "src/llm_bus_policy.py", "src/llm_bus_remote.py", "src/llm_bus_remote_store.py", "src/llm_bus_reports.py"]
+packages = ["src/llm_bus.py", "src/llm_bus_install.py", "src/llm_bus_store.py", "src/llm_bus_wake.py", "src/llm_bus_policy.py", "src/llm_bus_remote.py", "src/llm_bus_remote_store.py", "src/llm_bus_reports.py", "src/llm_bus_collab_cli.py", "src/llm_bus_collab_daemon.py", "src/llm_bus_collab_identity.py", "src/llm_bus_collab_responder.py", "src/llm_bus_collab_state.py", "src/llm_bus_collab_transport.py", "src/llm_bus_collab_web.py"]
 
 [tool.hatch.build.targets.sdist]
 exclude = ["/cloudflare/node_modules", "/cloudflare/.wrangler", "/cloudflare/dist", "/cloudflare/.dev.vars"]
@@ -117,7 +121,7 @@ max-line-length = 100
 score = false
 
 [tool.deptry]
-known_first_party = ["llm_bus", "llm_bus_install", "llm_bus_store", "llm_bus_wake", "llm_bus_policy", "llm_bus_remote", "llm_bus_remote_store", "llm_bus_reports"]
+known_first_party = ["llm_bus", "llm_bus_install", "llm_bus_store", "llm_bus_wake", "llm_bus_policy", "llm_bus_remote", "llm_bus_remote_store", "llm_bus_reports", "llm_bus_collab_cli", "llm_bus_collab_daemon", "llm_bus_collab_identity", "llm_bus_collab_responder", "llm_bus_collab_state", "llm_bus_collab_transport", "llm_bus_collab_web"]
 
 [tool.poe.tasks]
 format = "ruff format src tests plugins/herdr-history tools"
