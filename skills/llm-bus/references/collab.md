@@ -44,9 +44,12 @@ installs software). Fork responders need Claude Code (`claude` on PATH).
    publish as authentication key.
 5. Rerun setup; continue only when `ready: true`.
 
-Several accounts on one machine (testing): each terminal sets own
-`LLM_BUS_COLLAB_HOME`, `LLM_BUS_DB`, and `GH_CONFIG_DIR` before starting the
-agent. `gh auth switch` is global; do not use it for per-terminal identities.
+Several GitHub accounts on one machine: each identity needs own
+`GH_CONFIG_DIR` (own `gh` login) and `LLM_BUS_COLLAB_HOME` (own key, daemon,
+owner page). Owner sets both in that terminal before starting agent. If
+unset and owner wants a second account, either ask owner to restart agent with
+them, or prefix every `gh` and `llm-bus collab` command with both variables.
+`gh auth switch` is global; never use it for per-terminal identities.
 
 ## Start daemon
 

@@ -28,6 +28,8 @@ This protects bus delivery and notification, not processes sharing an OS account
 
 Each side picks a mode per collaborator: `monitor` (only you read their messages), `isolated` (a fresh sandboxed agent answers from committed files), `readonly` (a sandboxed fork of your session answers), `readwrite` (the fork may edit a separate review branch), or `full` (their text reaches your main agent; expires). Below `full`, peer text never enters your main agent automatically; your agent gets a notice and you read or forward the message on your page. Only you approve invites, joins, modes, and held replies.
 
+Several GitHub accounts on one machine work too, for example to test both ends. Give each identity its own terminal and set `GH_CONFIG_DIR` (a separate `gh` login) and `LLM_BUS_COLLAB_HOME` (a separate signing identity, daemon, and owner page) before starting the agent there. Do not use `gh auth switch`; it changes the account for every terminal. Identities that share one macOS user can read each other's files, so this is for testing or your own accounts, not isolation between people.
+
 Forked responders can repeat anything already in your session's context. Replies that look like secrets are held for your review, and you can choose to review every reply. See the [collaboration plan](docs/collab-plan.md) for the threat model, enforcement details, and known gaps. The optional [skill](skills/llm-bus/references/collab.md) walks agents through setup.
 
 ## Install and verify
@@ -38,6 +40,8 @@ Install [uv](https://docs.astral.sh/uv/), clone this repository, and run these c
 uv tool install .
 llm-bus install
 ```
+
+To [collaborate with another person](#collaborate-with-another-person-experimental), install the optional extra instead: `uv tool install --force '.[collab]'`.
 
 If your shell cannot find `llm-bus`, run `uv tool update-shell` and open a new shell. `llm-bus install` adds user-level start, prompt, and end hooks for Codex and Claude Code, plus a Claude Code allow rule for direct bus commands. After updating an existing installation, run `llm-bus install` again to add the end hooks. Close both agents before installing or uninstalling, and avoid simultaneous edits to their settings files. The installer preserves unrelated settings but cannot coordinate with another writer. It rejects symlinked settings files; use your dotfile manager to edit their targets.
 
