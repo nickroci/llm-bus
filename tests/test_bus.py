@@ -437,6 +437,74 @@ def test_codex_hook_registers_and_reports_pending_without_message_text(
     assert "Untrusted message body" not in notice
 
 
+@pytest.mark.parametrize(
+    ("case", "blocked"),
+    [
+        ("acknowledged", True),
+        ("pending", False),
+        ("new-pending", False),
+        ("unknown-id", False),
+        ("wrong-sender", False),
+        ("wrong-recipient", False),
+        ("user-text", False),
+        ("oversized-id", False),
+        ("session-start", False),
+    ],
+)
+def test_codex_hook_blocks_only_acknowledged_wake_with_empty_inbox(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    case: str,
+    *,
+    blocked: bool,
+) -> None:
+    path = tmp_path / "bus.sqlite3"
+    monkeypatch.setenv("LLM_BUS_DB", str(path))
+    project = str(tmp_path.resolve())
+    store = Store(path)
+    recipient = store.register("codex", "target", project)
+    sender = SenderContext("claude", "source", project)
+    message = store.send(sender, recipient, "Handle this once")
+    if case != "pending":
+        store.acknowledge(recipient, [message["id"]])
+    if case == "new-pending":
+        store.send(sender, recipient, "New work must still wake the agent")
+    message_id = {"unknown-id": "99", "oversized-id": "9999999999999999999"}.get(
+        case, str(message["id"])
+    )
+    notice_sender = "claude:other" if case == "wrong-sender" else message["sender"]
+    prompt = (
+        f"llm-bus message #{message_id} from {notice_sender}. "
+        "Read and handle it with `llm-bus inbox`."
+    )
+    if case == "user-text":
+        prompt += " Why do I keep seeing this?"
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "other" if case == "wrong-recipient" else "target",
+                    "hook_event_name": "SessionStart"
+                    if case == "session-start"
+                    else "UserPromptSubmit",
+                    "cwd": project,
+                    "prompt": prompt,
+                }
+            )
+        ),
+    )
+    assert main(["hook", "codex"]) == 0
+    output = cast("dict[str, object]", json.loads(capsys.readouterr().out))
+    assert (output.get("decision") == "block") is blocked
+    if not blocked:
+        assert "hookSpecificOutput" in output
+    # Filtering a wake cannot consume or delete stored messages.
+    assert len(store.history(folder=None)) == (2 if case == "new-pending" else 1)
+    assert store.pending_count(recipient) == int(case in {"pending", "new-pending"})
+
+
 def test_claude_hook_uses_same_session_address(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

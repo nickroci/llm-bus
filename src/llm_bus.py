@@ -18,7 +18,7 @@ from llm_bus_remote import enqueue_remote, remote_peers, run_bridge
 from llm_bus_remote_store import RemoteStore
 from llm_bus_reports import Reports
 from llm_bus_store import BusError, SenderContext, Store, default_path
-from llm_bus_wake import wake
+from llm_bus_wake import parse_wake_notice, wake
 
 CLAUDE_SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
 CLAUDE_SOCKET_ENV = "CLAUDE_CODE_MESSAGING_SOCKET"
@@ -98,6 +98,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _acknowledged_wake(store: Store, recipient: str, prompt: object) -> bool:
+    identity = parse_wake_notice(prompt)
+    return identity is not None and store.message_acknowledged(recipient, *identity)
+
+
 def _hook(store: Store, kind: str) -> None:
     hook_input = cast("object", json.load(sys.stdin))
     if not isinstance(hook_input, dict):
@@ -120,6 +125,21 @@ def _hook(store: Store, kind: str) -> None:
     project = str(Path(project).resolve())
     agent_address = store.register(kind, session_id, project, messaging_socket=_claude_socket(kind))
     count = store.pending_count(agent_address)
+    if (
+        kind == "codex"
+        and event == "UserPromptSubmit"
+        and count == 0
+        and _acknowledged_wake(store, agent_address, hook_data.get("prompt"))
+    ):
+        print(
+            json.dumps(
+                {
+                    "decision": "block",
+                    "reason": "Bus message already acknowledged; inbox empty.",
+                }
+            )
+        )
+        return
     notice = (
         f"Local agent bus address: {agent_address}; folder: {project}. "
         f"{count} pending message(s). Use `llm-bus inbox` to read, "

@@ -66,6 +66,8 @@ The response includes the stored message and a `wake` status. `requested` means 
 
 `send` commits the message before requesting a host wake. The CLI exits successfully when storage succeeds, even if the wake fails, and reports that failure in the JSON `wake` field. Inspect that field when a prompt reply matters.
 
+Acknowledging a message does not cancel its already queued host notice. With the bus's trusted, synchronous Codex `UserPromptSubmit` hook enabled, an exact bus wake is blocked before model processing when its ID, sender, and recipient match an acknowledged message and the inbox has no pending messages. Other prompts and wakes with pending work continue normally. Codex may still display the queued notice and hook rejection; this filter avoids the redundant agent turn, rather than removing the notice from Codex's queue. See [Codex prompt hooks](https://learn.chatgpt.com/docs/hooks#userpromptsubmit). Claude wake behavior is unchanged.
+
 | Recipient | Automatic wake path | Limit |
 | --- | --- | --- |
 | Codex | `codex queue` with the recipient's session ID | Requires `codex` on `PATH` and a reachable session. |

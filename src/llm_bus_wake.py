@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import socket
 import stat
@@ -12,12 +13,30 @@ from pathlib import Path
 from typing import NotRequired, TypedDict
 
 WAKE_TIMEOUT_SECONDS = 10
+SQLITE_MAX_MESSAGE_ID = 2**63 - 1
 WAKE_FAILED = "failed"
 CLAUDE_WAKE_REASON = (
     "Claude native inbox is unavailable; pending messages are reported by the next turn hook"
 )
 CLAUDE_WAKE_VIA = "Claude inbox socket"
 CLAUDE_SOCKET_FAILURE_REASON = "Claude inbox socket could not be reached; message remains pending"
+WAKE_NOTICE = re.compile(
+    r"llm-bus message #([1-9][0-9]{0,18}) from (\S+)\. "
+    r"Read and handle it with `llm-bus inbox`\."
+)
+
+
+def parse_wake_notice(prompt: object) -> tuple[int, str] | None:
+    """Recognize only a complete bus wake, never a prompt quoting or extending one."""
+    if not isinstance(prompt, str):
+        return None
+    match = WAKE_NOTICE.fullmatch(prompt)
+    if match is None:
+        return None
+    message_id = int(match[1])
+    if message_id > SQLITE_MAX_MESSAGE_ID:
+        return None
+    return message_id, match[2]
 
 
 class WakeResult(TypedDict):

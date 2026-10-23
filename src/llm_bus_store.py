@@ -451,6 +451,18 @@ class Store:
             if cursor.rowcount != 1:
                 raise BusError(f"Unknown message ID {message_id}")
 
+    def message_acknowledged(self, recipient: str, message_id: int, sender: str) -> bool:
+        """Verify a wake's full identity against durable acknowledgement state."""
+        with closing(self._connect()) as db:
+            return (
+                db.execute(
+                    "SELECT 1 FROM messages WHERE id=? AND recipient=? AND sender=? "
+                    "AND acknowledged_at IS NOT NULL",
+                    (message_id, recipient, sender),
+                ).fetchone()
+                is not None
+            )
+
     def pending_allowed(self, message_id: int) -> bool:
         """Recheck remote pending exposure against fresh machine-owned policy."""
         with closing(self._connect()) as db:
