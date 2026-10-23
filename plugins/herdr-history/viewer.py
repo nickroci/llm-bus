@@ -33,6 +33,7 @@ class Message:  # pylint: disable=too-many-instance-attributes
     wake_via: str | None
     wake_reason: str | None
     wake_checked_at: str | None
+    reply_to: int | None = None
 
 
 def clean(value: str) -> str:
@@ -74,6 +75,11 @@ def parse_messages(raw: str) -> list[Message]:
         message_id = record.get("id")
         if not isinstance(message_id, int) or isinstance(message_id, bool) or message_id <= 0:
             raise ValueError("llm-bus history message has an invalid ID")
+        reply_to = record.get("reply_to")
+        if reply_to is not None and (
+            isinstance(reply_to, bool) or not isinstance(reply_to, int) or reply_to <= 0
+        ):
+            raise ValueError("llm-bus history message has an invalid reply ID")
         sender, recipient, body, sent_at = (
             record.get("sender"),
             record.get("recipient"),
@@ -126,6 +132,7 @@ def parse_messages(raw: str) -> list[Message]:
                 cast("str | None", wake_via),
                 cast("str | None", wake_reason),
                 cast("str | None", wake_checked_at),
+                reply_to,
             )
         )
     return messages

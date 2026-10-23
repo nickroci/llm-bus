@@ -2,12 +2,40 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
 
 from llm_bus_policy import load_config
 from llm_bus_store import BusError
+
+
+def test_scope_reuse_ends_at_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    git = shutil.which("git")
+    if git is None:
+        pytest.skip("Git required for topology checks")
+    repo = tmp_path / "repo"
+    subprocess.run([git, "init", "-q", str(repo)], check=True)
+    path = tmp_path / "policy.toml"
+    path.write_text(policy_text())
+    monkeypatch.setenv("LLM_BUS_CONFIG", str(path))
+    config = load_config()
+    assert config is not None
+    stored = config.repositories[0].scope
+    assert config.repository_scope(stored) == config.repository(str(repo))
+    (repo / ".git").rename(repo / "old-git")
+    subprocess.run([git, "init", "-q", str(repo)], check=True)
+    # A different common directory is a different trust boundary at the next load.
+    moved = tmp_path / "new-common"
+    (repo / ".git").rename(moved)
+    (repo / ".git").write_text(f"gitdir: {moved}\n")
+    fresh = load_config()
+    assert fresh is not None
+    assert fresh.repository_scope(stored) is None
+    assert config.repository(str(repo)) is None
+
 
 if TYPE_CHECKING:
     from pathlib import Path
