@@ -12,7 +12,6 @@ from llm_bus_store import (
     MAX_BATCH,
     MAX_MESSAGE_BYTES,
     SYNC_ERRORS,
-    SYNC_KINDS,
     SYNC_READ_SECONDS,
     BusError,
     Store,
@@ -27,7 +26,6 @@ if TYPE_CHECKING:
 
     from llm_bus_store import SenderContext
 
-SYNC_REJECTED = "rejected"
 REPLY_UUID_VERSION = 4
 SUSPEND_POLLING_QUERY = (
     "UPDATE remote_sync_work SET polling_suspended_at=COALESCE(polling_suspended_at,?) "
@@ -83,7 +81,6 @@ class RemoteStore:
     store: Store
     connection: str
 
-    WORK_KINDS: frozenset[str] = SYNC_KINDS
     RETRY_DELAYS: tuple[int, ...] = (5, 10, 20, 40, 80, 160, 300)
     READ_SECONDS: int = SYNC_READ_SECONDS
     PEER_SECONDS: int = 60

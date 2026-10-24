@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -75,7 +76,7 @@ def test_wake_concurrent_sender_rechecks_active_lease(
         calls.append(key)
         return {"status": "requested", "via": "test"}
 
-    monkeypatch.setattr("llm_bus_dispatch.time.sleep", gather)
+    monkeypatch.setattr(llm_bus_dispatch, "time", SimpleNamespace(sleep=gather))
     monkeypatch.setattr(llm_bus_dispatch, "wake", native)
     with ThreadPoolExecutor(max_workers=1) as pool:
         leader = pool.submit(llm_bus_dispatch.dispatch_pending, store, recipient)
