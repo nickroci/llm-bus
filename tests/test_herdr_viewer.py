@@ -62,6 +62,14 @@ def test_empty_and_legacy_history() -> None:
     assert "[pending]" in viewer.message_lines([message], 80)[0]
 
 
+def test_reply_history_metadata_is_optional_and_validated() -> None:
+    assert viewer.parse_messages(json.dumps([row(2, reply_to=1)]))[0].reply_to == 1
+    assert viewer.parse_messages(json.dumps([row(1)]))[0].reply_to is None
+    for invalid in (0, -1, True, "1"):
+        with pytest.raises(ValueError, match="llm-bus"):
+            viewer.parse_messages(json.dumps([row(2, reply_to=invalid)]))
+
+
 def test_wake_result_is_visible() -> None:
     message = viewer.parse_messages(
         json.dumps(

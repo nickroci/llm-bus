@@ -11,12 +11,15 @@ import shutil
 import sqlite3
 import stat
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from llm_bus import host_identity, main
+from llm_bus_dispatch import dispatch_pending
 from llm_bus_install import configure_hosts
+from llm_bus_schema import SCHEMA_VERSION, ensure_schema
 from llm_bus_store import BusError, SenderContext, Store, default_path
 
 if TYPE_CHECKING:
@@ -52,6 +55,110 @@ def test_messages_survive_reopen_until_recipient_acknowledges(tmp_path: Path) ->
     assert Store(path).inbox(claude) == []
 
 
+def test_message_status_read_only_without_identity_or_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    recipient = store.register("claude", "two", "/project")
+    sent = store.send(SenderContext("codex", "one", "/project"), recipient, "private body")
+    monkeypatch.setenv("LLM_BUS_DB", str(store.path))
+    monkeypatch.setenv("LLM_BUS_CONFIG", str(tmp_path / "absent.toml"))
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Status attempted registration, migration, network, or wake")
+
+    monkeypatch.setattr("llm_bus.host_identity", forbidden)
+    monkeypatch.setattr("llm_bus_store.ensure_schema", forbidden)
+    monkeypatch.setattr("llm_bus.require_config", forbidden)
+    monkeypatch.setattr("llm_bus_dispatch.wake", forbidden)
+    with sqlite3.connect(store.path) as db:
+        before = list(db.iterdump())
+    assert main(["status", str(sent["id"])]) == 0
+    result = cast("dict[str, object]", json.loads(capsys.readouterr().out))
+    assert result["transport"] == {
+        "status": "stored_local",
+        "source": "local",
+        "observed_at": sent["sent_at"],
+    }
+    assert "private body" not in json.dumps(result)
+    with sqlite3.connect(store.path) as db:
+        assert list(db.iterdump()) == before
+    for message_id in (0, -1, 999, 2**100):
+        assert main(["status", str(message_id)]) == 1
+    assert set(result) == {
+        "id",
+        "remote_id",
+        "sender",
+        "recipient",
+        "reply_to",
+        "transport",
+        "wake",
+        "acknowledged_at",
+        "work_report",
+        "synchronization",
+    }
+    missing = tmp_path / "missing" / "bus.sqlite3"
+    monkeypatch.setenv("LLM_BUS_DB", str(missing))
+    assert main(["status", "1"]) == 1
+    assert not missing.parent.exists()
+
+
+def test_message_status_legacy_missing_metadata(tmp_path: Path) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    recipient = store.register("claude", "two", "/project")
+    sent = store.send(SenderContext("codex", "one", "/project"), recipient, "legacy")
+    with store.transaction() as db:
+        for table in ("remote_sync_work", "wake_dispatch", "wake_coverage", "remote_reports"):
+            db.execute(f"DROP TABLE {table}")
+        db.execute("DROP INDEX messages_reply_to")
+        db.execute("ALTER TABLE messages DROP COLUMN reply_to")
+    result = store.message_status(sent["id"])
+    assert result["reply_to"] is None
+    assert result["wake"] == dict.fromkeys(
+        ("status", "via", "reason", "checked_at", "coverage_status", "retry_at")
+    )
+    assert result["work_report"] is None
+    assert cast("dict[str, object]", result["synchronization"])["stale"] is True
+
+
+def test_message_status_sanitizes_errors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    recipient = store.register("claude", "two", "/project")
+    sent = store.send(SenderContext("codex", "one", "/project"), recipient, "diagnose")
+    with store.transaction() as db:
+        db.execute(
+            "UPDATE messages SET wake_status='failed',wake_via='codex queue',wake_reason=?",
+            ("\x1b[31m secret /private/credential.token HTTP body",),
+        )
+    result = store.message_status(sent["id"])
+    assert cast("dict[str, object]", result["wake"])["reason"] == "wake_failed:codex_queue"
+    assert "secret" not in json.dumps(result)
+    assert "credential" not in json.dumps(result)
+
+    def unsafe_adapter(*_args: object, **_kwargs: object) -> dict[str, str]:
+        return {"status": "failed", "via": "codex queue", "reason": "\x1b[31m secret credential"}
+
+    monkeypatch.setattr("llm_bus_dispatch.wake", unsafe_adapter)
+    dispatch_pending(store, recipient)
+    assert store.history(folder=None)[0]["wake_reason"] == "wake_failed:codex_queue"
+
+
+def test_message_status_never_borrows_other_message_coverage(tmp_path: Path) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    recipient = store.register("claude", "two", "/project")
+    sender = SenderContext("codex", "one", "/project")
+    first = store.send(sender, recipient, "first")
+    second = store.send(sender, recipient, "second")
+    with store.transaction() as db:
+        db.execute(
+            "INSERT INTO wake_coverage VALUES (?,'test','requested','2026-10-23T00:00:00Z')",
+            (first["id"],),
+        )
+    wake = cast("dict[str, object]", store.message_status(second["id"])["wake"])
+    assert wake["coverage_status"] is None
+    assert wake["status"] is None
+
+
 def test_unknown_recipient_and_oversized_message_are_rejected(tmp_path: Path) -> None:
     """Typos and unbounded payloads cannot silently fill mailbox."""
     store = Store(tmp_path / "bus.sqlite3")
@@ -61,6 +168,70 @@ def test_unknown_recipient_and_oversized_message_are_rejected(tmp_path: Path) ->
     with pytest.raises(BusError, match="64 KiB"):
         store.send(SenderContext("claude", "one", "/project"), recipient, "x" * 65537)
     assert store.inbox(recipient) == []
+
+
+def test_reply_requires_participants_and_repository(tmp_path: Path) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    one = SenderContext("codex", "one", "/project")
+    two = SenderContext("claude", "two", "/project")
+    store.register(*two)
+    store.register("claude", "other", "/project")
+    parent = store.send(one, "claude:two", "question")
+    reply = store.send(two, "codex:one", "answer", reply_to=parent["id"])
+    assert reply["reply_to"] == parent["id"]
+    assert store.inbox("codex:one")[0]["reply_to"] == parent["id"]
+    for parent_id in (0, True, 999):
+        with pytest.raises(BusError):
+            store.send(two, "codex:one", "bad", reply_to=parent_id)
+    with pytest.raises(BusError, match="participant"):
+        store.send(one, "claude:other", "bad", reply_to=parent["id"])
+    store.register("codex", "one", "/moved")
+    with pytest.raises(BusError, match="scope"):
+        store.send(two, "codex:one", "bad", cross_folder=True, reply_to=parent["id"])
+    with store.transaction() as db:
+        db.execute("UPDATE messages SET sender_scope=NULL WHERE id=?", (parent["id"],))
+    with pytest.raises(BusError, match="scope"):
+        store.send(two, "codex:one", "bad", cross_folder=True, reply_to=parent["id"])
+
+
+def test_conversation_filter_preserves_scope_and_paging(tmp_path: Path) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    one = SenderContext("codex", "one", "/one")
+    two = SenderContext("claude", "two", "/two")
+    store.register(*two)
+    root = store.send(one, "claude:two", "root", cross_folder=True)
+    child = store.send(two, "codex:one", "child", cross_folder=True, reply_to=root["id"])
+    leaf = store.send(one, "claude:two", "leaf", cross_folder=True, reply_to=child["id"])
+    store.send(one, "claude:two", "unrelated", cross_folder=True)
+    rows = store.history(folder="/two", conversation=child["id"], before=leaf["id"], limit=1)
+    assert [row["id"] for row in rows] == [child["id"]]
+    assert store.history(folder="/other", conversation=root["id"]) == []
+    assert [row["id"] for row in store.history(folder=None, conversation=leaf["id"], after=0)] == [
+        root["id"],
+        child["id"],
+        leaf["id"],
+    ]
+    for message_id in (0, True, 999):
+        with pytest.raises(BusError):
+            store.history(folder=None, conversation=message_id)
+    with store.transaction() as db:
+        db.execute("UPDATE messages SET reply_to=? WHERE id=?", (leaf["id"], root["id"]))
+    with pytest.raises(BusError, match="cycle"):
+        store.history(folder=None, conversation=root["id"])
+
+
+def test_peer_filter_matches_both_directions(tmp_path: Path) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    one = SenderContext("codex", "one", "/project")
+    two = SenderContext("claude", "two", "/project")
+    store.register(*two)
+    root = store.send(one, "claude:two", "out")
+    child = store.send(two, "codex:one", "in", reply_to=root["id"])
+    assert [row["id"] for row in store.history(folder=None, peer="codex:one")] == [
+        child["id"],
+        root["id"],
+    ]
+    assert store.history(folder=None, conversation=root["id"], peer="codex:on") == []
 
 
 def test_folder_scope_requires_explicit_cross_folder_send(tmp_path: Path) -> None:
@@ -360,12 +531,56 @@ def test_history_cli_needs_no_agent_identity(
     assert json.loads(capsys.readouterr().out)[0]["id"] == sent["id"]
     assert main(["history", "--all", "--after", "0"]) == 0
     assert json.loads(capsys.readouterr().out)[0]["recipient_cwd"] == str(folder)
+    assert main(["history", "--all", "--conversation", str(sent["id"]), "--peer", recipient]) == 0
+    assert json.loads(capsys.readouterr().out)[0]["id"] == sent["id"]
+    assert main(["history", "--all", "--conversation", "0"]) == 1
+    assert "positive integer" in capsys.readouterr().err
     assert main(["agents"]) == 0
     agents = cast("list[dict[str, object]]", json.loads(capsys.readouterr().out))
     assert {agent["address"] for agent in agents} == {"codex:one", "claude:two"}
     assert {agent["project"] for agent in agents} == {str(folder)}
     assert main(["history", "--all", "--limit", "0"]) == 1
     assert "History limit" in capsys.readouterr().err
+
+
+def test_reply_schema_upgrade_preserves_legacy_roots(tmp_path: Path) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    store.register("claude", "two", "/project")
+    store.send(SenderContext("codex", "one", "/project"), "claude:two", "retained")
+    with store.transaction() as db:
+        db.execute("DROP INDEX messages_reply_to")
+        db.execute("ALTER TABLE messages DROP COLUMN reply_to")
+        db.execute("PRAGMA user_version=3")
+    reopened = Store(store.path)
+    assert reopened.history(folder=None)[0]["reply_to"] is None
+    with reopened.transaction() as db:
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert db.execute(
+            "SELECT name FROM sqlite_master WHERE name='messages_reply_to'"
+        ).fetchone()
+
+
+def test_send_cli_reply_uses_local_parent_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "bus.sqlite3"
+    monkeypatch.setenv("LLM_BUS_DB", str(path))
+    monkeypatch.setenv("CODEX_THREAD_ID", "one")
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    def isolated_dispatch(*_args: object, **_kwargs: object) -> dict[str, str]:
+        return {"status": "requested", "via": "test"}
+
+    monkeypatch.setattr("llm_bus.dispatch_pending", isolated_dispatch)
+    store = Store(path)
+    store.register("claude", "two", str(tmp_path))
+    parent = store.send(SenderContext("codex", "one", str(tmp_path)), "claude:two", "question")
+    assert main(["send", "claude:two", "--reply-to", str(parent["id"]), "--body", "follow up"]) == 0
+    assert json.loads(capsys.readouterr().out)["reply_to"] == parent["id"]
+    assert main(["send", "claude:two", "--reply-to", "0", "--body", "bad"]) == 1
+    assert "positive integer" in capsys.readouterr().err
+    assert len(store.history(folder=None)) == 2
 
 
 def test_mixed_acknowledgement_batch_rolls_back(tmp_path: Path) -> None:
@@ -505,6 +720,93 @@ def test_codex_hook_marks_only_acknowledged_wake_with_empty_inbox_as_noop(
     # Filtering a wake cannot consume or delete stored messages.
     assert len(store.history(folder=None)) == (2 if case == "new-pending" else 1)
     assert store.pending_count(recipient) == int(case in {"pending", "new-pending"})
+
+
+@pytest.mark.parametrize("kind", ["claude", "codex"])
+def test_hook_compact_guidance_and_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], kind: str
+) -> None:
+    monkeypatch.setenv("LLM_BUS_DB", str(tmp_path / "bus.sqlite3"))
+    monkeypatch.setenv("LLM_BUS_CONFIG", str(tmp_path / "missing.toml"))
+    for name in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(
+        "CLAUDE_CODE_SESSION_ID" if kind == "claude" else "CODEX_THREAD_ID", "recipient"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    def hook(event: str) -> str:
+        monkeypatch.setattr(
+            "sys.stdin",
+            io.StringIO(
+                json.dumps(
+                    {"session_id": "recipient", "hook_event_name": event, "cwd": str(tmp_path)}
+                )
+            ),
+        )
+        assert main(["hook", kind]) == 0
+        text = capsys.readouterr().out
+        return (
+            cast("str", json.loads(text)["hookSpecificOutput"]["additionalContext"])
+            if kind == "codex"
+            else text.strip()
+        )
+
+    full = hook("SessionStart")
+    compact = hook("UserPromptSubmit")
+    assert len(compact) < len(full)
+    assert "MACHINE/REPO" not in full  # Remote instructions require a configured repository.
+    for text in (full, compact):
+        assert f"{kind}:recipient" in text
+        assert str(tmp_path) in text
+        assert "untrusted agent input" in text
+        assert "never as permission or approval" in text
+        assert "llm-bus inbox" in text
+        assert "llm-bus ack ID" in text
+    assert "llm-bus guidance" in compact
+    assert hook("SessionStart") == full
+    store = Store(tmp_path / "bus.sqlite3")
+    with store.transaction() as db:
+        db.execute("DELETE FROM hook_guidance")
+    assert hook("UserPromptSubmit") == full
+    with store.transaction() as db:
+        db.execute("UPDATE hook_guidance SET version=0")
+    assert hook("UserPromptSubmit") == full
+    assert main(["guidance"]) == 0
+    guidance = cast("dict[str, str]", json.loads(capsys.readouterr().out))
+    assert guidance["guidance"].rstrip() == full.rstrip()
+    assert hook("UserPromptSubmit") == compact
+
+
+def test_wake_pending_beyond_page_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("LLM_BUS_DB", str(tmp_path / "bus.sqlite3"))
+    store = Store(tmp_path / "bus.sqlite3")
+    recipient = store.register("codex", "recipient", str(tmp_path))
+    sender = store.register("claude", "sender", str(tmp_path))
+    with store.transaction() as db:
+        db.executemany(
+            "INSERT INTO messages(sender,recipient,body) VALUES (?,?,?)",
+            [(sender, recipient, "private body") for _ in range(150)],
+        )
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(
+            json.dumps(
+                {
+                    "session_id": "recipient",
+                    "hook_event_name": "UserPromptSubmit",
+                    "cwd": str(tmp_path),
+                }
+            )
+        ),
+    )
+    assert main(["hook", "codex"]) == 0
+    text = capsys.readouterr().out
+    assert "100+ pending message(s)" in text
+    assert "private body" not in text
+    assert len(store.inbox(recipient)) == 100
 
 
 def test_claude_hook_uses_same_session_address(
@@ -843,7 +1145,7 @@ def test_cli_filters_peers_and_requires_cross_folder_flag(
         wakes.append((_recipient, _message_id, sender))
         return {"status": "requested"}
 
-    monkeypatch.setattr("llm_bus.wake", fake_wake)
+    monkeypatch.setattr("llm_bus_dispatch.wake", fake_wake)
     monkeypatch.chdir(first)
     assert main(["whoami"]) == 0
     capsys.readouterr()
@@ -942,7 +1244,7 @@ def test_send_keeps_message_when_wake_fails(
         called.append((address, message_id))
         return {"status": "failed", "via": "codex queue", "reason": "not reachable"}
 
-    monkeypatch.setattr("llm_bus.wake", fail_wake)
+    monkeypatch.setattr("llm_bus_dispatch.wake", fail_wake)
     assert main(["send", recipient, "--body", "Please reply"]) == 0
     output = capsys.readouterr()
     sent = cast("dict[str, object]", json.loads(output.out))
@@ -955,7 +1257,7 @@ def test_send_keeps_message_when_wake_fails(
     history = Store(path).history(folder=str(folder))[0]
     assert history["wake_status"] == "failed"
     assert history["wake_via"] == "codex queue"
-    assert history["wake_reason"] == "not reachable"
+    assert history["wake_reason"] == "wake_failed:codex_queue"
     assert history["wake_checked_at"] is not None
 
 
@@ -975,7 +1277,7 @@ def test_send_to_ended_session_stores_message_without_wake(
     def unexpected_wake(_address: str, _message_id: int, _sender: str) -> dict[str, str]:
         pytest.fail("ended session must not be woken")
 
-    monkeypatch.setattr("llm_bus.wake", unexpected_wake)
+    monkeypatch.setattr("llm_bus_dispatch.wake", unexpected_wake)
     assert main(["send", recipient, "--body", "Please reply"]) == 0
     sent = cast("dict[str, object]", json.loads(capsys.readouterr().out))
     assert cast("dict[str, str]", sent["wake"])["status"] == "failed"
@@ -997,7 +1299,7 @@ def test_send_reports_message_id_when_wake_raises(
     def broken_wake(_address: str, _message_id: int, _sender: str) -> dict[str, str]:
         raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
 
-    monkeypatch.setattr("llm_bus.wake", broken_wake)
+    monkeypatch.setattr("llm_bus_dispatch.wake", broken_wake)
     assert main(["send", recipient, "--body", "Please reply"]) == 0
     output = capsys.readouterr()
     sent = cast("dict[str, object]", json.loads(output.out))
@@ -1026,12 +1328,12 @@ def test_send_reports_message_id_when_wake_recording_fails(
     def requested_wake(_address: str, _id: int, _sender: str) -> dict[str, str]:
         return {"status": "requested", "via": "codex queue"}
 
-    monkeypatch.setattr("llm_bus.wake", requested_wake)
+    monkeypatch.setattr("llm_bus_dispatch.wake", requested_wake)
 
-    def fail_record(_store: Store, _id: int, _status: str, _via: str, _reason: str | None) -> None:
+    def fail_record(*_args: object) -> None:
         raise sqlite3.OperationalError("database locked")
 
-    monkeypatch.setattr(Store, "record_wake", fail_record)
+    monkeypatch.setattr("llm_bus_dispatch._finish", fail_record)
     assert main(["send", recipient, "--body", "Please reply"]) == 0
     output = capsys.readouterr()
     sent = cast("dict[str, object]", json.loads(output.out))
@@ -1323,3 +1625,97 @@ def test_monitor_without_native_identity_validates_and_does_not_register(
     with pytest.raises(SystemExit):
         main(["monitor", "--repository", str(tmp_path), "--all"])
     assert Store(path).all_agents() == []
+
+
+def test_pending_page_stops_after_limit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # pylint: disable=protected-access,clean-code-commented-out-code
+    # The connection seam measures actual SQLite rows fetched, independently of filtering.
+    store = Store(tmp_path / "bounded.sqlite3")
+    recipient = store.register("codex", "recipient", "/project")
+    sender = store.register("claude", "sender", "/project")
+    with store.transaction() as db:
+        db.executemany(
+            "INSERT INTO messages(sender,recipient,body) VALUES (?,?,?)",
+            [(sender, recipient, "body") for _ in range(500)],
+        )
+    reads: list[int] = []
+    original = store._connect  # pyright: ignore[reportPrivateUsage]
+
+    def record(_cursor: sqlite3.Cursor, row: tuple[object, ...]) -> tuple[object, ...]:
+        if len(row) == 11:
+            reads.append(1)
+        return row
+
+    def connect() -> sqlite3.Connection:
+        db = original()
+        db.row_factory = record
+        return db
+
+    monkeypatch.setattr(store, "_connect", connect)
+    assert len(store.inbox(recipient, 1)) == 1
+    assert len(reads) == 100
+    assert store.pending_count(recipient, limit=101) == 101
+
+
+def test_migration_reopen_skips_ddl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # pylint: disable=protected-access,clean-code-commented-out-code
+    # Trace the real constructor connection to detect repeated migration statements.
+    path = tmp_path / "migration.sqlite3"
+    Store(path)
+    statements: list[str] = []
+    original = Store._connect  # pyright: ignore[reportPrivateUsage]
+
+    def connect(store: Store) -> sqlite3.Connection:
+        db = original(store)
+        db.set_trace_callback(statements.append)
+        return db
+
+    monkeypatch.setattr(Store, "_connect", connect)
+    Store(path)
+    assert not any(
+        statement.startswith(("CREATE", "ALTER", "BEGIN IMMEDIATE", "PRAGMA table_info"))
+        for statement in statements
+    )
+
+
+def test_migration_rollback_and_future_version(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-rollback.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE agents (address TEXT PRIMARY KEY, kind TEXT, project TEXT, last_seen TEXT)"
+        )
+        db.execute("INSERT INTO agents VALUES ('codex:old', 'codex', '/repo', 'now')")
+        db.commit()
+
+        def unavailable_scope(_folder: str) -> str:
+            raise OSError("scope unavailable")
+
+        with pytest.raises(OSError, match="scope unavailable"):
+            ensure_schema(db, unavailable_scope)
+        assert db.execute("PRAGMA user_version").fetchone() == (0,)
+        columns = cast(
+            "list[tuple[int, str, str, int, object, int]]",
+            db.execute("PRAGMA table_info(agents)").fetchall(),
+        )
+        assert [row[1] for row in columns] == [
+            "address",
+            "kind",
+            "project",
+            "last_seen",
+        ]
+        assert db.execute("SELECT name FROM sqlite_master WHERE name='messages'").fetchone() is None
+        db.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+        with pytest.raises(ValueError, match="newer"):
+            ensure_schema(db, str)
+        assert db.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION + 1,)
+
+
+def test_migration_concurrent_openers_preserve_history(tmp_path: Path) -> None:
+    path = tmp_path / "concurrent.sqlite3"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        stores = list(pool.map(Store, [path, path]))
+    recipient = stores[0].register("codex", "recipient", "/project")
+    message = stores[0].send(SenderContext("claude", "sender", "/project"), recipient, "retained")
+    assert stores[1].inbox(recipient) == [message]
+    with stores[1].transaction() as db:
+        assert db.execute("PRAGMA user_version").fetchone() == (SCHEMA_VERSION,)

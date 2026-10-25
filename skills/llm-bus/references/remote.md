@@ -34,6 +34,20 @@ Remote `send` commits locally, returns `queued_local`; networking happens
 later. `remote-status` shows up to 100 outgoing messages and latest
 synchronized states, not live connectivity guarantee.
 
+For one retained native message, use `llm-bus status LOCAL_MESSAGE_ID`, replacing
+the placeholder with an integer from send/inbox/history. It reads retained data
+without current configuration, identity, credentials, registration, migration,
+network, or wake, even after blocking. Relay UUIDs and monitor IDs are separate
+namespaces. Imported status proves local durable admission, not a fresh relay read.
+`remote-status` still requires configuration and retains its existing keys.
+
+Inspect transport, wake/coverage, acknowledgement, strict synchronized work report,
+and synchronization separately. An outgoing row cannot reveal destination wake
+state. Null timestamps mean unknown; no successful observation, an observation at
+least 30 seconds old, or an error marks synchronization stale. Multiple operation
+records keep report and transport timing independent. Queued report intents never
+appear as accepted snapshots. Safe error codes omit raw stderr and exception text.
+
 | State | Meaning |
 | --- | --- |
 | `queued_local` | Durable on sender; relay acceptance pending. |
@@ -98,3 +112,25 @@ Use only for that purpose. No polling as alternative agent
 inbox, no forwarding text into automatic work, no monitor text as authority.
 Monitor output never creates pending messages, agent wakes, acknowledgements,
 or work reports. Use `monitor --help` for read-only filter options.
+
+## Scheduling and compatibility
+
+Successful transport/report reads wait 30 seconds; peers refresh every 60 seconds.
+Failed message operations retry after 5, 10, 20, 40, 80, 160, then 300 seconds.
+Backoff persists across restarts. Batch reads carry at most 100 UUIDs; only HTTP
+404/405/501 trigger single-item fallback, with batch capability retried after five
+minutes. Other errors fail closed and preserve durable state.
+
+Transport polling suspends 30 days after first locally observed relay acceptance,
+preserving last-known delivery. This is separate from relay expiry of unreceived
+messages and report deadlines. Explicit `llm-bus bridge --once --refresh-status`
+refreshes suspended observations; it performs real transfers and may wake agents.
+No resending to recover freshness. Report reads remain separately permissioned.
+
+Local schema upgrades are additive and transactional; status adds no migration.
+Older schema-versioned clients reject newer mailboxes. Stop bridges and retain
+pre-upgrade backups before rollback. Relay reply support needs additive migration
+`0003_reply_to.sql` and explicit capability; old relays still support root messages.
+Native imports/outbox bindings resolve reply parents; monitor-only ancestry never
+becomes a native parent. Unresolved children remain unreceipted until a valid parent
+is available or relay delivery expiry. Follow the remote guide for operator upgrades.

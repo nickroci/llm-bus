@@ -5,61 +5,22 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, cast
 
-from llm_bus_policy import REPORT_REASONS, Config, load_config, object_fields
+from llm_bus_policy import MAX_REVISION, Config, Report, load_config, parse_report, validate_status
 from llm_bus_remote_store import RemoteStore
 from llm_bus_store import BusError, Store
 
+__all__ = ["Report", "Reports", "parse_report", "report_deadline", "validate_status"]
+
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from llm_bus_remote_store import Delivery, Envelope
 
-UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 UTC_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z")
-MAX_REVISION = 2**53 - 1
 TERMINAL = ("completed", "failed")
 TRANSITION_CONFLICT = "Report pending or lifecycle transition conflicts"
-
-
-class Report(TypedDict):
-    message_id: str
-    revision: int
-    status: str | None
-    reason: str | None
-
-
-def validate_status(status: object, reason: object) -> tuple[str, str | None]:
-    if (
-        not isinstance(status, str)
-        or status not in REPORT_REASONS
-        or (reason is not None and not isinstance(reason, str))
-        or reason not in REPORT_REASONS[status]
-    ):
-        raise BusError("Invalid built-in report status/reason")
-    return status, reason
-
-
-def parse_report(value: object, message_id: str) -> Report:
-    data = object_fields(value)
-    revision = data.get("revision")
-    if (
-        set(data) != {"message_id", "revision", "status", "reason"}
-        or not UUID.fullmatch(message_id)
-        or data.get("message_id") != message_id
-    ):
-        raise BusError("Invalid work report response")
-    if (
-        isinstance(revision, bool)
-        or not isinstance(revision, int)
-        or not 0 <= revision <= MAX_REVISION
-    ):
-        raise BusError("Invalid work report revision")
-    if revision == 0:
-        if data["status"] is not None or data["reason"] is not None:
-            raise BusError("Invalid initial work report")
-        return Report(message_id=message_id, revision=0, status=None, reason=None)
-    status, reason = validate_status(data["status"], data["reason"])
-    return Report(message_id=message_id, revision=revision, status=status, reason=reason)
 
 
 def report_deadline(value: object) -> str:
@@ -79,22 +40,6 @@ class Reports:
 
     def __init__(self, store: Store, connection: str) -> None:
         self.remote = RemoteStore(store, connection)
-        with store.transaction() as db:
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS remote_report_submissions "
-                "(id TEXT NOT NULL REFERENCES remote_imports(id), "
-                "expected_revision INTEGER NOT NULL, payload TEXT NOT NULL, "
-                "synced INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(id,expected_revision))"
-            )
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS remote_reports "
-                "(id TEXT PRIMARY KEY REFERENCES remote_outbox(id), payload TEXT NOT NULL)"
-            )
-
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS remote_report_windows "
-                "(id TEXT PRIMARY KEY REFERENCES remote_outbox(id), expires_at TEXT NOT NULL)"
-            )
 
     def deadline(self, remote_id: str, value: object) -> None:
         expires = report_deadline(value)
@@ -112,31 +57,39 @@ class Reports:
                 "INSERT OR IGNORE INTO remote_report_windows VALUES (?,?)", (remote_id, expires)
             )
 
-    def pollable(self) -> list[Envelope]:
+    def pollable_pages(self, *, now: datetime | None = None) -> Iterator[list[Envelope]]:
+        instant = now or datetime.now(UTC)
+        after = 0
+        while True:
+            page = self._pollable_page(after)
+            if not page:
+                return
+            after = page[-1][0]
+            result: list[Envelope] = []
+            for _local_id, payload, expires in page:
+                envelope = cast("Envelope", json.loads(payload))
+                snapshot = self.snapshot(envelope["id"])
+                if datetime.fromisoformat(report_deadline(expires)) > instant and (
+                    snapshot is None or snapshot["status"] not in TERMINAL
+                ):
+                    result.append(envelope)
+            yield result
+
+    def _pollable_page(self, after: int) -> list[tuple[int, str, str]]:
         with self.remote.store.transaction() as db:
-            rows = cast(
-                "list[tuple[str, str]]",
+            return cast(
+                "list[tuple[int, str, str]]",
                 db.execute(
-                    "SELECT o.envelope,w.expires_at FROM remote_outbox o "
+                    "SELECT o.local_id,o.envelope,w.expires_at FROM remote_outbox o "
                     "JOIN remote_report_windows w ON w.id=o.id "
-                    "WHERE o.state NOT IN ('queued_local','expired')"
+                    "WHERE o.state<>'queued_local' AND o.local_id>? "
+                    "ORDER BY o.local_id LIMIT 100",
+                    (after,),
                 ).fetchall(),
             )
-        result: list[Envelope] = []
-        for payload, expires in rows:
-            envelope = cast("Envelope", json.loads(payload))
-            snapshot = self.snapshot(envelope["id"])
-            if datetime.fromisoformat(report_deadline(expires)) > datetime.now(UTC) and (
-                snapshot is None or snapshot["status"] not in TERMINAL
-            ):
-                result.append(envelope)
-        return result
 
     def statuses(self) -> list[dict[str, object]]:
-        rows = self.remote.statuses()
-        for row in rows:
-            row["work_report"] = self.snapshot(cast("str", row["remote_id"]))
-        return rows
+        return self.remote.statuses()
 
     def imported(self, local_id: int, native: str | None = None) -> Delivery:
         with self.remote.store.transaction() as db:
@@ -229,20 +182,28 @@ class Reports:
             )
         return payload
 
-    def pending(self) -> list[tuple[int, dict[str, object]]]:
+    def pending(self, *, after: int = 0) -> list[tuple[int, dict[str, object]]]:
         with self.remote.store.transaction() as db:
             rows = cast(
                 "list[tuple[int, str]]",
                 db.execute(
                     "SELECT i.local_id,s.payload FROM remote_report_submissions s "
-                    "JOIN remote_imports i ON i.id=s.id WHERE s.synced=0 AND s.expected_revision="
+                    "JOIN remote_imports i ON i.id=s.id WHERE s.synced=0 AND i.local_id>? "
+                    "AND s.expected_revision="
                     "(SELECT MIN(p.expected_revision) FROM remote_report_submissions p "
-                    "WHERE p.id=s.id AND p.synced=0) ORDER BY i.local_id"
+                    "WHERE p.id=s.id AND p.synced=0) ORDER BY i.local_id LIMIT 100",
+                    (after,),
                 ).fetchall(),
             )
         return [
             (local_id, cast("dict[str, object]", json.loads(payload))) for local_id, payload in rows
         ]
+
+    def pending_items(self) -> Iterator[tuple[int, dict[str, object]]]:
+        after = 0
+        while page := self.pending(after=after):
+            after = page[-1][0]
+            yield from page
 
     def accepted(self, submission: dict[str, object], value: object) -> None:
         report = parse_report(value, cast("str", submission["message_id"]))

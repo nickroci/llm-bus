@@ -14,7 +14,7 @@ it('delivers across two Python mailboxes through HTTP and Queue, then synchroniz
   const folder = mkdtempSync(join(tmpdir(), 'llm-bus-e2e-'));
   try {
     const db = await mf.getD1Database('DB');
-    const migration = ['0001_bus.sql','0002_reports.sql'].map(name=>readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
+    const migration = ['0001_bus.sql','0002_reports.sql','0003_reply_to.sql'].map(name=>readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
     for (const statement of migration.split(';').filter(s=>s.trim())) await db.prepare(statement).run();
     for (const machine of ['a','b']) {
       await db.prepare('INSERT INTO machines(id,token_hash) VALUES (?,?)').bind(machine,await tokenHash(machine.repeat(43))).run();
@@ -29,14 +29,25 @@ from llm_bus_policy import Config,Repository,PeerPolicy
 from llm_bus_remote_store import RemoteStore
 from llm_bus_reports import Reports
 from llm_bus_store import Store,SenderContext,routing_scope
-import llm_bus_remote
+import llm_bus_dispatch
+import llm_bus_wake
+def forbid_native(*args,**kwargs):
+    raise AssertionError('isolated integration must not execute native adapters')
+llm_bus_wake._wake_codex=forbid_native
+llm_bus_wake._wake_claude=forbid_native
 root=Path(sys.argv[1]); origin=sys.argv[2]
+from datetime import UTC,datetime,timedelta
+clock_now=[datetime.now(UTC)]
+def bridge(store,config):
+    # Each explicit synchronization observes a new due-work boundary.
+    clock_now[0]+=timedelta(seconds=60)
+    return Bridge(store,config,clock=lambda:clock_now[0])
 # No actual agent host is addressed by this isolated integration.
 wakes=[]
 def wake(*args,**kwargs):
     wakes.append(args)
     return {"status":"requested","via":"test"}
-llm_bus_remote.wake=wake
+llm_bus_dispatch.wake=wake
 repo=root/'repo'; repo.mkdir()
 configs={}; stores={}
 def select(machine):
@@ -63,43 +74,70 @@ send_reports = ["received", "completed"]
 receive_reports = ["received", "completed"]
 """)
 stores['b'].register('claude','recipient',str(repo))
-for machine in ('a','b'): assert Bridge(select(machine),configs[machine]).sync()['errors']==0
+for machine in ('a','b'): assert bridge(select(machine),configs[machine]).sync()['errors']==0
 sent=enqueue_remote(stores['a'],configs['a'],SenderContext('codex','sender',str(repo)),'b/xyz/claude:recipient','remote hello')
 # Move the sender before any bridge has exported its original registration.
 stores['a'].register('codex','sender',str(root/'elsewhere'))
-assert Bridge(select('a'),configs['a']).sync()['errors']==0
+assert bridge(select('a'),configs['a']).sync()['errors']==0
 for attempt in range(50):
     # Reopen SQLite and rebuild bridge every time to prove restart safety.
     select('b')
     destination=Store(stores['b'].path)
-    assert Bridge(destination,configs['b']).sync()['errors']==0
+    assert bridge(destination,configs['b']).sync()['errors']==0
     inbox=destination.inbox('claude:recipient')
     if inbox: break
     time.sleep(.05)
 assert len(inbox)==1 and inbox[0]['body']=='remote hello'
 assert inbox[0]['sender']=='a/xyz/codex:sender'
-assert Bridge(destination,configs['b']).sync()['errors']==0
+assert bridge(destination,configs['b']).sync()['errors']==0
 assert len(destination.inbox('claude:recipient'))==1
 destination.acknowledge('claude:recipient',[inbox[0]['id']])
-assert Bridge(destination,configs['b']).sync()['errors']==0
-assert Bridge(Store(select('a').path),configs['a']).sync()['errors']==0
+assert bridge(destination,configs['b']).sync()['errors']==0
+assert bridge(Store(select('a').path),configs['a']).sync()['errors']==0
 status=RemoteStore(stores['a'],configs['a'].connection).statuses()[0]
 assert status['status']=='acknowledged',status
 assert status['remote_id']==sent['remote_id']
 select('b')
 reports=Reports(destination,configs['b'].connection)
 reports.enqueue(inbox[0]['id'],'claude:recipient','received',None)
-assert Bridge(destination,configs['b']).sync()['errors']==0
-assert Bridge(select('a'),configs['a']).sync()['errors']==0
+assert bridge(destination,configs['b']).sync()['errors']==0
+assert bridge(select('a'),configs['a']).sync()['errors']==0
 assert Reports(stores['a'],configs['a'].connection).statuses()[0]['work_report']['status']=='received'
 select('b')
 reports.enqueue(inbox[0]['id'],'claude:recipient','completed',None)
-assert Bridge(destination,configs['b']).sync()['errors']==0
-assert Bridge(select('a'),configs['a']).sync()['errors']==0
+assert bridge(destination,configs['b']).sync()['errors']==0
+assert bridge(select('a'),configs['a']).sync()['errors']==0
 assert Reports(stores['a'],configs['a'].connection).statuses()[0]['work_report']['status']=='completed'
 assert len(wakes)==1
 assert len(stores['a'].history(folder=None))==1
 assert len(stores['b'].history(folder=None))==1
+# Move the participant back to its captured repository before replying.
+stores['a'].register('codex','sender',str(repo))
+select('b')
+stores['b'].register('codex','noise',str(repo))
+noise=stores['b'].send(SenderContext('claude','recipient',str(repo)),'codex:noise','local only')
+stores['b'].acknowledge('codex:noise',[noise['id']])
+reply=enqueue_remote(stores['b'],configs['b'],SenderContext('claude','recipient',str(repo)),
+    'a/xyz/codex:sender','answer',reply_to=inbox[0]['id'])
+assert bridge(select('b'),configs['b']).sync()['errors']==0
+for attempt in range(50):
+    assert bridge(select('a'),configs['a']).sync()['errors']==0
+    answers=stores['a'].inbox('codex:sender')
+    if answers: break
+    time.sleep(.05)
+assert answers[0]['reply_to']==sent['id']
+assert answers[0]['id']!=reply['id']
+followup=enqueue_remote(stores['a'],configs['a'],SenderContext('codex','sender',str(repo)),
+    'b/xyz/claude:recipient','follow up',reply_to=answers[0]['id'])
+assert bridge(select('a'),configs['a']).sync()['errors']==0
+for attempt in range(50):
+    assert bridge(select('b'),configs['b']).sync()['errors']==0
+    followups=stores['b'].inbox('claude:recipient')
+    if followups: break
+    time.sleep(.05)
+assert followups[0]['reply_to']==reply['id']
+assert len(stores['a'].history(folder=None,conversation=sent['id']))==3
+assert len(stores['b'].history(folder=None,conversation=inbox[0]['id']))==3
 print('cross-machine delivery and acknowledgement passed')
 `;
     const result = await promisify(execFile)('uv', ['run','python','-c',program,folder,origin], {cwd: new URL('../..',import.meta.url).pathname, timeout:30000});
@@ -113,7 +151,7 @@ it('enforces independent PC/VPS/outsider policies and keeps monitor replay outsi
   const folder = mkdtempSync(join(tmpdir(), 'llm-bus-policy-e2e-'));
   try {
     const db = await mf.getD1Database('DB');
-    const migration = ['0001_bus.sql','0002_reports.sql'].map(name=>readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
+    const migration = ['0001_bus.sql','0002_reports.sql','0003_reply_to.sql'].map(name=>readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
     for (const statement of migration.split(';').filter(s=>s.trim())) await db.prepare(statement).run();
     for (const machine of ['pc','vps','outsider']) {
       await db.prepare('INSERT INTO machines(id,token_hash) VALUES (?,?)').bind(machine,await tokenHash(machine[0].repeat(43))).run();
@@ -129,14 +167,25 @@ from llm_bus_remote import Bridge,Relay,enqueue_remote
 from llm_bus_remote_store import RemoteStore
 from llm_bus_reports import Reports
 from llm_bus_store import BusError,SenderContext,Store
-import llm_bus_remote
+import llm_bus_dispatch
+import llm_bus_wake
+def forbid_native(*args,**kwargs):
+    raise AssertionError('isolated integration must not execute native adapters')
+llm_bus_wake._wake_codex=forbid_native
+llm_bus_wake._wake_claude=forbid_native
 root=Path(sys.argv[1]); origin=sys.argv[2]
+from datetime import UTC,datetime,timedelta
+clock_now=[datetime.now(UTC)]
+def bridge(store,config):
+    # Each explicit synchronization observes a new due-work boundary.
+    clock_now[0]+=timedelta(seconds=60)
+    return Bridge(store,config,clock=lambda:clock_now[0])
 repo=root/'repo'; repo.mkdir()
 wakes=[]
 def wake(native,*args,**kwargs):
     wakes.append(native)
     return {'status':'requested','via':'test'}
-llm_bus_remote.wake=wake
+llm_bus_dispatch.wake=wake
 stores={machine:Store(root/(machine+'.sqlite3')) for machine in ('pc','vps','outsider')}
 policies={
  'pc':[('vps',True,'deny',[],['received','completed']),('outsider',True,'deny',[],[])],
@@ -169,7 +218,7 @@ def select(machine):
     return Store(stores[machine].path),config
 def sync(machine):
     store,config=select(machine)
-    result=Bridge(store,config).sync()
+    result=bridge(store,config).sync()
     assert result['errors']==0,(machine,result)
     return result
 def send(machine,destination,body):
@@ -273,7 +322,7 @@ def lose_receipt(self,method,path,data=None):
 Relay.request=lose_receipt
 store,config=select('outsider')
 try:
-    interrupted=Bridge(store,config).sync()
+    interrupted=bridge(store,config).sync()
     assert interrupted['imported']==0 and interrupted['errors']==1,interrupted
 finally: Relay.request=request
 # Change class before replay: first durable class wins across reconstruction.

@@ -21,6 +21,7 @@ interface MessageRow {
   sent_at: string;
   received_at: string | null;
   acknowledged_at: string | null;
+  reply_to: string | null;
 }
 const BATCH = 100;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -125,28 +126,31 @@ async function send(request: Request, env: Env, machine: string): Promise<Respon
   const sender = qualified(machine, repo, text(data.sender, NATIVE));
   const recipient = text(data.recipient);
   const body = text(data.body);
+  const reply = data.reply_to === undefined ? null : text(data.reply_to, UUID);
   if (!body.trim() || new TextEncoder().encode(body).length > MAX_BODY_BYTES) {
     throw new HttpError(400, 'Body must contain 1–65536 UTF-8 bytes');
   }
   await grant(env, machine, repo);
   const prior = await env.DB.prepare('SELECT * FROM messages WHERE id=?').bind(id).first<MessageRow>();
   if (prior) {
-    if (prior.sender !== sender || prior.recipient !== recipient || prior.repo_id !== repo || prior.body !== body) {
+    if (prior.sender !== sender || prior.recipient !== recipient || prior.repo_id !== repo || prior.body !== body || prior.reply_to !== reply) {
       throw new HttpError(409, 'Message ID already used');
     }
     return Response.json(transportResult(prior));
   }
-  const result = await env.DB.prepare(`INSERT INTO messages(id,sender,recipient,repo_id,body)
-    SELECT ?,s.address,r.address,?,? FROM sessions s JOIN sessions r ON r.address=?
+  const result = await env.DB.prepare(`INSERT INTO messages(id,sender,recipient,repo_id,body,reply_to)
+    SELECT ?,s.address,r.address,?,?,? FROM sessions s JOIN sessions r ON r.address=?
     JOIN machines rm ON rm.id=r.machine_id AND rm.revoked_at IS NULL
     JOIN repo_grants rg ON rg.machine_id=r.machine_id AND rg.repo_id=r.repo_id
     WHERE s.address=? AND s.repo_id=? AND r.repo_id=? AND r.machine_id<>?
     AND ${ACTIVE_GRANT}
+    AND (? IS NULL OR EXISTS (SELECT 1 FROM messages p WHERE p.id=? AND p.repo_id=?
+      AND ((p.sender=s.address AND p.recipient=r.address) OR (p.sender=r.address AND p.recipient=s.address))))
     ON CONFLICT(id) DO NOTHING`)
-    .bind(id, repo, body, recipient, sender, repo, repo, machine, machine, repo).run();
+    .bind(id, repo, body, reply, recipient, sender, repo, repo, machine, machine, repo, reply, reply, repo).run();
   if (!result.meta.changes) {
     const raced = await env.DB.prepare('SELECT * FROM messages WHERE id=?').bind(id).first<MessageRow>();
-    if (raced && raced.sender === sender && raced.recipient === recipient && raced.body === body && raced.repo_id === repo) {
+    if (raced && raced.sender === sender && raced.recipient === recipient && raced.body === body && raced.repo_id === repo && raced.reply_to === reply) {
       return Response.json(transportResult(raced));
     }
     throw new HttpError(raced ? 409 : 403, 'Recipient or sender not allowed');
@@ -187,7 +191,7 @@ async function inbox(url: URL, env: Env, machine: string): Promise<Response> {
     bytes += size;
     page.push(row);
   }
-  return Response.json(page);
+  return Response.json(page.map(row => ({...row, reply_to:row.reply_to ?? undefined})));
 }
 async function receipt(request: Request, env: Env, machine: string, acknowledge: boolean): Promise<Response> {
   const data = await jsonBody(request);
@@ -240,6 +244,27 @@ async function readReport(url: URL, env: Env, machine: string): Promise<Response
   if (!row) throw new HttpError(403, 'Message not allowed');
   return reportResult(id,row);
 }
+async function batchRead(request: Request, env: Env, machine: string, kind: 'status' | 'reports'): Promise<Response> {
+  const data = await jsonBody(request);
+  const field = kind === 'status' ? 'ids' : 'message_ids';
+  const ids = data[field];
+  if (Object.keys(data).length !== 1 || !Array.isArray(ids) || ids.length < 1 || ids.length > 100) throw new HttpError(400, 'Invalid batch fields');
+  const validated = ids.map(id => text(id, UUID));
+  if (new Set(validated).size !== validated.length) throw new HttpError(400, 'Duplicate batch IDs');
+  const results = [];
+  for (const id of validated) {
+    const url = new URL(request.url);
+    url.searchParams.set(kind === 'status' ? 'id' : 'message_id', id);
+    try {
+      // Single-item readers retain primary SQL grant checks for every item.
+      const response = await (kind === 'status' ? status(url, env, machine) : readReport(url, env, machine));
+      results.push({id, value: await response.json(), error: null});
+    } catch (error) {
+      results.push({id, value: null, error: {code: error instanceof HttpError && error.status === 403 ? 'not_allowed' : 'unavailable'}});
+    }
+  }
+  return Response.json({results});
+}
 async function submitReport(request: Request, env: Env, machine: string): Promise<Response> {
   const data = await jsonBody(request);
   if (Object.keys(data).sort().join(',') !== 'expected_revision,message_id,reason,status') throw new HttpError(400, 'Invalid report fields');
@@ -286,6 +311,7 @@ export default {
       const url = new URL(request.url);
       const route = `${request.method} ${url.pathname}`;
       switch (route) {
+        case 'GET /v1/capabilities': return Response.json({reply_to:true,batch_status:true,batch_reports:true});
         case 'POST /v1/sessions': return await register(request, env, machine);
         case 'GET /v1/sessions': return await sessions(url, env, machine);
         case 'POST /v1/messages': return await send(request, env, machine);
@@ -295,6 +321,8 @@ export default {
         case 'POST /v1/reports': return await submitReport(request, env, machine);
         case 'GET /v1/reports': return await readReport(url, env, machine);
         case 'GET /v1/status': return await status(url, env, machine);
+        case 'POST /v1/status/batch': return await batchRead(request, env, machine, 'status');
+        case 'POST /v1/reports/batch': return await batchRead(request, env, machine, 'reports');
         default: throw new HttpError(404, 'Unknown endpoint');
       }
     } catch (error) {

@@ -66,6 +66,10 @@ The response includes the stored message and a `wake` status. `requested` means 
 
 `send` commits the message before requesting a host wake. The CLI exits successfully when storage succeeds, even if the wake fails, and reports that failure in the JSON `wake` field. Inspect that field when a prompt reply matters.
 
+Concurrent sends share a recipient lease and may return `coalesced`. Each message remains separately stored and requires its own acknowledgement. The coordinator gathers a burst for up to 25 milliseconds, uses the oldest permitted pending message as the notice anchor, and records exactly which pending IDs the request covered, including messages beyond the first inbox page. A requested wake suppresses repeat requests for those same IDs for 30 seconds; a later message does not inherit that coverage. Neither `coalesced` nor `requested` proves receipt or handling.
+
+A call makes at most two native wake attempts. Further arrivals remain due for a running bridge, a later send, or notification in the recipient's next hook. A bridge also recovers abandoned 30-second leases and retries failed or unknown wake outcomes with capped backoff. Unsupported wakes wait for a changed registered host capability or a later send; hooks still report pending items. Without a running bridge, a crashed sender has no autonomous recovery: another send or recipient turn is required. Current policy and ended-session state are checked before dispatch. Blocking a peer cannot recall an already submitted wake.
+
 Acknowledging a message does not cancel its already queued host notice. With the bus's trusted Codex `UserPromptSubmit` hook enabled, an exact bus wake receives no-op context when its ID, sender, and recipient match an acknowledged message and the inbox has no pending messages. The context tells the agent that no action is needed and not to retry or acknowledge the notice again. The hook allows the prompt rather than rejecting it, avoiding repeated hook rejections if the host resubmits a stale notice. Codex may still display the queued notice and run a redundant agent turn. Other prompts and wakes with pending work continue normally. Claude wake behavior is unchanged.
 
 | Recipient | Automatic wake path | Limit |
@@ -73,7 +77,7 @@ Acknowledging a message does not cancel its already queued host notice. With the
 | Codex | `codex queue` with the recipient's session ID | Requires `codex` on `PATH` and a reachable session. |
 | Claude Code | Native inbox Unix socket on macOS and Linux | Requires a registered socket and Claude inbound delivery permission; no terminal input is sent. |
 
-The wake status is `requested`, `failed`, `unknown` (timeout; the host might still have received it), or `unsupported`. The wake prompt includes the bus message ID and sender address, never the message body. Both hosts receive the same notice, such as `llm-bus message #1231 from codex:SESSION_ID. Read and handle it with llm-bus inbox`. Claude Code may still label its native approval dialog “Another Claude session”; that host label does not identify the bus sender. Read the sender address in the notice or stored inbox message. For Claude, `requested` means the frame was written to the native socket; inbound controls may still hold or refuse it. A successful request does not prove delivery or handling. Messages remain pending until the recipient reads and acknowledges them. Without a wake, hooks report pending messages at the recipient's next turn.
+The wake status is `requested`, `coalesced`, `failed`, `unknown` (outcome uncertain; the host might still have received it), or `unsupported`. The wake prompt includes the bus message ID and sender address, never the message body. Both hosts receive the same notice, such as `llm-bus message #1231 from codex:SESSION_ID. Read and handle it with llm-bus inbox`. Claude Code may still label its native approval dialog “Another Claude session”; that host label does not identify the bus sender. Read the sender address in the notice or stored inbox message. For Claude, `requested` means the frame was written to the native socket; inbound controls may still hold or refuse it. A successful request does not prove delivery or handling. Messages remain pending until the recipient reads and acknowledges them. Without a wake, hooks report pending messages at the recipient's next turn.
 
 Claude Code v2.1.224+ exposes `CLAUDE_CODE_MESSAGING_SOCKET` to hooks and shell commands. Restart Claude or run `llm-bus whoami` inside its shell tool after upgrading llm-bus to register the endpoint. Native messages enter Claude's queue between tool calls and can start a turn while idle, preserving the prompt draft. The bus sends a session-targeted JSON frame and never uses `herdr agent prompt`, which can submit unfinished user input. No messaging tokens are stored. Missing sockets and Windows named pipes use deferred notification (`unsupported`); unreachable sockets report `failed`. See [Claude's inbox socket](https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket).
 
@@ -96,6 +100,8 @@ Copy the entire `skills/llm-bus/` directory into your agent's skills directory
 requires the CLI above; copying it does not install the CLI or host hooks.
 
 The hooks tell agents their bus address and pending-message count, but a standing instruction also helps them discover the CLI and decide when to use it. Copy the [agent instruction snippet](examples/agent-instructions.md) into an instruction file that your agents load.
+
+SessionStart and missing or outdated guidance state emit full identity, trust, and usage guidance. Normal prompt hooks use a compact reminder with the current folder, pending count (capped at `100+`), inbox/ack hints, and current peer restrictions. Remote usage details appear in the full form only for a configured repository. To recover full guidance after context compaction, run `llm-bus guidance`; it returns the current guidance without changing messages or guidance-version state. SessionStart also restores full guidance when the host emits that event. No other compaction event is assumed.
 
 If you are an LLM installing the bus for someone, **ask whether to add the snippet to this project or to their global agent instructions before editing those files**. Preserve existing instructions and avoid duplicate copies.
 
@@ -122,6 +128,10 @@ The basic snippet includes coordination rules. Use the same rules below when upd
 
 ## Browse message history
 
+`llm-bus status MESSAGE_ID` reads body-free diagnostics for one retained local integer message ID. Replace `MESSAGE_ID` with an ID from `send`, `inbox`, or `history`. It needs no host identity, configuration, token, network, or running bridge, and remains readable after blocking a peer or removing configuration. It never registers a session, migrates the mailbox, acknowledges a message, or requests a wake. A missing mailbox or unknown/nonpositive ID fails without creating data.
+
+The result separates `transport`, the message's own `wake` result and coverage, `acknowledged_at`, the last synchronized strict `work_report`, and `synchronization`. Native storage is `stored_local`; an imported message proves local durable admission, not current sender-side relay state. Missing metadata is null. Synchronization is stale without a successful observation, after 30 seconds, or after an error. Separate operation metadata prevents a successful transport read from implying a fresh report. Wake errors use fixed safe categories; original history is retained. A queued report intent is not a synchronized report, and no state proves task completion or authorizes work.
+
 `history` reads stored bus messages without acknowledging them. It does not need a Claude or Codex session ID, so a separate viewer can use it. It shows messages involving the current folder by default:
 
 ```text
@@ -131,12 +141,16 @@ llm-bus history --repository PROJECT_FOLDER
 llm-bus history --all
 llm-bus history --all --before 123 --limit 50
 llm-bus history --folder PROJECT_FOLDER --after 123
+llm-bus history --conversation 123 --peer codex:SESSION_ID
+llm-bus status MESSAGE_ID
 llm-bus agents
 ```
 
 `--folder` matches one exact folder. `--repository` includes that Git repository and its linked worktrees, using each message's send-time repository; outside Git, it matches the folder. Old messages whose worktree paths no longer exist may appear only under their exact folder. History rows contain message ID, sender, recipient, body, both folders at send time, send time, acknowledgement time, and the recorded wake status, path, reason, and check time. A null acknowledgement time means the message is pending. Null wake fields mean the message predates wake recording or the send stopped before its result could be stored. The default view and `--before` return newest messages first; `--after` returns oldest first for polling. Each call returns at most 100 messages. Use the lowest returned ID with `--before` for an older page and the highest seen ID with `--after` for new messages.
 
 `agents` returns registered addresses, provider kinds, last reported folders (`project`), and last activity times. Neither command changes message state. Old messages with unknown folders keep null values; the bus does not infer their past location from a session's current one. History contains bus messages, not full agent transcripts.
+
+Use `llm-bus send ADDRESS --reply-to 123 --body "Reply text"` to link a reply to a retained local message ID. Participants and their stored repository scopes must match; cross-folder replies still require `--cross-folder`. Unknown historical scopes cannot establish a link. Inbox and history JSON include nullable `reply_to`; old messages remain roots. `history --conversation 123` selects the root and descendants of that message, intersected with the usual scope, cursor, and limit filters. `--peer ADDRESS` matches either participant exactly and composes with conversation filtering. Both options remain read-only.
 
 ### Herdr viewer
 
@@ -154,6 +168,8 @@ The viewer starts with the active Herdr workspace repository, using the focused 
 ## Storage and permissions
 
 Sessions running as the same operating-system user share a SQLite mailbox. By default it lives at `~/.local/share/llm-bus/bus.sqlite3` on Linux and macOS, or under `LOCALAPPDATA/llm-bus/bus.sqlite3` on Windows. If `LOCALAPPDATA` is unavailable, Windows uses `AppData/Local` under the user profile. Set `LLM_BUS_DB` to use another path. The installed CLI works from any folder on the computer.
+
+Mailbox upgrades are additive and transactional. A current mailbox skips schema migration work; an older CLI rejects a mailbox with a newer schema version. Inbox reads scan bounded pages from the oldest pending message each time, skip remote messages denied by current machine policy, and retain them in history. Transport updates preserve delivery and acknowledgement progress when bridge responses arrive out of order; delivery takes precedence over unreceived expiry.
 
 After host setup, the bus itself asks for no per-message approval. Claude's installed allow rule covers direct `llm-bus` commands; shell pipelines and other commands may still prompt, and managed or explicit deny rules can override it. See [Claude Code permissions](https://code.claude.com/docs/en/permissions).
 

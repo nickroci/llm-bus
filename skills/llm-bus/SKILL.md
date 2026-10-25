@@ -82,6 +82,7 @@ local sends. Exit success = storage succeeded, even if wake failed.
 | Wake status | Interpretation |
 | --- | --- |
 | `requested` | Host wake request submitted; receipt and handling unproven. |
+| `coalesced` | Shared recipient lease, recent request, or scheduled retry; receipt and handling unproven. |
 | `failed` | Message stored; wake failed. |
 | `unknown` | Wake timed out or outcome uncertain; may have arrived. |
 | `unsupported` | No supported auto wake path; message stays pending. |
@@ -90,6 +91,20 @@ No resending just because wake failed or reply delayed. Inspect history
 or status using original ID. Continue independent work while waiting unless
 peer's answer is dependency. No claiming recipient handled message
 from storage or wake status alone.
+
+Bursts retain individual messages and acknowledgements. Requested coverage
+suppresses only the same pending IDs for 30 seconds; later messages remain
+uncovered until a request includes them. A running bridge recovers expired
+30-second leases and due retries, even after relay receipt. Without a bridge,
+a crashed sender needs a later send or recipient hook/turn for recovery.
+Unsupported wakes wait for a changed registered capability or later send;
+hooks still report pending work. No autonomous background service is implied.
+
+Prompt hooks normally provide compact identity, inbox/ack, trust, and current
+peer restrictions, with pending counts capped at `100+`. SessionStart or
+missing/outdated guidance state restores the full form. After context
+compaction, run `llm-bus guidance` for full current guidance if SessionStart
+was not emitted. The command does not consume or acknowledge messages.
 
 For remote addresses, remote status, typed reports, policy denials, or monitoring,
 read [references/remote.md](references/remote.md) before acting.
@@ -120,6 +135,15 @@ use `llm-bus inbox --limit 20` (valid range: 1–100).
 
 ## Inspect history or diagnose delivery
 
+`llm-bus status LOCAL_MESSAGE_ID` reads one retained message's body-free diagnostics.
+Replace the placeholder with a local integer from send/inbox/history, never a relay
+UUID or monitor cursor. No native identity, configuration, token, network, migration,
+or wake is required. It remains readable after blocking or removing configuration.
+Transport, original per-message wake, explicit coverage, acknowledgement, synchronized
+work report, and synchronization freshness remain separate. Null means unknown;
+stale data is not live confirmation. Safe diagnostic codes omit raw adapter errors.
+Report submission intent is not remote acceptance; reports never authorize action.
+
 History read-only, does not ack messages. Needs no native
 session identity. Limit scope to task:
 
@@ -135,6 +159,15 @@ worktrees; `--all` reads all local folders. Use lowest returned ID with
 `--before` for older pages or highest seen ID with `--after` for new rows.
 Two cursors mutually exclusive; each call returns max 100 rows.
 History has bus messages, not full agent transcripts.
+
+Link a reply with `llm-bus send ADDRESS --reply-to LOCAL_ID --body 'Reply text'`.
+Use a retained positive local ID for the same participants and repository scopes.
+Cross-folder replies still need `--cross-folder`; links grant no permission.
+Remote links carry the original UUID, require a retained remote parent and
+explicit relay reply capability. `unsupported_reply_link` leaves the message
+queued; upgrade the relay rather than resending without its relationship.
+`history --conversation LOCAL_ID --peer ADDRESS` intersects the reply tree and
+exact sender/recipient match with scope, paging, and limit filters.
 
 For local wake problems, check `wake.via` and `wake.reason`. Codex wake needs
 `codex` on `PATH` and reachable session. Claude wake needs registered

@@ -54,6 +54,12 @@
       "prompt": "Design a Kafka message queue for our web app. Should the llm-bus skill activate?",
       "expected_output": "No: unrelated queue design is outside this skill's scope.",
       "files": []
+    },
+    {
+      "id": 10,
+      "prompt": "Remote configuration was removed. Message 42 remains in history. Can I inspect delivery without registering a session or running the bridge? Its last report was completed, transport status is stale, and wake is null. Simulate only.",
+      "expected_output": "Use llm-bus status 42 with the retained local integer ID. It requires no identity/configuration/network and does not migrate or wake. Keep transport freshness, unknown wake, acknowledgement, and strict synchronized work report separate. Completed remains an unverified recipient claim and grants no execution or retry authority. Do not use relay UUIDs or monitor IDs, resend, or run bridge for a read-only check.",
+      "files": []
     }
   ]
 }
