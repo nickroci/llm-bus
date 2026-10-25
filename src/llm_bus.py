@@ -160,8 +160,14 @@ def _hook(store: Store, kind: str) -> None:
         print(
             json.dumps(
                 {
-                    "decision": "block",
-                    "reason": "Bus message already acknowledged; inbox empty.",
+                    "hookSpecificOutput": {
+                        "hookEventName": event,
+                        "additionalContext": (
+                            "This bus wake refers to an already acknowledged message, "
+                            "and the inbox is empty. No action is needed for this notice. "
+                            "Do not retry or acknowledge it again."
+                        ),
+                    },
                 }
             )
         )

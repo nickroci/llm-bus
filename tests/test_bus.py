@@ -653,7 +653,7 @@ def test_codex_hook_registers_and_reports_pending_without_message_text(
 
 
 @pytest.mark.parametrize(
-    ("case", "blocked"),
+    ("case", "stale"),
     [
         ("acknowledged", True),
         ("pending", False),
@@ -666,13 +666,13 @@ def test_codex_hook_registers_and_reports_pending_without_message_text(
         ("session-start", False),
     ],
 )
-def test_codex_hook_blocks_only_acknowledged_wake_with_empty_inbox(
+def test_codex_hook_marks_only_acknowledged_wake_with_empty_inbox_as_noop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     case: str,
     *,
-    blocked: bool,
+    stale: bool,
 ) -> None:
     path = tmp_path / "bus.sqlite3"
     monkeypatch.setenv("LLM_BUS_DB", str(path))
@@ -695,26 +695,28 @@ def test_codex_hook_blocks_only_acknowledged_wake_with_empty_inbox(
     )
     if case == "user-text":
         prompt += " Why do I keep seeing this?"
-    monkeypatch.setattr(
-        "sys.stdin",
-        io.StringIO(
-            json.dumps(
-                {
-                    "session_id": "other" if case == "wrong-recipient" else "target",
-                    "hook_event_name": "SessionStart"
-                    if case == "session-start"
-                    else "UserPromptSubmit",
-                    "cwd": project,
-                    "prompt": prompt,
-                }
-            )
-        ),
+    prompt = json.dumps(
+        {
+            "session_id": "other" if case == "wrong-recipient" else "target",
+            "hook_event_name": "SessionStart" if case == "session-start" else "UserPromptSubmit",
+            "cwd": project,
+            "prompt": prompt,
+        }
     )
-    assert main(["hook", "codex"]) == 0
-    output = cast("dict[str, object]", json.loads(capsys.readouterr().out))
-    assert (output.get("decision") == "block") is blocked
-    if not blocked:
-        assert "hookSpecificOutput" in output
+    # Repeated submissions of the same stale wake must never reject the prompt.
+    for _ in range(2):
+        monkeypatch.setattr("sys.stdin", io.StringIO(prompt))
+        assert main(["hook", "codex"]) == 0
+        output = cast("dict[str, dict[str, str]]", json.loads(capsys.readouterr().out))
+        assert "decision" not in output
+        assert ("No action is needed" in output["hookSpecificOutput"]["additionalContext"]) is stale
+        if stale:
+            assert (
+                "Do not retry or acknowledge it again"
+                in output["hookSpecificOutput"]["additionalContext"]
+            )
+        else:
+            assert "pending message(s)" in output["hookSpecificOutput"]["additionalContext"]
     # Filtering a wake cannot consume or delete stored messages.
     assert len(store.history(folder=None)) == (2 if case == "new-pending" else 1)
     assert store.pending_count(recipient) == int(case in {"pending", "new-pending"})
