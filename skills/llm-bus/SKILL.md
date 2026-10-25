@@ -82,7 +82,7 @@ local sends. Exit success = storage succeeded, even if wake failed.
 | Wake status | Interpretation |
 | --- | --- |
 | `requested` | Host wake request submitted; receipt and handling unproven. |
-| `coalesced` | Shared recipient lease, recent request, or scheduled retry; receipt and handling unproven. |
+| `coalesced` | Shared recipient lease, successful request, or scheduled retry; receipt and handling unproven. |
 | `failed` | Message stored; wake failed. |
 | `unknown` | Wake timed out or outcome uncertain; may have arrived. |
 | `unsupported` | No supported auto wake path; message stays pending. |
@@ -92,9 +92,12 @@ or status using original ID. Continue independent work while waiting unless
 peer's answer is dependency. No claiming recipient handled message
 from storage or wake status alone.
 
-Bursts retain individual messages and acknowledgements. Requested coverage
-suppresses only the same pending IDs for 30 seconds; later messages remain
-uncovered until a request includes them. A running bridge recovers expired
+Bursts retain individual messages and acknowledgements. Successful requested
+coverage persists across restarts and prevents repeat wakes for those same
+pending IDs; later messages remain uncovered until a request includes them.
+If the host loses an already queued notice, pending messages remain available
+at the recipient's next hook or inbox read; no automatic resend follows.
+A running bridge recovers expired
 30-second leases and due retries, even after relay receipt. Without a bridge,
 a crashed sender needs a later send or recipient hook/turn for recovery.
 Unsupported wakes wait for a changed registered capability or later send;

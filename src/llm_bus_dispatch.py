@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from llm_bus_store import Store
 
 LEASE_SECONDS = 30
-REQUESTED_SECONDS = 30
 GATHER_SECONDS = 0.025
 MAX_HOST_ATTEMPTS = 2
 RETRY_BASE_SECONDS = 5
@@ -23,7 +22,7 @@ RETRY_MAX_SECONDS = 300
 COALESCED: WakeResult = {
     "status": "coalesced",
     "via": "wake coordinator",
-    "reason": "pending work covered by an active lease, recent request, or scheduled retry",
+    "reason": "pending work covered by an active lease, successful request, or scheduled retry",
 }
 
 
@@ -73,6 +72,16 @@ def _claim(store: Store, recipient: str, *, trigger_id: int | None) -> Claim | N
         # Both local and remote admissions durably advance the requested generation.
         if unsupported == capability and trigger_id is None and requested == dispatched:
             return None
+        if (
+            db.execute(
+                "SELECT 1 FROM messages m WHERE m.recipient=? AND m.acknowledged_at IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM wake_coverage c "
+                "WHERE c.message_id=m.id AND c.status='requested') LIMIT 1",
+                (recipient,),
+            ).fetchone()
+            is None
+        ):
+            return None
         token = str(uuid.uuid4())
         lease = (_now() + timedelta(seconds=LEASE_SECONDS)).isoformat()
         db.execute(
@@ -95,20 +104,19 @@ def _snapshot(store: Store, recipient: str, claim: Claim) -> Batch:
     if row is None:
         return Batch(0, [])
     members = store.pending_members(recipient)
-    threshold = (_now() - timedelta(seconds=REQUESTED_SECONDS)).isoformat()
     with store.transaction() as db:
-        recent = {
+        covered = {
             item[0]
             for item in cast(
                 "list[tuple[int]]",
                 db.execute(
                     "SELECT c.message_id FROM wake_coverage c JOIN messages m ON m.id=c.message_id "
-                    "WHERE m.recipient=? AND c.status='requested' AND c.checked_at>?",
-                    (recipient, threshold),
+                    "WHERE m.recipient=? AND c.status='requested'",
+                    (recipient,),
                 ).fetchall(),
             )
         }
-    return Batch(row[0], [] if all(key in recent for key, _ in members) else members)
+    return Batch(row[0], [member for member in members if member[0] not in covered])
 
 
 def _native(store: Store, recipient: str, members: list[tuple[int, str]]) -> WakeResult:
@@ -146,10 +154,15 @@ def _finish(
     now = _now()
     status = result["status"]
     attempts = 0 if status in {"requested", "coalesced"} else claim.attempts + 1
-    next_attempt = now + timedelta(
-        seconds=REQUESTED_SECONDS
+    next_attempt = (
+        None
         if status in {"requested", "coalesced"}
-        else min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * (1 << min(attempts - 1, 6)))
+        else (
+            now
+            + timedelta(
+                seconds=min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * (1 << min(attempts - 1, 6)))
+            )
+        ).isoformat()
     )
     capability = _capability(store, recipient) if status == "unsupported" else None
     with store.transaction() as db:
@@ -163,20 +176,6 @@ def _finish(
         )
         if row is None:
             return None  # An expired leader cannot overwrite a newer leader's coverage.
-        if status == "coalesced":
-            earliest = cast(
-                "tuple[str | None]",
-                db.execute(
-                    "SELECT MIN(c.checked_at) FROM wake_coverage c JOIN messages m "
-                    "ON m.id=c.message_id WHERE m.recipient=? AND m.acknowledged_at IS NULL "
-                    "AND c.status='requested' AND c.checked_at>?",
-                    (recipient, (now - timedelta(seconds=REQUESTED_SECONDS)).isoformat()),
-                ).fetchone(),
-            )[0]
-            if earliest is not None:
-                next_attempt = datetime.fromisoformat(earliest) + timedelta(
-                    seconds=REQUESTED_SECONDS
-                )
         for key, _ in batch.members:
             db.execute(
                 "INSERT INTO wake_coverage(message_id,attempt_token,status,checked_at) "
@@ -202,7 +201,7 @@ def _finish(
             "next_attempt_at=?,attempts=?,capability=? WHERE recipient=? AND token=?",
             (
                 batch.generation,
-                None if arrived else next_attempt.isoformat(),
+                None if arrived else next_attempt,
                 attempts,
                 capability,
                 recipient,
