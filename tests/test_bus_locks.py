@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 from typing import TYPE_CHECKING, cast
 
@@ -415,3 +416,21 @@ def test_timer_sleeps_until_estimate_then_raises_the_check(
     locks.release(key)
     run_timer(store, key, sleep=fake_sleep)
     assert len(slept) == 1
+
+
+def test_full_guidance_teaches_locks_and_reaches_running_sessions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("LLM_BUS_DB", str(tmp_path / "bus.sqlite3"))
+    store = Store(tmp_path / "bus.sqlite3")
+    address = store.register("claude", "one", str(tmp_path))
+    store.guidance_needed(address, 1, reset=False)
+    hook = json.dumps(
+        {"session_id": "one", "hook_event_name": "UserPromptSubmit", "cwd": str(tmp_path)}
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(hook))
+    assert main(["hook", "claude"]) == 0
+    assert "llm-bus lock acquire NAME --check 45m" in capsys.readouterr().out
+    monkeypatch.setattr("sys.stdin", io.StringIO(hook))
+    assert main(["hook", "claude"]) == 0
+    assert "llm-bus lock acquire NAME" not in capsys.readouterr().out

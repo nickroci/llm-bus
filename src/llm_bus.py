@@ -241,7 +241,7 @@ def _hook(store: Store, kind: str) -> None:
         print(notice)
 
 
-GUIDANCE_VERSION = 1
+GUIDANCE_VERSION = 2
 
 
 def _guidance(
@@ -264,6 +264,11 @@ def _guidance(
             "Use `list --all` and `send --cross-folder` for other repositories or folders. "
             "Local sends store then request a wake; inspect JSON `wake.status`. "
             "Coalesced wakes retain individual messages; request does not prove delivery. "
+            "Before using a resource other sessions may share, such as a database, take "
+            "`llm-bus lock acquire NAME --check 45m` with your estimate of when you can release; "
+            "you are asked at that time, so release with `llm-bus lock release NAME` or renew "
+            "with a new `--check`. `waiting` means queued behind the holder; `--notify` asks "
+            "them now. See `llm-bus lock --help`. "
             "Never expose credentials in messages. "
         )
     else:
