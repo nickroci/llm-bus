@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 from llm_bus_dispatch import dispatch_pending
 from llm_bus_install import configure_hosts, restore_bus_settings, snapshot_host_settings
-from llm_bus_locks import Key, Locks, detach, run_timer
+from llm_bus_locks import Key, Locks, Request, detach, run_timer
 from llm_bus_policy import REPORT_REASONS, load_config, optional_config, require_config
 from llm_bus_remote import enqueue_remote, remote_peers, run_bridge
 from llm_bus_remote_store import RemoteStore
@@ -139,6 +139,12 @@ def _lock_parser(lock: argparse.ArgumentParser) -> None:
         help="Your estimate of when you can release, such as 45m, 2h, or 1d; you are asked then",
     )
     acquire.add_argument("--reason", help="Why you need it; shown to the holder")
+    acquire.add_argument(
+        "--describe", help="What this name protects; required the first time a name is used"
+    )
+    acquire.add_argument(
+        "--new", action="store_true", help="Confirm a name that resembles an existing one"
+    )
     acquire.add_argument("--ttl", type=int, help="Lease minutes before it lapses (default 1440)")
     acquire.add_argument(
         "--notify",
@@ -147,6 +153,10 @@ def _lock_parser(lock: argparse.ArgumentParser) -> None:
     )
     release = actions.add_parser("release", help="Give it up; the first waiter takes it")
     release.add_argument("resource")
+    catalog = actions.add_parser(
+        "list", help="Show known lock names, what they protect, and who holds them"
+    )
+    catalog.add_argument("--all", action="store_true", help="Every repository and folder")
     status = actions.add_parser("status", help="Show holders, leases, and queues")
     status.add_argument("resource", nargs="?")
     status.add_argument("--all", action="store_true", help="Every repository and folder")
@@ -162,8 +172,10 @@ def _lock_parser(lock: argparse.ArgumentParser) -> None:
 def _lock(store: Store, args: dict[str, object], agent_address: str, project: str) -> object:
     locks = Locks(store, agent_address, project)
     action = args["lock_command"]
-    resource = cast("str | None", args["resource"])
-    shared = cast("bool", args["shared"])
+    resource = cast("str | None", args.get("resource"))
+    shared = bool(args.get("shared"))
+    if action == "list":
+        return locks.catalog(every_scope=cast("bool", args["all"]))
     if action == "status":
         key = locks.key(resource, shared=shared) if resource is not None else None
         return locks.status(key, every_scope=cast("bool", args["all"]))
@@ -173,10 +185,14 @@ def _lock(store: Store, args: dict[str, object], agent_address: str, project: st
     if action == "acquire":
         return locks.acquire(
             key,
-            check=cast("str | None", args["check"]),
-            reason=cast("str | None", args["reason"]),
-            ttl_minutes=cast("int | None", args["ttl"]),
-            notify=cast("bool", args["notify"]),
+            Request(
+                check=cast("str | None", args["check"]),
+                reason=cast("str | None", args["reason"]),
+                ttl_minutes=cast("int | None", args["ttl"]),
+                describe=cast("str | None", args["describe"]),
+                new=cast("bool", args["new"]),
+                notify=cast("bool", args["notify"]),
+            ),
         )
     return locks.release(key)
 
@@ -241,7 +257,7 @@ def _hook(store: Store, kind: str) -> None:
         print(notice)
 
 
-GUIDANCE_VERSION = 2
+GUIDANCE_VERSION = 3
 
 
 def _guidance(
@@ -264,8 +280,10 @@ def _guidance(
             "Use `list --all` and `send --cross-folder` for other repositories or folders. "
             "Local sends store then request a wake; inspect JSON `wake.status`. "
             "Coalesced wakes retain individual messages; request does not prove delivery. "
-            "Before using a resource other sessions may share, such as a database, take "
-            "`llm-bus lock acquire NAME --check 45m` with your estimate of when you can release; "
+            "Before using a resource other sessions may share, such as a database, run "
+            "`llm-bus lock list` and reuse an existing name for it, then take "
+            "`llm-bus lock acquire NAME --check 45m` with your estimate of when you can release "
+            "(a new name also needs `--describe` saying what it protects); "
             "you are asked at that time, so release with `llm-bus lock release NAME` or renew "
             "with a new `--check`. `waiting` means queued behind the holder; `--notify` asks "
             "them now. See `llm-bus lock --help`. "

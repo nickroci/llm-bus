@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import difflib
 import os
 import re
 import subprocess
@@ -25,6 +26,11 @@ MAX_TTL_MINUTES = 7 * 24 * 60
 NUDGE_INTERVAL_MINUTES = 5
 MAX_RESOURCE_LENGTH = 200
 MAX_REASON_LENGTH = 500
+MAX_DESCRIPTION_LENGTH = 200
+HOOK_NAME_LIMIT = 10
+HOOK_DESCRIPTION_CHARS = 60
+CATALOG_IDLE_DAYS = 30
+SIMILAR_RATIO = 0.8
 SHARED_SCOPE = "shared"
 TIMER_POLL_SECONDS = 15 * 60
 TIMER_START_SECONDS = 10
@@ -75,6 +81,17 @@ class Key(NamedTuple):
     resource: str
 
 
+class Request(NamedTuple):
+    """One acquire: release estimate, lease, purpose, and how to treat names and holders."""
+
+    check: str | None = None
+    reason: str | None = None
+    ttl_minutes: int | None = None
+    describe: str | None = None
+    new: bool = False
+    notify: bool = False
+
+
 class Locks:
     """Lock commands for one registered session; every call reaps lapsed holders first."""
 
@@ -90,22 +107,15 @@ class Locks:
             raise BusError("Resource name must be 1-200 printable characters")
         return Key(SHARED_SCOPE if shared else routing_scope(self.project), name)
 
-    def acquire(
-        self,
-        key: Key,
-        *,
-        check: str | None,
-        reason: str | None,
-        ttl_minutes: int | None,
-        notify: bool = False,
-    ) -> dict[str, object]:
+    def acquire(self, key: Key, request: Request) -> dict[str, object]:
         """Take a free resource or renew an owned one with a new check time, else queue.
 
         The check time is the holder's estimate of when it can release; the bus wakes the
         holder then and asks. With notify, a queued caller also wakes the holder now.
         """
-        reason = _clean_reason(reason)
-        ttl = _ttl(ttl_minutes)
+        reason = _clean_reason(request.reason)
+        ttl = _ttl(request.ttl_minutes)
+        description = _clean_description(request.describe)
         with self.store.transaction() as db:
             db.execute("BEGIN IMMEDIATE")
             notices = _reap(db)
@@ -117,7 +127,8 @@ class Locks:
                 ).fetchone(),
             )
             if row is None:
-                minutes = _check_minutes(check, ttl)
+                minutes = _check_minutes(request.check, ttl)
+                _register(db, key, self.agent_address, description, new=request.new)
                 db.execute(
                     "INSERT INTO resource_locks(scope,resource,holder,reason,acquired_at,"
                     "expires_at,check_at) VALUES (?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),"
@@ -131,7 +142,8 @@ class Locks:
                 )
                 status = "acquired"
             elif row[0] == self.agent_address:
-                minutes = _check_minutes(check, ttl)
+                minutes = _check_minutes(request.check, ttl)
+                _register(db, key, self.agent_address, description, new=True)
                 db.execute(
                     "UPDATE resource_locks SET "
                     "expires_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?), "
@@ -141,7 +153,7 @@ class Locks:
                 )
                 status = "renewed"
             else:
-                asked = self._enqueue(db, key, row[0], reason, notify=notify)
+                asked = self._enqueue(db, key, row[0], reason, notify=request.notify)
                 notices.extend(asked)
                 status = "waiting"
             lock = _read_lock(db, key)
@@ -242,6 +254,16 @@ class Locks:
             locks = [lock for lock in (_read_lock(db, item) for item in keys) if lock]
         return {"locks": locks, "notices": self._deliver(notices)}
 
+    def catalog(self, *, every_scope: bool) -> dict[str, object]:
+        """Known lock names with what they cover and who holds them, free ones included."""
+        with self.store.transaction() as db:
+            db.execute("BEGIN IMMEDIATE")
+            notices = _reap(db)
+            resources = _catalog_rows(
+                db, None if every_scope else (routing_scope(self.project), SHARED_SCOPE)
+            )
+        return {"resources": resources, "notices": self._deliver(notices)}
+
     def summary(self) -> str:
         """One hook sentence naming held and awaited resources, or empty when there are none."""
         with self.store.transaction() as db:
@@ -264,8 +286,11 @@ class Locks:
                     (self.agent_address,),
                 ).fetchall(),
             )
+            known = _catalog_rows(db, (routing_scope(self.project), SHARED_SCOPE))
         self._deliver(notices)
         parts: list[str] = []
+        if known:
+            parts.append(_known_phrase(known))
         if held:
             names = ", ".join(_held_phrase(*item) for item in held)
             parts.append(
@@ -314,6 +339,127 @@ def _held_phrase(resource: str, until: str, check: str, checked: str | None) -> 
     if checked is not None and checked >= check:
         return f"{resource} (check at {check} is unanswered; lease until {until})"
     return f"{resource} (check due {check}; lease until {until})"
+
+
+def _clean_description(description: str | None) -> str | None:
+    if description is None:
+        return None
+    text = " ".join(description.split())
+    if len(text) > MAX_DESCRIPTION_LENGTH:
+        raise BusError("Description must be at most 200 characters")
+    return text or None
+
+
+def _tokens(name: str) -> list[str]:
+    return sorted(token for token in re.split(r"[^a-z0-9]+", name.lower()) if token)
+
+
+def _similar(first: str, second: str) -> bool:
+    """Treat reordered, re-punctuated, nested, or near-spelled names as likely duplicates."""
+    left, right = _tokens(first), _tokens(second)
+    if not left or not right:
+        return False
+    if set(left) <= set(right) or set(right) <= set(left):
+        return True
+    ratio = difflib.SequenceMatcher(None, " ".join(left), " ".join(right)).ratio()
+    return ratio >= SIMILAR_RATIO
+
+
+def _register(
+    db: sqlite3.Connection, key: Key, agent: str, description: str | None, *, new: bool
+) -> None:
+    """Record a name and its purpose on first use; refuse undescribed or look-alike names."""
+    known = cast(
+        "tuple[str] | None",
+        db.execute(
+            "SELECT description FROM resource_catalog WHERE scope=? AND resource=?", key
+        ).fetchone(),
+    )
+    if known is not None:
+        db.execute(
+            "UPDATE resource_catalog SET last_used_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),"
+            "description=COALESCE(?,description) WHERE scope=? AND resource=?",
+            (description, *key),
+        )
+        return
+    if description is None:
+        raise BusError(
+            f"{key.resource!r} is a new lock name; add --describe with what it protects. "
+            "Run `llm-bus lock list` to reuse an existing name instead"
+        )
+    if not new:
+        others = cast(
+            "list[tuple[str, str]]",
+            db.execute(
+                "SELECT resource,description FROM resource_catalog WHERE scope=? ORDER BY resource",
+                (key.scope,),
+            ).fetchall(),
+        )
+        alike = [f"{name} ({about})" for name, about in others if _similar(key.resource, name)]
+        if alike:
+            raise BusError(
+                f"{key.resource!r} looks like existing lock name(s): {'; '.join(alike)}. "
+                "Acquire one of those if it is the same resource, or add --new if it is not"
+            )
+    db.execute(
+        "INSERT INTO resource_catalog(scope,resource,description,created_by,created_at,"
+        "last_used_at) VALUES (?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),"
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        (*key, description, agent),
+    )
+
+
+def _catalog_rows(
+    db: sqlite3.Connection, scopes: tuple[str, str] | None
+) -> list[dict[str, object]]:
+    query = (
+        "SELECT c.scope,c.resource,c.description,c.created_by,c.last_used_at,l.holder,"
+        "l.check_at,(SELECT COUNT(*) FROM resource_lock_waiters w WHERE w.scope=c.scope "
+        "AND w.resource=c.resource) FROM resource_catalog c LEFT JOIN resource_locks l "
+        "ON l.scope=c.scope AND l.resource=c.resource"
+    )
+    parameters: tuple[str, ...] = ()
+    if scopes is not None:
+        query += " WHERE c.scope IN (?,?)"
+        parameters = scopes
+    rows = cast(
+        "list[tuple[str, str, str, str, str, str | None, str | None, int]]",
+        db.execute(query + " ORDER BY c.last_used_at DESC", parameters).fetchall(),
+    )
+    return [
+        {
+            "resource": row[1],
+            "scope": row[0],
+            "description": row[2],
+            "created_by": row[3],
+            "last_used_at": row[4],
+            "held_by": row[5],
+            "check_at": row[6],
+            "waiters": row[7],
+        }
+        for row in rows
+    ]
+
+
+def _known_phrase(known: list[dict[str, object]]) -> str:
+    shown = known[:HOOK_NAME_LIMIT]
+    names = "; ".join(
+        f"{item['resource']}{' --shared' if item['scope'] == SHARED_SCOPE else ''} = "
+        f"{_shorten(cast('str', item['description']))} "
+        f"({'held by ' + cast('str', item['held_by']) if item['held_by'] else 'free'})"
+        for item in shown
+    )
+    more = f" and {len(known) - len(shown)} more" if len(known) > len(shown) else ""
+    return (
+        f"Known lock names: {names}{more}. Reuse these names for the same resource; "
+        "`llm-bus lock list` shows all. "
+    )
+
+
+def _shorten(text: str) -> str:
+    if len(text) <= HOOK_DESCRIPTION_CHARS:
+        return text
+    return text[: HOOK_DESCRIPTION_CHARS - 3].rstrip() + "..."
 
 
 def _clean_reason(reason: str | None) -> str | None:
@@ -405,6 +551,12 @@ def _reap(db: sqlite3.Connection) -> list[Notice]:
     for key, holder in stale:
         notices.extend(_hand_off(db, key, holder))
     notices.extend(_due_checks(db))
+    db.execute(
+        "DELETE FROM resource_catalog WHERE last_used_at <= "
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?) AND NOT EXISTS (SELECT 1 FROM resource_locks "
+        "l WHERE l.scope=resource_catalog.scope AND l.resource=resource_catalog.resource)",
+        (f"-{CATALOG_IDLE_DAYS} days",),
+    )
     return notices
 
 

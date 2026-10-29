@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from llm_bus import main
-from llm_bus_locks import TIMER_POLL_SECONDS, Locks, run_timer
+from llm_bus_locks import TIMER_POLL_SECONDS, Locks, Request, run_timer
 from llm_bus_store import BusError, Store
 
 if TYPE_CHECKING:
@@ -55,7 +55,9 @@ def test_free_resource_is_acquired_then_renewed_by_its_holder(
     locks = Locks(store, holder, "/project")
     key = locks.key("db:orders", shared=False)
 
-    first = locks.acquire(key, reason="migrating", ttl_minutes=None, check="1h")
+    first = locks.acquire(
+        key, Request(reason="migrating", ttl_minutes=None, check="1h", describe="test resource")
+    )
     assert first["status"] == "acquired"
     lock = cast("dict[str, object]", first["lock"])
     assert lock["holder"] == holder
@@ -64,7 +66,9 @@ def test_free_resource_is_acquired_then_renewed_by_its_holder(
     assert lock["waiters"] == []
     assert first["notices"] == []
 
-    again = locks.acquire(key, reason=None, ttl_minutes=5, check="5m")
+    again = locks.acquire(
+        key, Request(reason=None, ttl_minutes=5, check="5m", describe="test resource")
+    )
     assert again["status"] == "renewed"
     renewed = cast("dict[str, object]", again["lock"])
     assert renewed["reason"] == "migrating"
@@ -80,10 +84,12 @@ def test_contended_acquire_queues_waiter_and_wakes_holder_once_per_interval(
     holder = store.register("claude", "one", "/project")
     waiter = store.register("codex", "two", "/project")
     key = Locks(store, holder, "/project").key("db:orders", shared=False)
-    Locks(store, holder, "/project").acquire(key, reason=None, ttl_minutes=None, check="1h")
+    Locks(store, holder, "/project").acquire(
+        key, Request(reason=None, ttl_minutes=None, check="1h", describe="test resource")
+    )
 
     quiet = Locks(store, waiter, "/project").acquire(
-        key, reason="need schema", ttl_minutes=None, check="1h"
+        key, Request(reason="need schema", ttl_minutes=None, check="1h", describe="test resource")
     )
     assert quiet["status"] == "waiting"
     assert quiet["notified"] is False
@@ -91,7 +97,8 @@ def test_contended_acquire_queues_waiter_and_wakes_holder_once_per_interval(
     assert wakes == []
 
     asked = Locks(store, waiter, "/project").acquire(
-        key, reason=None, ttl_minutes=None, check="1h", notify=True
+        key,
+        Request(reason=None, ttl_minutes=None, check="1h", notify=True, describe="test resource"),
     )
     assert asked["status"] == "waiting"
     assert asked["notified"] is True
@@ -107,7 +114,8 @@ def test_contended_acquire_queues_waiter_and_wakes_holder_once_per_interval(
     assert "`llm-bus lock release db:orders`" in body
 
     repeat = Locks(store, waiter, "/project").acquire(
-        key, reason=None, ttl_minutes=None, check="1h", notify=True
+        key,
+        Request(reason=None, ttl_minutes=None, check="1h", notify=True, describe="test resource"),
     )
     assert repeat["status"] == "waiting"
     assert repeat["notified"] is False
@@ -125,12 +133,18 @@ def test_release_hands_off_to_first_live_waiter_and_wakes_them(
     gone = store.register("codex", "two", "/project")
     later = store.register("claude", "three", "/project")
     key = Locks(store, holder, "/project").key("db:orders", shared=False)
-    Locks(store, holder, "/project").acquire(key, reason=None, ttl_minutes=None, check="1h")
+    Locks(store, holder, "/project").acquire(
+        key, Request(reason=None, ttl_minutes=None, check="1h", describe="test resource")
+    )
     Locks(store, gone, "/project").acquire(
-        key, reason=None, ttl_minutes=None, check="1h", notify=True
+        key,
+        Request(reason=None, ttl_minutes=None, check="1h", notify=True, describe="test resource"),
     )
     Locks(store, later, "/project").acquire(
-        key, reason="reports", ttl_minutes=None, check="1h", notify=True
+        key,
+        Request(
+            reason="reports", ttl_minutes=None, check="1h", notify=True, describe="test resource"
+        ),
     )
     store.end_session("codex", "two")
     assert wakes == [holder, holder]
@@ -163,8 +177,12 @@ def test_expired_or_ended_holders_lose_the_lock_on_any_command(
     holder = store.register("claude", "one", "/project")
     waiter = store.register("codex", "two", "/project")
     key = Locks(store, holder, "/project").key("db:orders", shared=False)
-    Locks(store, holder, "/project").acquire(key, reason=None, ttl_minutes=1, check="1m")
-    Locks(store, waiter, "/project").acquire(key, reason=None, ttl_minutes=None, check="1h")
+    Locks(store, holder, "/project").acquire(
+        key, Request(reason=None, ttl_minutes=1, check="1m", describe="test resource")
+    )
+    Locks(store, waiter, "/project").acquire(
+        key, Request(reason=None, ttl_minutes=None, check="1h", describe="test resource")
+    )
     with store.transaction() as db:
         db.execute("UPDATE resource_locks SET expires_at='2000-01-01T00:00:00.000Z'")
     assert wakes == []
@@ -190,17 +208,21 @@ def test_scopes_separate_folders_unless_shared(
     one = Locks(store, first, str(tmp_path / "first"))
     two = Locks(store, second, str(tmp_path / "second"))
 
-    assert one.acquire(one.key("db", shared=False), reason=None, ttl_minutes=None, check="1h")[
-        "status"
-    ] == ("acquired")
-    assert two.acquire(two.key("db", shared=False), reason=None, ttl_minutes=None, check="1h")[
-        "status"
-    ] == ("acquired")
-    assert one.acquire(one.key("db", shared=True), reason=None, ttl_minutes=None, check="1h")[
-        "status"
-    ] == ("acquired")
+    assert one.acquire(
+        one.key("db", shared=False),
+        Request(reason=None, ttl_minutes=None, check="1h", describe="test resource"),
+    )["status"] == ("acquired")
+    assert two.acquire(
+        two.key("db", shared=False),
+        Request(reason=None, ttl_minutes=None, check="1h", describe="test resource"),
+    )["status"] == ("acquired")
+    assert one.acquire(
+        one.key("db", shared=True),
+        Request(reason=None, ttl_minutes=None, check="1h", describe="test resource"),
+    )["status"] == ("acquired")
     waiting = two.acquire(
-        two.key("db", shared=True), reason=None, ttl_minutes=None, check="1h", notify=True
+        two.key("db", shared=True),
+        Request(reason=None, ttl_minutes=None, check="1h", notify=True, describe="test resource"),
     )
     assert waiting["status"] == "waiting"
     assert wakes == [first]
@@ -225,9 +247,13 @@ def test_invalid_names_reasons_and_ttls_are_rejected(tmp_path: Path) -> None:
     assert key.resource == "db"
     for ttl in (0, -1, 10081):
         with pytest.raises(BusError, match="TTL"):
-            locks.acquire(key, reason=None, ttl_minutes=ttl, check="1m")
+            locks.acquire(
+                key, Request(reason=None, ttl_minutes=ttl, check="1m", describe="test resource")
+            )
     with pytest.raises(BusError, match="Reason"):
-        locks.acquire(key, reason="x" * 501, ttl_minutes=None, check="1h")
+        locks.acquire(
+            key, Request(reason="x" * 501, ttl_minutes=None, check="1h", describe="test resource")
+        )
 
 
 def test_hook_guidance_names_held_and_awaited_locks(
@@ -239,12 +265,17 @@ def test_hook_guidance_names_held_and_awaited_locks(
     waiter = store.register("codex", "two", "/project")
     key = Locks(store, holder, "/project").key("db:orders", shared=False)
     assert Locks(store, holder, "/project").summary() == ""
-    Locks(store, holder, "/project").acquire(key, reason=None, ttl_minutes=None, check="1h")
-    Locks(store, waiter, "/project").acquire(key, reason=None, ttl_minutes=None, check="1h")
+    Locks(store, holder, "/project").acquire(
+        key, Request(reason=None, ttl_minutes=None, check="1h", describe="test resource")
+    )
+    Locks(store, waiter, "/project").acquire(
+        key, Request(reason=None, ttl_minutes=None, check="1h", describe="test resource")
+    )
     assert wakes == []
 
     held = Locks(store, holder, "/project").summary()
-    assert held.startswith("Locks you hold: db:orders (check due ")
+    assert held.startswith("Known lock names: db:orders = test resource (held by claude:one). ")
+    assert "Locks you hold: db:orders (check due " in held
     assert "`llm-bus lock release RESOURCE`" in held
     assert "--check 30m" in held
     awaiting = Locks(store, waiter, "/project").summary()
@@ -254,6 +285,8 @@ def test_hook_guidance_names_held_and_awaited_locks(
     )
     check = lock["check_at"]
     assert awaiting == (
+        f"Known lock names: db:orders = test resource (held by {holder}). "
+        "Reuse these names for the same resource; `llm-bus lock list` shows all. "
         f"Locks you await: db:orders (held by {holder}, check due {check}); "
         "you are woken when one passes to you. "
         "`llm-bus lock acquire RESOURCE --notify` asks the holder now. "
@@ -281,6 +314,8 @@ def test_cli_lock_round_trip(
                 "10",
                 "--check",
                 "5m",
+                "--describe",
+                "orders database",
             ]
         )
         == 0
@@ -325,13 +360,21 @@ def test_holder_must_estimate_release_within_its_lease(tmp_path: Path) -> None:
     locks = Locks(store, holder, "/project")
     key = locks.key("db", shared=False)
     with pytest.raises(BusError, match="--check"):
-        locks.acquire(key, check=None, reason=None, ttl_minutes=None)
+        locks.acquire(
+            key, Request(check=None, reason=None, ttl_minutes=None, describe="test resource")
+        )
     for bad in ("soon", "0m", "2w", "-5m"):
         with pytest.raises(BusError, match="--check"):
-            locks.acquire(key, check=bad, reason=None, ttl_minutes=None)
+            locks.acquire(
+                key, Request(check=bad, reason=None, ttl_minutes=None, describe="test resource")
+            )
     with pytest.raises(BusError, match="beyond the lease"):
-        locks.acquire(key, check="2h", reason=None, ttl_minutes=60)
-    acquired = locks.acquire(key, check="90", reason=None, ttl_minutes=None)
+        locks.acquire(
+            key, Request(check="2h", reason=None, ttl_minutes=60, describe="test resource")
+        )
+    acquired = locks.acquire(
+        key, Request(check="90", reason=None, ttl_minutes=None, describe="test resource")
+    )
     lock = cast("dict[str, object]", acquired["lock"])
     assert cast("str", lock["acquired_at"]) < cast("str", lock["check_at"])
     assert lock["checked_at"] is None
@@ -346,8 +389,10 @@ def test_due_check_asks_holder_once_until_it_answers_with_a_new_estimate(
     waiter = store.register("codex", "two", "/project")
     mine = Locks(store, holder, "/project")
     key = mine.key("db:orders", shared=False)
-    mine.acquire(key, check="1h", reason=None, ttl_minutes=None)
-    Locks(store, waiter, "/project").acquire(key, check=None, reason=None, ttl_minutes=None)
+    mine.acquire(key, Request(check="1h", reason=None, ttl_minutes=None, describe="test resource"))
+    Locks(store, waiter, "/project").acquire(
+        key, Request(check=None, reason=None, ttl_minutes=None, describe="test resource")
+    )
     assert mine.status(None, every_scope=False)["notices"] == []
     _overdue(store)
 
@@ -363,7 +408,9 @@ def test_due_check_asks_holder_once_until_it_answers_with_a_new_estimate(
     assert Locks(store, waiter, "/project").status(None, every_scope=False)["notices"] == []
     assert "is unanswered" in mine.summary()
 
-    renewed = mine.acquire(key, check="30m", reason=None, ttl_minutes=None)
+    renewed = mine.acquire(
+        key, Request(check="30m", reason=None, ttl_minutes=None, describe="test resource")
+    )
     assert renewed["status"] == "renewed"
     assert cast("dict[str, object]", renewed["lock"])["checked_at"] is None
     _overdue(store)
@@ -380,8 +427,12 @@ def test_granted_holder_is_asked_for_an_estimate(
     holder = store.register("claude", "one", "/project")
     waiter = store.register("codex", "two", "/project")
     key = Locks(store, holder, "/project").key("db", shared=False)
-    Locks(store, holder, "/project").acquire(key, check="1h", reason=None, ttl_minutes=None)
-    Locks(store, waiter, "/project").acquire(key, check=None, reason=None, ttl_minutes=None)
+    Locks(store, holder, "/project").acquire(
+        key, Request(check="1h", reason=None, ttl_minutes=None, describe="test resource")
+    )
+    Locks(store, waiter, "/project").acquire(
+        key, Request(check=None, reason=None, ttl_minutes=None, describe="test resource")
+    )
     Locks(store, holder, "/project").release(key)
     messages = store.inbox(waiter)
     assert len(messages) == 1
@@ -399,7 +450,7 @@ def test_timer_sleeps_until_estimate_then_raises_the_check(
     holder = store.register("claude", "one", "/project")
     locks = Locks(store, holder, "/project")
     key = locks.key("db", shared=False)
-    locks.acquire(key, check="2h", reason=None, ttl_minutes=None)
+    locks.acquire(key, Request(check="2h", reason=None, ttl_minutes=None, describe="test resource"))
     slept: list[float] = []
 
     def fake_sleep(seconds: float) -> None:
@@ -434,3 +485,64 @@ def test_full_guidance_teaches_locks_and_reaches_running_sessions(
     monkeypatch.setattr("sys.stdin", io.StringIO(hook))
     assert main(["hook", "claude"]) == 0
     assert "llm-bus lock acquire NAME" not in capsys.readouterr().out
+
+
+def test_new_names_need_a_purpose_and_look_alikes_need_consent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record_wakes(monkeypatch)
+    store = _store(tmp_path)
+    first = store.register("claude", "one", "/project")
+    second = store.register("codex", "two", "/project")
+    one, two = Locks(store, first, "/project"), Locks(store, second, "/project")
+    with pytest.raises(BusError, match="new lock name; add --describe"):
+        one.acquire(one.key("db:orders", shared=False), Request(check="1h"))
+    one.acquire(
+        one.key("db:orders", shared=False),
+        Request(check="1h", describe="orders Postgres database"),
+    )
+    one.release(one.key("db:orders", shared=False))
+
+    for alike in ("orders-db", "DB_Orders", "orders", "db:order"):
+        with pytest.raises(
+            BusError, match=r"looks like existing lock name\(s\): db:orders \(orders"
+        ):
+            two.acquire(two.key(alike, shared=False), Request(check="1h", describe="dup"))
+    distinct = two.acquire(
+        two.key("orders-db", shared=False),
+        Request(check="1h", describe="orders read replica", new=True),
+    )
+    assert distinct["status"] == "acquired"
+    unrelated = two.acquire(
+        two.key("deploy:staging", shared=False), Request(check="1h", describe="staging deploy")
+    )
+    assert unrelated["status"] == "acquired"
+
+    reused = two.acquire(two.key("db:orders", shared=False), Request(check="1h"))
+    assert reused["status"] == "acquired"
+    listed = cast("list[dict[str, object]]", one.catalog(every_scope=False)["resources"])
+    assert {item["resource"]: (item["description"], item["held_by"]) for item in listed} == {
+        "db:orders": ("orders Postgres database", second),
+        "orders-db": ("orders read replica", second),
+        "deploy:staging": ("staging deploy", second),
+    }
+    two.release(two.key("deploy:staging", shared=False))
+    free = [
+        item
+        for item in cast("list[dict[str, object]]", one.catalog(every_scope=False)["resources"])
+        if item["resource"] == "deploy:staging"
+    ]
+    assert free[0]["held_by"] is None
+    assert "deploy:staging = staging deploy (free)" in one.summary()
+
+
+def test_idle_names_are_forgotten_after_thirty_days(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    holder = store.register("claude", "one", "/project")
+    locks = Locks(store, holder, "/project")
+    key = locks.key("db", shared=False)
+    locks.acquire(key, Request(check="1h", describe="main database"))
+    locks.release(key)
+    with store.transaction() as db:
+        db.execute("UPDATE resource_catalog SET last_used_at='2000-01-01T00:00:00.000Z'")
+    assert locks.catalog(every_scope=True)["resources"] == []

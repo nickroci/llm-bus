@@ -115,12 +115,22 @@ read [references/remote.md](references/remote.md) before acting.
 ## Share a resource with other sessions
 
 Before touching something another session may be using, such as a database,
-a generated file, or a deploy target, take an advisory lock by name with an
-honest estimate of when you will be done:
+a generated file, or a deploy target, check the names already in use and
+reuse the one for that resource:
+
+```sh
+llm-bus lock list
+```
+
+Then take an advisory lock with an honest estimate of when you will be done.
+A name not yet in the list also needs `--describe` saying what it protects:
 
 ```sh
 llm-bus lock acquire db:orders --check 45m --reason "migration 0042"
 ```
+
+If the bus says your new name looks like an existing one, use the existing
+name when it is the same resource. Add `--new` only when it truly is not.
 
 `acquired` or `renewed` means proceed. At the `--check` time you get a
 `lock check` message. Then either release, or answer with a new estimate

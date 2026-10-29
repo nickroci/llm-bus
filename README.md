@@ -80,11 +80,14 @@ The response includes the stored message and a `wake` status. `requested` means 
 Sessions that share a database, a generated file, or any other resource can take an advisory lock on it by name. Every holder must say when it expects to be done:
 
 ```text
-llm-bus lock acquire db:orders --check 45m --reason "running migration 0042"
+llm-bus lock list
+llm-bus lock acquire db:orders --check 45m --describe "orders Postgres database" --reason "running migration 0042"
 llm-bus lock acquire db:orders --notify
 llm-bus lock status
 llm-bus lock release db:orders
 ```
+
+A lock only protects anything if every session uses the same name for the same resource. The bus keeps a catalog of names with what each protects, free or held. `lock list` shows it, and each hook notice names up to ten of them with their descriptions, so agents see existing names at every step. The first acquire of a new name must say what it protects with `--describe`. A new name that resembles an existing one, such as `orders-db` next to `db:orders`, is refused with the existing name and its description, unless `--new` confirms it is a different resource. Names unused for 30 days drop out of the catalog.
 
 `--check` is the holder's optimistic estimate of when the lock will be releasable, as minutes, hours, or days (`45m`, `2h`, `1d`). When that time arrives, the bus sends the holder a `lock check` message and wakes its session: release it if the task no longer needs it, or run `acquire` again with a new `--check` to be asked again then. A check is sent once per estimate. Until the holder answers, its hook notice marks the check as unanswered on every turn. Acquiring a free resource without `--check` is an error.
 

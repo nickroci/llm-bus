@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from collections.abc import Callable
     from sqlite3 import Connection
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SYNC_SCHEMA_VERSION = 2
 WAKE_SCHEMA_VERSION = 3
 LOCK_SCHEMA_VERSION = 5
+LOCK_CATALOG_SCHEMA_VERSION = 6
 REPLY_SCHEMA_VERSION = 4
 SYNC_WORK_TABLE = (
     "CREATE TABLE IF NOT EXISTS remote_sync_work (kind TEXT NOT NULL, key TEXT NOT NULL, "
@@ -236,6 +237,26 @@ def _lock_tables(db: Connection) -> None:
     db.execute("CREATE INDEX IF NOT EXISTS resource_locks_check ON resource_locks(check_at)")
 
 
+def _lock_catalog(db: Connection) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS resource_catalog (scope TEXT NOT NULL, resource TEXT NOT NULL, "
+        "description TEXT NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, "
+        "last_used_at TEXT NOT NULL, PRIMARY KEY(scope,resource))"
+    )
+    db.execute(
+        "INSERT OR IGNORE INTO resource_catalog"
+        "(scope,resource,description,created_by,created_at,last_used_at) "
+        "SELECT scope,resource,COALESCE(reason,'(no description)'),holder,acquired_at,acquired_at "
+        "FROM resource_locks"
+    )
+
+
+def _lock_migrations(db: Connection, version: int) -> None:
+    if version < LOCK_SCHEMA_VERSION:
+        _lock_tables(db)
+    _lock_catalog(db)
+
+
 def ensure_schema(db: Connection, resolve_scope: Callable[[str], str]) -> None:
     """Serialize migrations; reopening the current version performs only a version read."""
     version = _version(db)
@@ -263,8 +284,8 @@ def ensure_schema(db: Connection, resolve_scope: Callable[[str], str]) -> None:
                     "ALTER TABLE messages ADD COLUMN reply_to INTEGER REFERENCES messages(id)"
                 )
             db.execute("CREATE INDEX IF NOT EXISTS messages_reply_to ON messages(reply_to,id)")
-        if version < LOCK_SCHEMA_VERSION:
-            _lock_tables(db)
+        if version < LOCK_CATALOG_SCHEMA_VERSION:
+            _lock_migrations(db, version)
         if version < SCHEMA_VERSION:
             db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         db.commit()
