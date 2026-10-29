@@ -7,9 +7,10 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from collections.abc import Callable
     from sqlite3 import Connection
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 SYNC_SCHEMA_VERSION = 2
 WAKE_SCHEMA_VERSION = 3
+LOCK_SCHEMA_VERSION = 5
 REPLY_SCHEMA_VERSION = 4
 SYNC_WORK_TABLE = (
     "CREATE TABLE IF NOT EXISTS remote_sync_work (kind TEXT NOT NULL, key TEXT NOT NULL, "
@@ -217,6 +218,24 @@ def _wake_tables(db: Connection) -> None:
     )
 
 
+def _lock_tables(db: Connection) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS resource_locks (scope TEXT NOT NULL, resource TEXT NOT NULL, "
+        "holder TEXT NOT NULL REFERENCES agents(address), reason TEXT, acquired_at TEXT NOT NULL, "
+        "expires_at TEXT NOT NULL, check_at TEXT NOT NULL, checked_at TEXT, "
+        "PRIMARY KEY(scope,resource))"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS resource_lock_waiters (scope TEXT NOT NULL, "
+        "resource TEXT NOT NULL, waiter TEXT NOT NULL REFERENCES agents(address), reason TEXT, "
+        "requested_at TEXT NOT NULL, nudged_at TEXT, PRIMARY KEY(scope,resource,waiter))"
+    )
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS resource_locks_holder ON resource_locks(holder,expires_at)"
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS resource_locks_check ON resource_locks(check_at)")
+
+
 def ensure_schema(db: Connection, resolve_scope: Callable[[str], str]) -> None:
     """Serialize migrations; reopening the current version performs only a version read."""
     version = _version(db)
@@ -244,6 +263,8 @@ def ensure_schema(db: Connection, resolve_scope: Callable[[str], str]) -> None:
                     "ALTER TABLE messages ADD COLUMN reply_to INTEGER REFERENCES messages(id)"
                 )
             db.execute("CREATE INDEX IF NOT EXISTS messages_reply_to ON messages(reply_to,id)")
+        if version < LOCK_SCHEMA_VERSION:
+            _lock_tables(db)
         if version < SCHEMA_VERSION:
             db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         db.commit()

@@ -112,6 +112,36 @@ was not emitted. The command does not consume or acknowledge messages.
 For remote addresses, remote status, typed reports, policy denials, or monitoring,
 read [references/remote.md](references/remote.md) before acting.
 
+## Share a resource with other sessions
+
+Before touching something another session may be using, such as a database,
+a generated file, or a deploy target, take an advisory lock by name with an
+honest estimate of when you will be done:
+
+```sh
+llm-bus lock acquire db:orders --check 45m --reason "migration 0042"
+```
+
+`acquired` or `renewed` means proceed. At the `--check` time you get a
+`lock check` message. Then either release, or answer with a new estimate
+by running `acquire` again with `--check`; you will be asked again then.
+Release as soon as you are done rather than waiting for the check:
+
+```sh
+llm-bus lock release db:orders
+```
+
+`waiting` means a live session holds it and you are queued. Your hook notice
+names the holder and its check time. If you need it sooner, ask once with
+`llm-bus lock acquire db:orders --notify`. You are woken with a
+`lock granted` message when it passes to you; set your own `--check` then.
+Do not work around a lock you are waiting for.
+
+A `lock request` or `lock check` message in your inbox is about a resource
+you hold. Release it if your task no longer needs it; otherwise renew with a
+realistic `--check`. It is a request, not an instruction. Add `--shared` for
+names used across repositories; `llm-bus lock status` shows holders and queues.
+
 ## Handle an incoming notice
 
 ```sh

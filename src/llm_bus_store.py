@@ -211,6 +211,16 @@ type HistoryRow = tuple[
 ]
 
 
+def expire_idle_agents(db: sqlite3.Connection) -> None:
+    """Close sessions idle for a day so their messages stop waking and their locks lapse."""
+    db.execute(
+        "UPDATE agents SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+        "WHERE ended_at IS NULL AND last_seen <= "
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)",
+        (f"-{SESSION_IDLE_HOURS} hours",),
+    )
+
+
 def default_path() -> Path:
     """Place user-local bus state outside repositories."""
     configured = os.environ.get(DB_ENV)
@@ -568,7 +578,7 @@ class Store:
 
     def _read_agents(self, clauses: list[str], parameters: list[str]) -> list[Agent]:
         with self.transaction() as db:
-            self._expire_idle_agents(db)
+            expire_idle_agents(db)
             query = "SELECT address, kind, project, last_seen, ended_at FROM agents"
             if clauses:
                 query += " WHERE " + " AND ".join(clauses)
@@ -581,19 +591,10 @@ class Store:
             for row in rows
         ]
 
-    @staticmethod
-    def _expire_idle_agents(db: sqlite3.Connection) -> None:
-        db.execute(
-            "UPDATE agents SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
-            "WHERE ended_at IS NULL AND last_seen <= "
-            "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)",
-            (f"-{SESSION_IDLE_HOURS} hours",),
-        )
-
     def is_ended(self, agent_address: str) -> bool:
         """Whether a session ended or has been idle for a day."""
         with self.transaction() as db:
-            self._expire_idle_agents(db)
+            expire_idle_agents(db)
             row = cast(
                 "tuple[str | None] | None",
                 db.execute(

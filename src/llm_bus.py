@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 
 from llm_bus_dispatch import dispatch_pending
 from llm_bus_install import configure_hosts, restore_bus_settings, snapshot_host_settings
+from llm_bus_locks import Key, Locks, detach, run_timer
 from llm_bus_policy import REPORT_REASONS, load_config, optional_config, require_config
 from llm_bus_remote import enqueue_remote, remote_peers, run_bridge
 from llm_bus_remote_store import RemoteStore
@@ -117,11 +118,67 @@ def _parser() -> argparse.ArgumentParser:
         "status", help="Read retained body-free diagnostics without identity or config"
     )
     status.add_argument("message_id", type=int, help="Retained local integer message ID")
+    _lock_parser(
+        commands.add_parser(
+            "lock", help="Coordinate exclusive use of a named resource with other sessions"
+        )
+    )
     report = commands.add_parser("report", help="Queue a typed work report for an imported message")
     report.add_argument("message_id", type=int)
     report.add_argument("--status", required=True, choices=tuple(REPORT_REASONS))
     report.add_argument("--reason")
     return parser
+
+
+def _lock_parser(lock: argparse.ArgumentParser) -> None:
+    actions = lock.add_subparsers(dest="lock_command", required=True)
+    acquire = actions.add_parser("acquire", help="Take, extend, or queue for a resource")
+    acquire.add_argument("resource", help="Name, such as db:orders or file:src/schema.sql")
+    acquire.add_argument(
+        "--check",
+        help="Your estimate of when you can release, such as 45m, 2h, or 1d; you are asked then",
+    )
+    acquire.add_argument("--reason", help="Why you need it; shown to the holder")
+    acquire.add_argument("--ttl", type=int, help="Lease minutes before it lapses (default 1440)")
+    acquire.add_argument(
+        "--notify",
+        action="store_true",
+        help="Message and wake the holder to check whether it still needs the resource",
+    )
+    release = actions.add_parser("release", help="Give it up; the first waiter takes it")
+    release.add_argument("resource")
+    status = actions.add_parser("status", help="Show holders, leases, and queues")
+    status.add_argument("resource", nargs="?")
+    status.add_argument("--all", action="store_true", help="Every repository and folder")
+    for parser in (acquire, release, status):
+        parser.add_argument(
+            "--shared", action="store_true", help="Machine-wide name instead of this folder's"
+        )
+    timer = actions.add_parser("timer", help=argparse.SUPPRESS)
+    timer.add_argument("scope")
+    timer.add_argument("resource")
+
+
+def _lock(store: Store, args: dict[str, object], agent_address: str, project: str) -> object:
+    locks = Locks(store, agent_address, project)
+    action = args["lock_command"]
+    resource = cast("str | None", args["resource"])
+    shared = cast("bool", args["shared"])
+    if action == "status":
+        key = locks.key(resource, shared=shared) if resource is not None else None
+        return locks.status(key, every_scope=cast("bool", args["all"]))
+    if resource is None:
+        raise BusError("Resource name is required")
+    key = locks.key(resource, shared=shared)
+    if action == "acquire":
+        return locks.acquire(
+            key,
+            check=cast("str | None", args["check"]),
+            reason=cast("str | None", args["reason"]),
+            ttl_minutes=cast("int | None", args["ttl"]),
+            notify=cast("bool", args["notify"]),
+        )
+    return locks.release(key)
 
 
 def _acknowledged_wake(store: Store, recipient: str, prompt: object) -> bool:
@@ -211,6 +268,7 @@ def _guidance(
         )
     else:
         notice += "Full recovery: `llm-bus guidance`. "
+    notice += Locks(store, agent_address, project).summary()
     config = optional_config()
     repo = config.repository(project) if config else None
     if repo is not None and full:
@@ -299,6 +357,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _human_command(store: Store, command: object, args: dict[str, object]) -> bool:
+    if command == "lock" and args["lock_command"] == "timer":
+        if not detach():
+            run_timer(store, Key(cast("str", args["scope"]), cast("str", args["resource"])))
+        return True
     if command == "status":
         print(json.dumps(store.message_status(cast("int", args["message_id"]))))
         return True
@@ -433,6 +495,8 @@ def _registered_command(
         )
     elif command == "ack":
         result = {"acknowledged": store.acknowledge(agent_address, cast("list[int]", args["ids"]))}
+    elif command == "lock":
+        result = _lock(store, args, agent_address, project)
     else:
         raise RuntimeError("Unreachable command")
     return result
