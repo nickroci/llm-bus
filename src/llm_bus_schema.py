@@ -7,11 +7,12 @@ from typing import TYPE_CHECKING, cast
 if TYPE_CHECKING:
     from collections.abc import Callable
     from sqlite3 import Connection
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 SYNC_SCHEMA_VERSION = 2
 WAKE_SCHEMA_VERSION = 3
 LOCK_SCHEMA_VERSION = 5
 LOCK_CATALOG_SCHEMA_VERSION = 6
+LOCK_SEEN_SCHEMA_VERSION = 7
 REPLY_SCHEMA_VERSION = 4
 SYNC_WORK_TABLE = (
     "CREATE TABLE IF NOT EXISTS remote_sync_work (kind TEXT NOT NULL, key TEXT NOT NULL, "
@@ -254,7 +255,12 @@ def _lock_catalog(db: Connection) -> None:
 def _lock_migrations(db: Connection, version: int) -> None:
     if version < LOCK_SCHEMA_VERSION:
         _lock_tables(db)
-    _lock_catalog(db)
+    if version < LOCK_CATALOG_SCHEMA_VERSION:
+        _lock_catalog(db)
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS lock_catalog_seen "
+        "(address TEXT PRIMARY KEY, signature TEXT NOT NULL)"
+    )
 
 
 def ensure_schema(db: Connection, resolve_scope: Callable[[str], str]) -> None:
@@ -284,7 +290,7 @@ def ensure_schema(db: Connection, resolve_scope: Callable[[str], str]) -> None:
                     "ALTER TABLE messages ADD COLUMN reply_to INTEGER REFERENCES messages(id)"
                 )
             db.execute("CREATE INDEX IF NOT EXISTS messages_reply_to ON messages(reply_to,id)")
-        if version < LOCK_CATALOG_SCHEMA_VERSION:
+        if version < LOCK_SEEN_SCHEMA_VERSION:
             _lock_migrations(db, version)
         if version < SCHEMA_VERSION:
             db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")

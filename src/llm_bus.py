@@ -291,7 +291,7 @@ def _guidance(
         )
     else:
         notice += "Full recovery: `llm-bus guidance`. "
-    notice += Locks(store, agent_address, project).summary()
+    notice += Locks(store, agent_address, project).summary(full=full)
     config = optional_config()
     repo = config.repository(project) if config else None
     if repo is not None and full:

@@ -546,3 +546,27 @@ def test_idle_names_are_forgotten_after_thirty_days(tmp_path: Path) -> None:
     with store.transaction() as db:
         db.execute("UPDATE resource_catalog SET last_used_at='2000-01-01T00:00:00.000Z'")
     assert locks.catalog(every_scope=True)["resources"] == []
+
+
+def test_lock_names_reach_the_hook_only_when_they_are_news(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _record_wakes(monkeypatch)
+    store = _store(tmp_path)
+    first = store.register("claude", "one", "/project")
+    other = store.register("codex", "two", "/project")
+    mine, theirs = Locks(store, first, "/project"), Locks(store, other, "/project")
+    assert mine.summary() == ""
+    theirs.acquire(theirs.key("db", shared=False), Request(check="1h", describe="main database"))
+    assert mine.summary().startswith("Known lock names: db = main database (held by codex:two)")
+    assert mine.summary() == ""
+    theirs.release(theirs.key("db", shared=False))
+    assert mine.summary() == ""
+    assert "Known lock names: db = main database (free)" in mine.summary(full=True)
+    theirs.acquire(
+        theirs.key("deploy", shared=False), Request(check="1h", describe="staging deploy")
+    )
+    news = mine.summary()
+    assert "deploy = staging deploy" in news
+    assert "db = main database" in news
+    assert mine.summary() == ""

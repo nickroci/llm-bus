@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import contextlib
 import difflib
+import hashlib
+import json
 import os
 import re
 import subprocess
@@ -264,8 +266,12 @@ class Locks:
             )
         return {"resources": resources, "notices": self._deliver(notices)}
 
-    def summary(self) -> str:
-        """One hook sentence naming held and awaited resources, or empty when there are none."""
+    def summary(self, *, full: bool = False) -> str:
+        """Hook text for this session's own locks, plus lock names only when they are news.
+
+        Known names appear in full guidance or when names or descriptions changed since this
+        session last saw them; holder churn alone is not news.
+        """
         with self.store.transaction() as db:
             db.execute("BEGIN IMMEDIATE")
             notices = _reap(db)
@@ -287,9 +293,10 @@ class Locks:
                 ).fetchall(),
             )
             known = _catalog_rows(db, (routing_scope(self.project), SHARED_SCOPE))
+            changed = _catalog_changed(db, self.agent_address, known)
         self._deliver(notices)
         parts: list[str] = []
-        if known:
+        if known and (full or changed):
             parts.append(_known_phrase(known))
         if held:
             names = ", ".join(_held_phrase(*item) for item in held)
@@ -439,6 +446,25 @@ def _catalog_rows(
         }
         for row in rows
     ]
+
+
+def _catalog_changed(db: sqlite3.Connection, agent: str, known: list[dict[str, object]]) -> bool:
+    """Record what this session has been shown; report whether names or purposes differ."""
+    signature = hashlib.sha256(
+        json.dumps(
+            sorted((item["scope"], item["resource"], item["description"]) for item in known)
+        ).encode()
+    ).hexdigest()
+    seen = cast(
+        "tuple[str] | None",
+        db.execute("SELECT signature FROM lock_catalog_seen WHERE address=?", (agent,)).fetchone(),
+    )
+    db.execute(
+        "INSERT INTO lock_catalog_seen(address,signature) VALUES (?,?) "
+        "ON CONFLICT(address) DO UPDATE SET signature=excluded.signature",
+        (agent, signature),
+    )
+    return seen is None or seen[0] != signature
 
 
 def _known_phrase(known: list[dict[str, object]]) -> str:
