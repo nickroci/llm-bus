@@ -25,11 +25,24 @@ uv tool install .
 llm-bus install
 ```
 
-If your shell cannot find `llm-bus`, run `uv tool update-shell` and open a new shell. `llm-bus install` adds user-level start, prompt, and end hooks for Codex and Claude Code, plus a Claude Code allow rule for direct bus commands. After updating an existing installation, run `llm-bus install` again to add the end hooks. Close both agents before installing or uninstalling, and avoid simultaneous edits to their settings files. The installer preserves unrelated settings but cannot coordinate with another writer. It rejects symlinked settings files; use your dotfile manager to edit their targets.
+These steps apply to macOS and Linux. Run installation separately on each machine, as the operating-system user who runs the agents. If your shell cannot find `llm-bus`, run `uv tool update-shell` and open a new shell. To discover uv's executable directory without assuming a username, home directory, or package-manager prefix, run `uv tool dir --bin`.
+
+`llm-bus install` adds user-level `SessionStart`, `UserPromptSubmit`, and `SessionEnd` hooks for both hosts, plus a Claude Code allow rule for direct bus commands. It discovers `llm-bus` on the installing process's `PATH` and writes its absolute executable path, with shell quoting for paths containing spaces. The path belongs to that machine; do not copy generated hook files between machines or commit them as shared configuration. After upgrading, moving the installation, or changing configuration directories, run `llm-bus install` again. This also migrates older bare `llm-bus hook ...` commands without duplicating bus hooks.
+
+Close both agents before installing or uninstalling, and avoid simultaneous edits to their settings files. The installer preserves unrelated settings but cannot coordinate with another writer. It rejects symlinked settings files; use your dotfile manager to edit their targets.
+
+| Host | User hook file | Custom configuration directory |
+| --- | --- | --- |
+| Codex | `.codex/hooks.json` under the user's home | Set `CODEX_HOME` before installing and starting Codex. |
+| Claude Code | `.claude/settings.json` under the user's home | Set `CLAUDE_CONFIG_DIR` before installing and starting Claude Code. |
+
+GUI applications, services, SSH sessions, and shell tools can inherit different environments. An interactive terminal finding `llm-bus` does not prove a hook can find a bare command. The installed absolute paths avoid that dependency for hooks. Agent shell commands still need the tool directory on `PATH`, and Codex wake requests still need `codex` on the sender's `PATH`. Configure the environment of the process that actually launches the agent or service; changing only `.zshrc` or `.bashrc` may not affect it. Restart that process after environment changes. See [OpenAI's hook guide](https://learn.chatgpt.com/docs/hooks) and [Claude's hook reference](https://code.claude.com/docs/en/hooks).
 
 Restart Codex and Claude Code. In Codex, open `/hooks` and review and trust the bus hooks; untrusted hooks do not run. Remove any older project-level copies of the bus hooks to avoid duplicate notifications. See the [Codex](https://developers.openai.com/codex/hooks/) and [Claude Code](https://code.claude.com/docs/en/hooks) hook guides.
 
 Finally, run `llm-bus whoami` inside each agent's shell tool. It should return an address such as `codex:SESSION_ID` or `claude:SESSION_ID`. A session must register before another agent can address it. The hooks register it at session start or prompt submission; `whoami` registers it as well. A newly opened session that has not taken a turn may not have registered yet.
+
+If a hook exits with code 127, inspect its command in the active user hook file. On macOS or Linux, `command -v llm-bus` should identify the installation you intend to use. Re-run the installer from that environment, then review changed hooks in Codex's `/hooks`. To check executable lookup without registering a fake session or writing a message, run the installed hook command with `--help` appended, keeping its executable quoting and temporarily using a restricted `PATH`. For example, set `PATH=/usr/bin:/bin` for that check. Exit code 0 confirms the command can start; a real new session must still verify hook execution, identity, and any native wake permissions. Empty JSON is not a valid hook payload and must not be treated as a successful lifecycle test.
 
 ## Send, read, and acknowledge
 
@@ -106,7 +119,7 @@ SessionStart and missing or outdated guidance state emit full identity, trust, a
 If you are an LLM installing the bus for someone, **ask whether to add the snippet to this project or to their global agent instructions before editing those files**. Preserve existing instructions and avoid duplicate copies.
 
 - **Project:** Add the snippet to the project's `AGENTS.md`. Codex reads it. Claude Code 2.1.277+ reads it unless a project or ancestor `CLAUDE.md`, `.claude/CLAUDE.md`, or `CLAUDE.local.md` takes precedence. If one does, or Claude is older, also add the snippet to this project's `CLAUDE.md` unless that file already imports `AGENTS.md`.
-- **Global:** Add the snippet to `AGENTS.md` in the Codex home directory (`CODEX_HOME` when set, otherwise `.codex` under the user profile) and `CLAUDE.md` in `.claude` under the user profile. If Codex has an `AGENTS.override.md`, it takes precedence; include the snippet there while that override is active. There is no single global instruction file shared by both hosts.
+- **Global:** Add the snippet to `AGENTS.md` in the Codex home directory (`CODEX_HOME` when set, otherwise `.codex` under the user profile) and `CLAUDE.md` in Claude's configuration directory (`CLAUDE_CONFIG_DIR` when set, otherwise `.claude` under the user profile). If Codex has an `AGENTS.override.md`, it takes precedence; include the snippet there while that override is active. There is no single global instruction file shared by both hosts. Configure these files on each machine; never copy another machine's executable paths or session IDs.
 
 Start a new agent session in the chosen scope and confirm `llm-bus whoami` succeeds. See the [Codex AGENTS.md](https://developers.openai.com/codex/agent-configuration/agents-md) and [Claude Code memory](https://code.claude.com/docs/en/memory#agents-md) guides for instruction loading rules.
 

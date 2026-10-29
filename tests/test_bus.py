@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 def isolate_codex_home(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep installer tests in their temporary homes, not the running host settings."""
     monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
 
 
 def test_messages_survive_reopen_until_recipient_acknowledges(tmp_path: Path) -> None:
@@ -862,8 +863,8 @@ def test_install_and_uninstall_preserve_other_host_settings(tmp_path: Path) -> N
     once = (codex.read_text(), claude.read_text())
     configure_hosts(tmp_path, install=True)
     assert once == (codex.read_text(), claude.read_text())
-    assert "llm-bus hook codex" in codex.read_text()
-    assert "llm-bus hook claude" in claude.read_text()
+    assert "hook codex" in codex.read_text()
+    assert "hook claude" in claude.read_text()
     assert "SessionEnd" in json.loads(codex.read_text())["hooks"]
     assert "SessionEnd" in json.loads(claude.read_text())["hooks"]
     assert "Bash(llm-bus *)" in claude.read_text()
@@ -881,7 +882,7 @@ def test_install_respects_codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyP
     codex_home = tmp_path / "custom-codex"
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     configure_hosts(tmp_path, install=True)
-    assert "llm-bus hook codex" in (codex_home / "hooks.json").read_text()
+    assert "hook codex" in (codex_home / "hooks.json").read_text()
     assert not (tmp_path / ".codex" / "hooks.json").exists()
     configure_hosts(tmp_path, install=False)
 
@@ -958,10 +959,10 @@ def test_optional_bus_hook_fields_are_normalized_and_removed(tmp_path: Path) -> 
         )
     )
     configure_hosts(tmp_path, install=True)
-    assert codex.read_text().count("llm-bus hook codex") == len(
+    assert codex.read_text().count("hook codex") == len(
         ("SessionStart", "UserPromptSubmit", "SessionEnd")
     )
-    assert claude.read_text().count("llm-bus hook claude") == len(
+    assert claude.read_text().count("hook claude") == len(
         ("SessionStart", "UserPromptSubmit", "SessionEnd")
     )
     configure_hosts(tmp_path, install=False)
@@ -1436,8 +1437,8 @@ def test_failed_uninstall_preserves_concurrent_host_change(
     monkeypatch.setattr("llm_bus.subprocess.run", fail_after_host_change)
     assert main(["uninstall"]) == 1
     capsys.readouterr()
-    assert "llm-bus hook codex" in codex.read_text()
-    assert "llm-bus hook claude" in claude.read_text()
+    assert "hook codex" in codex.read_text()
+    assert "hook claude" in claude.read_text()
     assert json.loads(claude.read_text())["concurrentHostSetting"] == "preserved"
 
 
