@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import stat
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import cast
@@ -14,6 +17,10 @@ from llm_bus_store import BusError
 EVENTS = ("SessionStart", "UserPromptSubmit", "SessionEnd")
 CLAUDE_ALLOW_RULE = "Bash(llm-bus *)"
 CODEX_HOME_ENV = "CODEX_HOME"
+CLAUDE_CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
+MISSING_EXECUTABLE_MESSAGE = (
+    "Cannot find llm-bus on PATH; run uv tool update-shell and retry installation"
+)
 type SettingsSnapshot = list[tuple[Path, bytes | None, int]]
 
 
@@ -23,15 +30,34 @@ def _codex_settings_path(home: Path) -> Path:
 
 
 def _hook_group(kind: str) -> dict[str, object]:
-    return {"hooks": [{"type": "command", "command": f"llm-bus hook {kind}"}]}
+    executable = shutil.which("llm-bus")
+    if executable is None:
+        raise BusError(MISSING_EXECUTABLE_MESSAGE)
+    arguments = [str(Path(executable).absolute()), "hook", kind]
+    command = subprocess.list2cmdline(arguments) if os.name == "nt" else shlex.join(arguments)
+    return {"hooks": [{"type": "command", "command": command}]}
+
+
+def _claude_settings_path(home: Path) -> Path:
+    config_dir = os.environ.get(CLAUDE_CONFIG_DIR_ENV)
+    return (Path(config_dir).expanduser() if config_dir else home / ".claude") / "settings.json"
 
 
 def _is_bus_handler(handler: object, kind: str) -> bool:
     if not isinstance(handler, dict):
         return False
     configured = cast("dict[str, object]", handler)
+    command = configured.get("command")
+    if configured.get("type") != "command" or not isinstance(command, str):
+        return False
+    try:
+        arguments = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return False
     return (
-        configured.get("type") == "command" and configured.get("command") == f"llm-bus hook {kind}"
+        bool(arguments)
+        and Path(arguments[0].strip('"')).name.lower() in {"llm-bus", "llm-bus.exe"}
+        and arguments[1:] == ["hook", kind]
     )
 
 
@@ -153,7 +179,7 @@ def _write_settings(
 
 def snapshot_host_settings(home: Path) -> SettingsSnapshot:
     """Capture both host settings from one validated read per file."""
-    paths = (_codex_settings_path(home), home / ".claude" / "settings.json")
+    paths = (_codex_settings_path(home), _claude_settings_path(home))
     snapshots: SettingsSnapshot = []
     for path in paths:
         content = _current_bytes(path)
@@ -275,7 +301,7 @@ def configure_hosts(
 ) -> list[Path]:
     """Merge or remove bus-owned hooks in both user settings files."""
     codex_path = _codex_settings_path(home)
-    claude_path = home / ".claude" / "settings.json"
+    claude_path = _claude_settings_path(home)
     if snapshots is None:
         snapshots = snapshot_host_settings(home)
     codex_settings = _parse_settings(codex_path, snapshots[0][1])
