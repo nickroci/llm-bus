@@ -211,6 +211,16 @@ type HistoryRow = tuple[
 ]
 
 
+def expire_idle_agents(db: sqlite3.Connection) -> None:
+    """Close sessions idle for a day so their messages stop waking and their locks lapse."""
+    db.execute(
+        "UPDATE agents SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
+        "WHERE ended_at IS NULL AND last_seen <= "
+        "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)",
+        (f"-{SESSION_IDLE_HOURS} hours",),
+    )
+
+
 def default_path() -> Path:
     """Place user-local bus state outside repositories."""
     configured = os.environ.get(DB_ENV)
@@ -568,7 +578,7 @@ class Store:
 
     def _read_agents(self, clauses: list[str], parameters: list[str]) -> list[Agent]:
         with self.transaction() as db:
-            self._expire_idle_agents(db)
+            expire_idle_agents(db)
             query = "SELECT address, kind, project, last_seen, ended_at FROM agents"
             if clauses:
                 query += " WHERE " + " AND ".join(clauses)
@@ -581,19 +591,10 @@ class Store:
             for row in rows
         ]
 
-    @staticmethod
-    def _expire_idle_agents(db: sqlite3.Connection) -> None:
-        db.execute(
-            "UPDATE agents SET ended_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') "
-            "WHERE ended_at IS NULL AND last_seen <= "
-            "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)",
-            (f"-{SESSION_IDLE_HOURS} hours",),
-        )
-
     def is_ended(self, agent_address: str) -> bool:
         """Whether a session ended or has been idle for a day."""
         with self.transaction() as db:
-            self._expire_idle_agents(db)
+            expire_idle_agents(db)
             row = cast(
                 "tuple[str | None] | None",
                 db.execute(
@@ -612,11 +613,6 @@ class Store:
         reply_to: int | None = None,
     ) -> Message:
         """Atomically register sender, check folder, and persist message."""
-        if not body.strip():
-            raise BusError("Message body cannot be empty")
-        if len(body.encode("utf-8")) > MAX_MESSAGE_BYTES:
-            raise BusError("Message body exceeds 64 KiB")
-        sender_scope = routing_scope(sender_context.project)
         with self.transaction() as db:
             db.execute("BEGIN IMMEDIATE")
             sender = self._upsert_agent(
@@ -624,45 +620,71 @@ class Store:
                 sender_context.kind,
                 sender_context.session_id,
                 sender_context.project,
+                routing_scope(sender_context.project),
+            )
+            return self.send_in_transaction(
+                db, sender, recipient, body, cross_folder=cross_folder, reply_to=reply_to
+            )
+
+    def send_in_transaction(  # noqa: PLR0913 - same send contract plus caller-owned transaction
+        self,
+        db: sqlite3.Connection,
+        sender: str,
+        recipient: str,
+        body: str,
+        *,
+        cross_folder: bool = False,
+        reply_to: int | None = None,
+    ) -> Message:
+        """Persist for an already registered sender without changing its activity or lifecycle."""
+        if not body.strip():
+            raise BusError("Message body cannot be empty")
+        if len(body.encode("utf-8")) > MAX_MESSAGE_BYTES:
+            raise BusError("Message body exceeds 64 KiB")
+        sender_row = cast(
+            "tuple[str, str] | None",
+            db.execute("SELECT project, scope FROM agents WHERE address = ?", (sender,)).fetchone(),
+        )
+        if sender_row is None:
+            raise BusError(f"Unknown sender {sender!r}; register the session first")
+        sender_project, sender_scope = sender_row
+        recipient_row = cast(
+            "tuple[str, str] | None",
+            db.execute(
+                "SELECT project, scope FROM agents WHERE address = ?", (recipient,)
+            ).fetchone(),
+        )
+        if recipient_row is None:
+            raise BusError(f"Unknown recipient {recipient!r}; run `llm-bus list` first")
+        if sender_scope != recipient_row[1] and not cross_folder:
+            raise BusError("Recipient is in another repository or folder; use --cross-folder")
+        self.validate_reply(db, reply_to, (sender, sender_scope), (recipient, recipient_row[1]))
+        cursor = db.execute(
+            "INSERT INTO messages(sender, recipient, body, sender_cwd, recipient_cwd, "
+            "sender_scope, recipient_scope, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                sender,
+                recipient,
+                body,
+                sender_project,
+                recipient_row[0],
                 sender_scope,
-            )
-            recipient_row = cast(
-                "tuple[str, str] | None",
-                db.execute(
-                    "SELECT project, scope FROM agents WHERE address = ?", (recipient,)
-                ).fetchone(),
-            )
-            if recipient_row is None:
-                raise BusError(f"Unknown recipient {recipient!r}; run `llm-bus list` first")
-            if sender_scope != recipient_row[1] and not cross_folder:
-                raise BusError("Recipient is in another repository or folder; use --cross-folder")
-            self.validate_reply(db, reply_to, (sender, sender_scope), (recipient, recipient_row[1]))
-            cursor = db.execute(
-                "INSERT INTO messages(sender, recipient, body, sender_cwd, recipient_cwd, "
-                "sender_scope, recipient_scope, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    sender,
-                    recipient,
-                    body,
-                    sender_context.project,
-                    recipient_row[0],
-                    sender_scope,
-                    recipient_row[1],
-                    reply_to,
-                ),
-            )
-            message_id = cursor.lastrowid
-            if message_id is None:
-                raise RuntimeError("SQLite did not return a message ID")
-            self.request_dispatch(db, recipient)
-            row = cast(
-                "tuple[int, str, str, str, str | None, str | None, str] | None",
-                db.execute(
-                    "SELECT id, sender, recipient, body, sender_cwd, recipient_cwd, sent_at "
-                    "FROM messages WHERE id = ?",
-                    (message_id,),
-                ).fetchone(),
-            )
+                recipient_row[1],
+                reply_to,
+            ),
+        )
+        message_id = cursor.lastrowid
+        if message_id is None:
+            raise RuntimeError("SQLite did not return a message ID")
+        self.request_dispatch(db, recipient)
+        row = cast(
+            "tuple[int, str, str, str, str | None, str | None, str] | None",
+            db.execute(
+                "SELECT id, sender, recipient, body, sender_cwd, recipient_cwd, sent_at "
+                "FROM messages WHERE id = ?",
+                (message_id,),
+            ).fetchone(),
+        )
         if row is None:
             raise RuntimeError("Inserted message could not be read")
         return Message(
