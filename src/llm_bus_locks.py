@@ -14,7 +14,7 @@ import time
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
 from llm_bus_dispatch import dispatch_pending
-from llm_bus_store import BusError, SenderContext, expire_idle_agents, routing_scope
+from llm_bus_store import BusError, Message, SenderContext, expire_idle_agents, routing_scope
 
 if TYPE_CHECKING:
     import sqlite3
@@ -159,12 +159,13 @@ class Locks:
                 notices.extend(asked)
                 status = "waiting"
             lock = _read_lock(db, key)
+            sent = self._persist(db, notices)
         result: dict[str, object] = {"status": status, "lock": lock}
         if status == "waiting":
             result["notified"] = bool(asked)
         else:
             schedule_check(key)
-        return {**result, "notices": self._deliver(notices)}
+        return {**result, "notices": self._deliver(sent)}
 
     def _enqueue(
         self, db: sqlite3.Connection, key: Key, holder: str, reason: str | None, *, notify: bool
@@ -223,11 +224,12 @@ class Locks:
                 )
             notices.extend(_hand_off(db, key, row[0]))
             lock = _read_lock(db, key)
+            sent = self._persist(db, notices)
         return {
             "status": "released",
             "granted_to": lock["holder"] if lock else None,
             "lock": lock,
-            "notices": self._deliver(notices),
+            "notices": self._deliver(sent),
         }
 
     def status(self, key: Key | None, *, every_scope: bool) -> dict[str, object]:
@@ -254,7 +256,8 @@ class Locks:
                 )
             ]
             locks = [lock for lock in (_read_lock(db, item) for item in keys) if lock]
-        return {"locks": locks, "notices": self._deliver(notices)}
+            sent = self._persist(db, notices)
+        return {"locks": locks, "notices": self._deliver(sent)}
 
     def catalog(self, *, every_scope: bool) -> dict[str, object]:
         """Known lock names with what they cover and who holds them, free ones included."""
@@ -264,7 +267,8 @@ class Locks:
             resources = _catalog_rows(
                 db, None if every_scope else (routing_scope(self.project), SHARED_SCOPE)
             )
-        return {"resources": resources, "notices": self._deliver(notices)}
+            sent = self._persist(db, notices)
+        return {"resources": resources, "notices": self._deliver(sent)}
 
     def summary(self, *, full: bool = False) -> str:
         """Hook text for this session's own locks, plus lock names only when they are news.
@@ -276,17 +280,17 @@ class Locks:
             db.execute("BEGIN IMMEDIATE")
             notices = _reap(db)
             held = cast(
-                "list[tuple[str, str, str, str | None]]",
+                "list[tuple[str, str, str, str, str | None]]",
                 db.execute(
-                    "SELECT resource,expires_at,check_at,checked_at FROM resource_locks "
+                    "SELECT scope,resource,expires_at,check_at,checked_at FROM resource_locks "
                     "WHERE holder=? ORDER BY check_at",
                     (self.agent_address,),
                 ).fetchall(),
             )
             waiting = cast(
-                "list[tuple[str, str, str]]",
+                "list[tuple[str, str, str, str]]",
                 db.execute(
-                    "SELECT w.resource,l.holder,l.check_at FROM resource_lock_waiters w "
+                    "SELECT w.scope,w.resource,l.holder,l.check_at FROM resource_lock_waiters w "
                     "JOIN resource_locks l ON l.scope=w.scope AND l.resource=w.resource "
                     "WHERE w.waiter=? ORDER BY w.requested_at",
                     (self.agent_address,),
@@ -294,7 +298,8 @@ class Locks:
             )
             known = _catalog_rows(db, (routing_scope(self.project), SHARED_SCOPE))
             changed = _catalog_changed(db, self.agent_address, known)
-        self._deliver(notices)
+            sent = self._persist(db, notices)
+        self._deliver(sent)
         parts: list[str] = []
         if known and (full or changed):
             parts.append(_known_phrase(known))
@@ -306,43 +311,72 @@ class Locks:
             )
         if waiting:
             names = ", ".join(
-                f"{resource} (held by {holder}, check due {check})"
-                for resource, holder, check in waiting
+                f"{_scope_name(scope, resource)} (held by {holder}, check due {check})"
+                for scope, resource, holder, check in waiting
             )
             parts.append(
                 f"Locks you await: {names}; you are woken when one passes to you. "
                 "`llm-bus lock acquire RESOURCE --notify` asks the holder now. "
             )
+        if any(item[0] == SHARED_SCOPE for item in held + waiting):
+            parts.append(
+                "For machine-wide locks marked --shared, include --shared in every release, "
+                "acquire --check, and acquire --notify command: "
+                "`llm-bus lock release RESOURCE --shared`, "
+                "`llm-bus lock acquire RESOURCE --shared --check 30m`, or "
+                "`llm-bus lock acquire RESOURCE --shared --notify`. "
+            )
         return "".join(parts)
 
-    def _deliver(self, notices: list[Notice]) -> list[Delivery]:
-        deliveries: list[Delivery] = []
+    def _persist(self, db: sqlite3.Connection, notices: list[Notice]) -> list[Message]:
+        messages: list[Message] = []
         for notice in notices:
             if notice.sender is None and notice.recipient == self.agent_address:
                 continue
-            sender = self._sender(notice.sender or self.agent_address)
-            sent = self.store.send(sender, notice.recipient, notice.body, cross_folder=True)
-            wake = dispatch_pending(self.store, notice.recipient, trigger_id=sent["id"])
-            deliveries.append(Delivery(to=notice.recipient, message_id=sent["id"], wake=wake))
+            sender = self._sender(db, notice.sender or self.agent_address)
+            messages.append(
+                self.store.send_in_transaction(
+                    db, sender, notice.recipient, notice.body, cross_folder=True
+                )
+            )
+        return messages
+
+    def _deliver(self, messages: list[Message]) -> list[Delivery]:
+        deliveries: list[Delivery] = []
+        for sent in messages:
+            wake: WakeResult
+            try:
+                wake = dispatch_pending(self.store, sent["recipient"], trigger_id=sent["id"])
+            except Exception as error:  # pylint: disable=broad-exception-caught
+                wake = {
+                    "status": "unknown",
+                    "via": "wake coordinator",
+                    "reason": f"wake dispatch raised {type(error).__name__}",
+                }
+            deliveries.append(Delivery(to=sent["recipient"], message_id=sent["id"], wake=wake))
         return deliveries
 
-    def _sender(self, sender_address: str) -> SenderContext:
+    def _sender(self, db: sqlite3.Connection, sender_address: str) -> SenderContext:
         kind, session_id = sender_address.split(":", 1)
         project = self.project
         if sender_address != self.agent_address:
-            with self.store.transaction() as db:
-                row = cast(
-                    "tuple[str] | None",
-                    db.execute(
-                        "SELECT project FROM agents WHERE address=?", (sender_address,)
-                    ).fetchone(),
-                )
+            row = cast(
+                "tuple[str] | None",
+                db.execute(
+                    "SELECT project FROM agents WHERE address=?", (sender_address,)
+                ).fetchone(),
+            )
             if row is not None:
                 project = row[0]
         return SenderContext(kind, session_id, project)
 
 
-def _held_phrase(resource: str, until: str, check: str, checked: str | None) -> str:
+def _scope_name(scope: str, resource: str) -> str:
+    return f"{resource} --shared (machine-wide)" if scope == SHARED_SCOPE else resource
+
+
+def _held_phrase(scope: str, resource: str, until: str, check: str, checked: str | None) -> str:
+    resource = _scope_name(scope, resource)
     if checked is not None and checked >= check:
         return f"{resource} (check at {check} is unanswered; lease until {until})"
     return f"{resource} (check due {check}; lease until {until})"

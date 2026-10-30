@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import sqlite3
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -357,6 +358,86 @@ def test_cli_lock_round_trip(
 def _overdue(store: Store) -> None:
     with store.transaction() as db:
         db.execute("UPDATE resource_locks SET check_at='2000-01-01T00:00:00.000Z'")
+
+
+def test_due_batch_survives_one_wake_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = _store(tmp_path)
+    holders = [store.register("codex", name, "/project") for name in ("one", "two")]
+    for holder, resource in zip(holders, ("db", "deploy"), strict=True):
+        locks = Locks(store, holder, "/project")
+        locks.acquire(locks.key(resource, shared=False), Request(check="1h", describe=resource))
+    _overdue(store)
+    attempted: list[str] = []
+
+    def dispatch(_store: Store, recipient: str, *, trigger_id: int) -> dict[str, str]:
+        assert trigger_id > 0
+        attempted.append(recipient)
+        assert all(len(store.inbox(holder)) == 1 for holder in holders)
+        if len(attempted) == 1:
+            raise OSError("host unavailable")
+        return {"status": "requested", "via": "test"}
+
+    monkeypatch.setattr("llm_bus_locks.dispatch_pending", dispatch)
+    locks = Locks(store, holders[0], "/project")
+    result = locks.status(None, every_scope=False)
+    deliveries = cast("list[dict[str, object]]", result["notices"])
+    assert cast("dict[str, str]", deliveries[0]["wake"])["status"] == "unknown"
+    assert set(attempted) == set(holders)
+    assert locks.status(None, every_scope=False)["notices"] == []
+
+
+@pytest.mark.parametrize("handoff", [False, True])
+def test_notice_persistence_failure_rolls_back_lock_state(tmp_path: Path, *, handoff: bool) -> None:
+    store = _store(tmp_path)
+    holder = store.register("claude", "one", "/project")
+    waiter = store.register("codex", "two", "/project")
+    mine = Locks(store, holder, "/project")
+    key = mine.key("db", shared=False)
+    mine.acquire(key, Request(check="1h", describe="database"))
+    Locks(store, waiter, "/project").acquire(key, Request())
+    if not handoff:
+        _overdue(store)
+    with store.transaction() as db:
+        db.execute(
+            "CREATE TRIGGER reject_notice BEFORE INSERT ON messages "
+            "BEGIN SELECT RAISE(ABORT, 'storage failure'); END"
+        )
+    if handoff:
+        with pytest.raises(sqlite3.IntegrityError, match="storage failure"):
+            mine.release(key)
+    else:
+        with pytest.raises(sqlite3.IntegrityError, match="storage failure"):
+            mine.status(None, every_scope=False)
+    with store.transaction() as db:
+        assert db.execute("SELECT holder,checked_at FROM resource_locks").fetchall() == [
+            (holder, None)
+        ]
+        assert db.execute("SELECT waiter FROM resource_lock_waiters").fetchall() == [(waiter,)]
+        assert db.execute("SELECT COUNT(*) FROM messages").fetchone() == (0,)
+
+
+def test_summary_preserves_shared_scope_after_catalog_is_seen(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    holder = store.register("claude", "one", "/project")
+    waiter = store.register("codex", "two", "/project")
+    mine = Locks(store, holder, "/project")
+    theirs = Locks(store, waiter, "/project")
+    for shared in (False, True):
+        key = mine.key("db", shared=shared)
+        mine.acquire(key, Request(check="1h", describe="database"))
+        theirs.acquire(key, Request())
+    mine.summary()
+    theirs.summary()
+    for summary in (mine.summary(), theirs.summary()):
+        assert "Known lock names" not in summary
+        assert "db (" in summary
+        assert "db --shared (machine-wide)" in summary
+        assert "include --shared in every release, acquire --check, and acquire --notify" in summary
+        assert "`llm-bus lock release RESOURCE --shared`" in summary
+        assert "`llm-bus lock acquire RESOURCE --shared --check 30m`" in summary
+        assert "`llm-bus lock acquire RESOURCE --shared --notify`" in summary
 
 
 def test_holder_must_estimate_release_within_its_lease(tmp_path: Path) -> None:
