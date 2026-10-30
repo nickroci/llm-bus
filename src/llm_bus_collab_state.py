@@ -119,7 +119,11 @@ ADDED_COLUMNS = [
     (table, f"{name} INTEGER NOT NULL DEFAULT 0")
     for table in ("invites", "joins", "peers")
     for name in ("agent_replies", "wake_on_answer")
+] + [
+    ("peers", "responder_context TEXT NOT NULL DEFAULT 'fork'"),
+    ("peers", "status_summary TEXT NOT NULL DEFAULT ''"),
 ]
+MAX_STATUS_SUMMARY = 4000
 
 
 class CollabError(ValueError):
@@ -138,6 +142,8 @@ class Invite(TypedDict):
 
 
 class Peer(TypedDict):
+    responder_context: str
+    status_summary: str
     id: int
     pair: str
     github_user: str
@@ -181,7 +187,8 @@ class Grant(NamedTuple):
 
 PEER_COLUMNS = (
     "id, pair, github_user, repository, endpoint_id, ticket, mode, full_until, review_replies, "
-    "their_grant, session, confirm_code, created_at, revoked_at, agent_replies, wake_on_answer"
+    "their_grant, session, confirm_code, created_at, revoked_at, agent_replies, wake_on_answer, "
+    "responder_context, status_summary"
 )
 MESSAGE_COLUMNS = "id, peer_id, direction, kind, uid, in_reply_to, body, state, detail, created_at"
 type PeerRow = tuple[
@@ -201,6 +208,8 @@ type PeerRow = tuple[
     str | None,
     int,
     int,
+    str,
+    str,
 ]
 type InviteRow = tuple[str, str, str | None, int, str, str | None, str, str | None, int, int]
 type MessageRow = tuple[int, int, str, str, str, str | None, str, str, str | None, str]
@@ -318,6 +327,8 @@ def decode_invite(text: str) -> Invite:
 
 def _peer(row: PeerRow) -> Peer:
     return Peer(
+        responder_context=row[16],
+        status_summary=row[17],
         id=row[0],
         pair=row[1],
         github_user=row[2],
@@ -643,6 +654,18 @@ class CollabState:  # pylint: disable=too-many-public-methods
                 ),
             )
 
+    def set_responder_context(self, peer_id: int, context: str, summary: str) -> None:
+        """Owner-selected context, separate from tool permissions and remote grants."""
+        if context not in {"fork", "summary"}:
+            raise CollabError("Responder context must be fork or summary")
+        if len(summary) > MAX_STATUS_SUMMARY:
+            raise CollabError(f"Status summary must be at most {MAX_STATUS_SUMMARY} characters")
+        with self.transaction() as db:
+            db.execute(
+                "UPDATE peers SET responder_context = ?, status_summary = ? WHERE id = ?",
+                (context, summary, peer_id),
+            )
+
     def set_session(self, peer_id: int, session: str) -> None:
         if not SESSION.fullmatch(session):
             raise CollabError("Invalid session ID")
@@ -784,7 +807,11 @@ def exposure_allowed(sender: str, recipient: str, home: Path | None = None) -> b
     if sender in {NOTICE_SENDER, FORWARD_SENDER}:
         return True
     answer = sender.startswith(REPLY_SENDER_PREFIX)
-    user = sender.removeprefix(REPLY_SENDER_PREFIX if answer else SENDER_PREFIX)
+    user, separator, pair = sender.removeprefix(
+        REPLY_SENDER_PREFIX if answer else SENDER_PREFIX
+    ).partition(":")
+    if not separator or not pair:
+        return False
     state_home = home or default_home()
     if not (state_home / "collab.sqlite3").exists():
         return False
@@ -794,6 +821,7 @@ def exposure_allowed(sender: str, recipient: str, home: Path | None = None) -> b
         return False
     return any(
         p["github_user"] == user
+        and p["pair"] == pair
         and p["session"] == recipient
         and (
             (p["agent_replies"] and effective_mode(p) is not None)

@@ -81,6 +81,25 @@ Rules:
 
 ### Enforcing the restricted fork (Claude Code)
 
+Responder context is a separate local per-peer setting on the owner page under
+**Change permissions**. `fork` is the default, preserving existing behavior.
+`summary` starts a fresh Claude responder with an owner-written status summary
+(up to 4000 characters), omitting session resume/fork flags. The summary is
+maintained manually; conversation history is never summarized automatically.
+Tool permissions still follow the selected mode. `isolated` never forks but can
+receive the supplied summary; `monitor` and `full` ignore this setting. The
+setting and summary are stored locally and cannot be set through peer messages.
+Switching affects subsequent responder starts, not a responder already running.
+Summary context avoids inherited conversation secrets, but repository contents
+and the supplied summary may still be sensitive. Secret scanning and optional
+reply review remain in effect.
+
+Pending peer text is bound to a unique pairing through its bus sender suffix
+(`collab:USER:PAIR` or `collab:reply:USER:PAIR`). Revoking one pairing cannot be
+overridden by another pairing for the same GitHub user or local session. Legacy
+pending peer messages without that binding are hidden from agent inboxes after
+upgrade; stored history is retained.
+
 Verified with Claude Code 2.1.303:
 
 ```text

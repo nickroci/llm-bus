@@ -19,6 +19,7 @@ from llm_bus_collab_state import (
     JOIN_APPROVED,
     JOIN_AWAITING,
     JOIN_CONNECTED,
+    MAX_STATUS_SUMMARY,
     MESSAGE_FAILED,
     MESSAGE_REJECTED,
     MODES,
@@ -47,8 +48,9 @@ MODE_HELP = {
     "monitor": "Stored here for you to read. No agent sees their messages.",
     "isolated": "A fresh sandboxed agent with none of your conversation answers from "
     "committed files. It cannot change anything or run commands.",
-    "readonly": "A sandboxed copy of your current session answers. It reads committed files "
-    "and cannot change anything or run commands, but it knows what your session knows.",
+    "readonly": "A restricted agent answers from committed files. By default it copies your "
+    "session; choose summary context after pairing to use a fresh agent instead. "
+    "No writes or commands.",
     "readwrite": "Like read-only, plus it can edit files in a separate branch that you "
     "review before merging. No commands.",
     "full": "Their messages go straight to your main agent with all of its permissions. "
@@ -264,12 +266,34 @@ class OwnerPage:
             "<button class=secondary>Revoke</button></form>"
         )
         fields = _mode_fields(peer["mode"], peer)
+        context_fields = (
+            f"<form method=post action=peer/{peer['id']}/context>"
+            "<label>Responder context <select name=responder_context>"
+            + "".join(
+                f"<option value={value} "
+                f"{'selected' if peer['responder_context'] == value else ''}>"
+                f"{label}</option>"
+                for value, label in (
+                    ("fork", "Fork: copy session history"),
+                    ("summary", "Summary: fresh agent with limited status"),
+                )
+            )
+            + "</select></label><p>Applies to restricted responders; "
+            "tool permissions stay the same. "
+            "Isolated mode never copies session history. Monitor and full ignore this setting.</p>"
+            f"<label>Status summary (up to {MAX_STATUS_SUMMARY} characters)"
+            f"<textarea name=status_summary maxlength={MAX_STATUS_SUMMARY}>"
+            f"{_e(peer['status_summary'])}</textarea>"
+            "</label><p>Include only information this collaborator may receive. "
+            "Update manually as work changes; no conversation is summarized automatically.</p>"
+            "<button>Save responder context</button></form>"
+        )
         change = (
             ""
             if mode is None
             else f"<details><summary>Change permissions</summary><form method=post "
             f"action=peer/{peer['id']}/mode>{fields}"
-            "<button>Save</button></form></details>"
+            f"<button>Save</button></form>{context_fields}</details>"
         )
         return (
             f"<div class=card><div class=row><div class=avatar>{_e(user[:1].upper())}</div>"
@@ -409,6 +433,10 @@ class OwnerPage:
             self.state.revoke(number)
         elif kind == "peer" and action == "mode":
             self.state.set_mode(number, _grant_from(form))
+        elif kind == "peer" and action == "context":
+            self.state.set_responder_context(
+                number, form.get("responder_context", ""), form.get("status_summary", "")
+            )
         elif kind == "message":
             self._message_action(number, action)
         else:

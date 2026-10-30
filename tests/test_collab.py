@@ -11,6 +11,8 @@ import os
 import shutil
 import sqlite3
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
@@ -18,7 +20,7 @@ import pytest
 
 import llm_bus_collab_identity as identity
 from llm_bus_collab_daemon import Daemon
-from llm_bus_collab_responder import Reply, command, secret_findings
+from llm_bus_collab_responder import Reply, clean_export, command, secret_findings
 from llm_bus_collab_state import (
     CollabError,
     CollabState,
@@ -31,7 +33,7 @@ from llm_bus_collab_state import (
     exposure_allowed,
     grant,
 )
-from llm_bus_collab_web import serve_ui
+from llm_bus_collab_web import OwnerPage, serve_ui
 from llm_bus_store import BusError, SenderContext, Store
 
 if TYPE_CHECKING:
@@ -89,6 +91,8 @@ def sample_peer(
     *, mode: str = "full", full_until: str | None = None, session: str | None = None
 ) -> Peer:
     return Peer(
+        responder_context="fork",
+        status_summary="",
         id=1,
         pair="p",
         github_user="bob",
@@ -202,6 +206,55 @@ def test_responder_tool_limits_are_cli_flags(monkeypatch: pytest.MonkeyPatch) ->
         command(responder_peer("codex:abc"), "readonly", "hi")
 
 
+@pytest.mark.parametrize("mode", ["readonly", "readwrite", "isolated"])
+def test_summary_responder_has_no_session_history(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    monkeypatch.setenv("LLM_BUS_COLLAB_CLAUDE", "claude")
+    peer = responder_peer("codex:private-session")
+    peer["responder_context"] = "summary"
+    peer["status_summary"] = "Updating the API; coordinate changes to src/api.py."
+    argv = command(peer, mode, "Which files are changing?")
+    assert "--resume" not in argv
+    assert "--fork-session" not in argv
+    assert "private-session" not in " ".join(argv)
+    assert peer["status_summary"] in argv[2]
+    assert "no access to the owner's conversation" in argv[argv.index("--append-system-prompt") + 1]
+    tools = "Read,Grep,Glob,Edit,Write" if mode == "readwrite" else "Read,Grep,Glob"
+    assert argv[argv.index("--tools") + 1] == tools
+
+
+def test_owner_context_setting_persists_and_escapes_summary(
+    tmp_path: Path, isolated_collab: Path
+) -> None:
+    state = CollabState(isolated_collab)
+    add_full_peer(state, "claude:abc", mode="readonly")
+    store = Store(tmp_path / "bus.sqlite3")
+    page = OwnerPage(state, store, lambda: "ticket")
+    peer = state.peers()[0]
+    assert peer["responder_context"] == "fork"
+    assert peer["status_summary"] == ""
+    summary = "Changing API </textarea><script>alert(1)</script>"
+    page.apply(
+        ["peer", str(peer["id"]), "context"],
+        {
+            "responder_context": "summary",
+            "status_summary": summary,
+        },
+    )
+    saved = CollabState(isolated_collab).peers()[0]
+    assert saved["responder_context"] == "summary"
+    assert saved["status_summary"] == summary
+    assert saved["mode"] == "readonly"
+    card = page.dashboard().decode()
+    assert "&lt;/textarea&gt;" in card
+    assert "<script>alert(1)</script>" not in card
+    for context, text in (("invalid", ""), ("summary", "x" * 4001)):
+        with pytest.raises(CollabError):
+            state.set_responder_context(peer["id"], context, text)
+    assert state.peers()[0]["status_summary"] == summary
+
+
 def add_full_peer(
     state: CollabState, session: str, *, mode: str = "full", agent_replies: bool = False
 ) -> None:
@@ -222,15 +275,53 @@ def test_answers_reach_the_asking_agent_only_while_allowed(
     me = store.register("claude", "me", str(tmp_path))
     state = CollabState(isolated_collab)
     add_full_peer(state, me, mode="readonly", agent_replies=True)
-    store.deliver_collab("collab:reply:bob", me, "answer")
-    store.deliver_collab("collab:bob", me, "unsolicited")
-    assert [m["sender"] for m in store.inbox(me)] == ["collab:reply:bob"]
-    assert not exposure_allowed("collab:reply:bob", "claude:someone-else")
+    store.deliver_collab("collab:reply:bob:p", me, "answer")
+    store.deliver_collab("collab:bob:p", me, "unsolicited")
+    assert [m["sender"] for m in store.inbox(me)] == ["collab:reply:bob:p"]
+    assert not exposure_allowed("collab:reply:bob:p", "claude:someone-else")
     state.set_mode(state.peers()[0]["id"], grant("readonly"))
     assert store.inbox(me) == []
     state.set_mode(state.peers()[0]["id"], grant("readonly", agent_replies=True))
     state.revoke(state.peers()[0]["id"])
     assert store.inbox(me) == []
+
+
+@pytest.mark.parametrize("answer", [False, True])
+def test_other_pairing_cannot_restore_revoked_text(
+    tmp_path: Path, isolated_collab: Path, *, answer: bool
+) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    me = store.register("claude", "me", str(tmp_path))
+    state = CollabState(isolated_collab)
+    add_full_peer(state, me, agent_replies=answer)
+    sender = "collab:reply:bob:p" if answer else "collab:bob:p"
+    store.deliver_collab(sender, me, "old pairing text")
+    assert len(store.inbox(me)) == 1
+    state.revoke(state.peers()[0]["id"])
+    with state.transaction() as db:
+        db.execute("UPDATE peers SET pair = 'old' WHERE pair = 'p'")
+    add_full_peer(state, me, agent_replies=answer)
+    with state.transaction() as db:
+        db.execute(
+            "UPDATE peers SET pair = 'new', repository = '/other', endpoint_id = 'other' WHERE pair = 'p'"
+        )
+    assert store.inbox(me) == []
+    assert not exposure_allowed("collab:bob", me)
+
+
+def test_concurrent_exports_publish_complete_snapshot(tmp_path: Path) -> None:
+    repository = committed_repository(tmp_path)
+    barrier = threading.Barrier(4)
+
+    def export(_index: int) -> Path:
+        barrier.wait(timeout=10)
+        return clean_export(tmp_path / "home", str(repository))
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        paths = list(pool.map(export, range(4)))
+    assert len(set(paths)) == 1
+    assert sorted(p.name for p in paths[0].iterdir()) == ["api.py"]
+    assert list(paths[0].parent.iterdir()) == [paths[0]]
 
 
 def test_only_the_first_answer_to_an_own_question_is_delivered(
@@ -264,14 +355,14 @@ def test_only_the_first_answer_to_an_own_question_is_delivered(
     assert arrive("a2", "q1") == "unread"
     assert arrive("a3", "never-asked") == "unread"
     assert arrive("a4", None) == "unread"
-    answers = [m for m in store.inbox(me) if m["sender"] == "collab:reply:bob"]
+    answers = [m for m in store.inbox(me) if m["sender"] == "collab:reply:bob:p"]
     assert len(answers) == 1
     assert "untrusted peer data" in answers[0]["body"]
     assert "text a1" in answers[0]["body"]
     state.set_mode(peer["id"], grant("monitor"))
     _ = state.add_message(peer["id"], NewMessage("out", "request", "q2", "And?", "sent"))
     assert arrive("a5", "q2") == "unread"
-    assert all(m["sender"] != "collab:reply:bob" for m in store.inbox(me))
+    assert all(m["sender"] != "collab:reply:bob:p" for m in store.inbox(me))
 
 
 def test_automatic_answers_wake_the_owner_agent_only_when_held_or_chosen(
@@ -338,15 +429,15 @@ def test_peer_text_reaches_agents_only_in_full_mode(tmp_path: Path, isolated_col
     state = CollabState(isolated_collab)
     add_full_peer(state, me)
     store.deliver_collab("collab:_daemon", me, "notice without peer text")
-    store.deliver_collab("collab:bob", me, "peer text")
-    assert [m["sender"] for m in store.inbox(me)] == ["collab:_daemon", "collab:bob"]
+    store.deliver_collab("collab:bob:p", me, "peer text")
+    assert [m["sender"] for m in store.inbox(me)] == ["collab:_daemon", "collab:bob:p"]
     state.set_mode(state.peers()[0]["id"], grant("readonly"))
     assert [m["sender"] for m in store.inbox(me)] == ["collab:_daemon"]
     assert store.pending_count(me) == 1
-    assert not exposure_allowed("collab:bob", "claude:someone-else")
-    assert all(a["address"] != "collab:bob" for a in store.agents())
+    assert not exposure_allowed("collab:bob:p", "claude:someone-else")
+    assert all(a["address"] != "collab:bob:p" for a in store.agents())
     with pytest.raises(BusError):
-        store.send(SenderContext("claude", "me", str(tmp_path)), "collab:bob", "hello")
+        store.send(SenderContext("claude", "me", str(tmp_path)), "collab:bob:p", "hello")
 
 
 def fetch(url: str, *, data: bytes | None = None, headers: dict[str, str] | None = None) -> int:

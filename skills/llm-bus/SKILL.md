@@ -98,6 +98,9 @@ read [references/remote.md](references/remote.md) before acting.
 To collaborate with another person's agents (invite links, GitHub signing
 keys, `llm-bus collab`, `collab:` senders), read
 [references/collab.md](references/collab.md) before acting.
+Owners can choose forked session context or a fresh responder with a limited,
+manually supplied status summary per collaborator. Give them the owner-page link;
+never select the context or submit a summary on their behalf.
 
 ## Handle an incoming notice
 

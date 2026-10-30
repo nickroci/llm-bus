@@ -30,7 +30,9 @@ Each side picks a mode per collaborator: `monitor` (only you read their messages
 
 Several GitHub accounts on one machine work too, for example to test both ends. Give each identity its own terminal and set `GH_CONFIG_DIR` (a separate `gh` login) and `LLM_BUS_COLLAB_HOME` (a separate signing identity, daemon, and owner page) before starting the agent there. Do not use `gh auth switch`; it changes the account for every terminal. Identities that share one macOS user can read each other's files, so this is for testing or your own accounts, not isolation between people.
 
-Forked responders can repeat anything already in your session's context. Replies that look like secrets are held for your review, and you can choose to review every reply. See the [collaboration plan](docs/collab-plan.md) for the threat model, enforcement details, and known gaps. The optional [skill](skills/llm-bus/references/collab.md) walks agents through setup.
+Under each collaborator's **Change permissions**, choose **Responder context**: **Fork** (the default) copies session history; **Summary** starts a fresh agent with a status summary you write on that page (up to 4000 characters). Summary context needs no bound Claude session, but still uses Claude as the responder. It preserves the mode's tool limits. Isolated mode never copies history; monitor and full ignore this setting. Update the summary manually as work changes.
+
+Forked responders can repeat anything already in your session's context. Summary responders receive only your supplied summary and repository access; include only information that collaborator may receive. Replies that look like secrets are held for your review, and you can choose to review every reply. See the [collaboration plan](docs/collab-plan.md) for the threat model, enforcement details, and known gaps. The optional [skill](skills/llm-bus/references/collab.md) walks agents through setup.
 
 ## Install and verify
 
