@@ -22,7 +22,12 @@ def _no_timer(_key: object) -> None:
 
 @pytest.fixture(autouse=True)
 def isolate_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET", "CODEX_THREAD_ID"):
+    for name in (
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CODEX_THREAD_ID",
+        "CODEX_SESSION_ID",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr("llm_bus_locks.schedule_check", _no_timer)
 
