@@ -275,10 +275,14 @@ def test_answers_reach_the_asking_agent_only_while_allowed(
     me = store.register("claude", "me", str(tmp_path))
     state = CollabState(isolated_collab)
     add_full_peer(state, me, mode="readonly", agent_replies=True)
-    store.deliver_collab("collab:reply:bob:p", me, "answer")
+    _ = state.add_message(
+        state.peers()[0]["id"],
+        NewMessage("out", "request", "q1", "Question", "sent", origin_session=me),
+    )
+    store.deliver_collab("collab:reply:bob:p:q1", me, "answer")
     store.deliver_collab("collab:bob:p", me, "unsolicited")
-    assert [m["sender"] for m in store.inbox(me)] == ["collab:reply:bob:p"]
-    assert not exposure_allowed("collab:reply:bob:p", "claude:someone-else")
+    assert [m["sender"] for m in store.inbox(me)] == ["collab:reply:bob:p:q1"]
+    assert not exposure_allowed("collab:reply:bob:p:q1", "claude:someone-else")
     state.set_mode(state.peers()[0]["id"], grant("readonly"))
     assert store.inbox(me) == []
     state.set_mode(state.peers()[0]["id"], grant("readonly", agent_replies=True))
@@ -294,7 +298,11 @@ def test_other_pairing_cannot_restore_revoked_text(
     me = store.register("claude", "me", str(tmp_path))
     state = CollabState(isolated_collab)
     add_full_peer(state, me, agent_replies=answer)
-    sender = "collab:reply:bob:p" if answer else "collab:bob:p"
+    _ = state.add_message(
+        state.peers()[0]["id"],
+        NewMessage("out", "request", "q1", "Question", "sent", origin_session=me),
+    )
+    sender = "collab:reply:bob:p:q1" if answer else "collab:bob:p"
     store.deliver_collab(sender, me, "old pairing text")
     assert len(store.inbox(me)) == 1
     state.revoke(state.peers()[0]["id"])
@@ -337,7 +345,9 @@ def test_only_the_first_answer_to_an_own_question_is_delivered(
     add_full_peer(state, me, mode="monitor", agent_replies=True)
     peer = state.peers()[0]
     daemon = Daemon(state, store)
-    _ = state.add_message(peer["id"], NewMessage("out", "request", "q1", "How?", "sent"))
+    _ = state.add_message(
+        peer["id"], NewMessage("out", "request", "q1", "How?", "sent", origin_session=me)
+    )
 
     def arrive(uid: str, in_reply_to: str | None) -> str:
         frame: Frame = {
@@ -355,14 +365,52 @@ def test_only_the_first_answer_to_an_own_question_is_delivered(
     assert arrive("a2", "q1") == "unread"
     assert arrive("a3", "never-asked") == "unread"
     assert arrive("a4", None) == "unread"
-    answers = [m for m in store.inbox(me) if m["sender"] == "collab:reply:bob:p"]
+    answers = [m for m in store.inbox(me) if m["sender"] == "collab:reply:bob:p:q1"]
     assert len(answers) == 1
     assert "untrusted peer data" in answers[0]["body"]
     assert "text a1" in answers[0]["body"]
     state.set_mode(peer["id"], grant("monitor"))
-    _ = state.add_message(peer["id"], NewMessage("out", "request", "q2", "And?", "sent"))
+    _ = state.add_message(
+        peer["id"], NewMessage("out", "request", "q2", "And?", "sent", origin_session=me)
+    )
     assert arrive("a5", "q2") == "unread"
-    assert all(m["sender"] != "collab:reply:bob:p" for m in store.inbox(me))
+    assert all(not m["sender"].startswith("collab:reply:") for m in store.inbox(me))
+
+
+@pytest.mark.parametrize("mode", ["monitor", "full"])
+def test_answers_keep_the_question_owner_after_peer_rebinding(
+    tmp_path: Path, isolated_collab: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    def no_dispatch(*_args: object, **_kwargs: object) -> None:
+        pass
+
+    monkeypatch.setattr("llm_bus_collab_daemon.dispatch_pending", no_dispatch)
+    store = Store(tmp_path / "bus.sqlite3")
+    first = store.register("claude", "first", str(tmp_path))
+    second = store.register("codex", "second", str(tmp_path))
+    state = CollabState(isolated_collab)
+    add_full_peer(state, first, mode=mode, agent_replies=mode != "full")
+    peer_id = state.peers()[0]["id"]
+    _ = state.add_message(
+        peer_id, NewMessage("out", "request", "q1", "First question", "sent", origin_session=first)
+    )
+    state.set_session(peer_id, second)
+    daemon = Daemon(state, store)
+    frame: Frame = {
+        "type": "msg",
+        "pair": "p",
+        "uid": "a1",
+        "kind": "reply",
+        "in_reply_to": "q1",
+        "body": "Answer for first",
+    }
+    assert asyncio.run(daemon.handle("e", frame)) == {"ok": True}
+    assert len(store.inbox(first)) == 1
+    assert store.inbox(second) == []
+    state.set_session(peer_id, "claude:third")
+    assert len(store.inbox(first)) == 1
+    state.revoke(peer_id)
+    assert store.inbox(first) == []
 
 
 def test_automatic_answers_wake_the_owner_agent_only_when_held_or_chosen(

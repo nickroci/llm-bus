@@ -95,7 +95,7 @@ and the supplied summary may still be sensitive. Secret scanning and optional
 reply review remain in effect.
 
 Pending peer text is bound to a unique pairing through its bus sender suffix
-(`collab:USER:PAIR` or `collab:reply:USER:PAIR`). Revoking one pairing cannot be
+(`collab:USER:PAIR` or `collab:reply:USER:PAIR:QUESTION`). Revoking one pairing cannot be
 overridden by another pairing for the same GitHub user or local session. Legacy
 pending peer messages without that binding are hidden from agent inboxes after
 upgrade; stored history is retained.
@@ -136,7 +136,7 @@ Fork spike: a base Haiku session holding a code word, a fake token, and "current
 ## Open questions and gaps
 
 - Resolved: approval and peer text use a token-protected loopback owner page. The agent prints its links; processes running as the same OS user can still read the token, consistent with the same-user trust model.
-- Agent answers are a prompt-injection channel into the main session, narrowed to replies the agent solicited. A hostile or compromised peer can still put instructions in an answer; the label and the main session's own permissions are the only defenses. Answers go to the peer's most recently bound session, not necessarily the one that asked.
+- Agent answers are a prompt-injection channel into the main session, narrowed to replies the agent solicited. A hostile or compromised peer can still put instructions in an answer; the label and the main session's own permissions are the only defenses. Each outgoing question records its asking session. Its first answer routes to that session, even if another session subsequently uses the same peer. Pending exposure rechecks the exact question, session and current peer policy. Legacy questions without recorded ownership remain on the owner page.
 - Showing peer text inside Claude Code without adding it to agent context (mod pane or toast) instead of a browser page.
 - Secret scanner choice and false-positive handling.
 - Per-peer rate and cost limits for forks; batching messages into threads.

@@ -122,6 +122,7 @@ ADDED_COLUMNS = [
 ] + [
     ("peers", "responder_context TEXT NOT NULL DEFAULT 'fork'"),
     ("peers", "status_summary TEXT NOT NULL DEFAULT ''"),
+    ("messages", "origin_session TEXT"),
 ]
 MAX_STATUS_SUMMARY = 4000
 
@@ -383,6 +384,7 @@ class NewMessage(NamedTuple):
     state: str
     in_reply_to: str | None = None
     detail: str | None = None
+    origin_session: str | None = None
 
 
 class NewPeer(NamedTuple):
@@ -688,7 +690,7 @@ class CollabState:  # pylint: disable=too-many-public-methods
             with self.transaction() as db:
                 cursor = db.execute(
                     "INSERT INTO messages(peer_id, direction, kind, uid, in_reply_to, body, state, "
-                    "detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "detail, created_at, origin_session) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         peer_id,
                         new.direction,
@@ -699,6 +701,7 @@ class CollabState:  # pylint: disable=too-many-public-methods
                         new.state,
                         new.detail,
                         stamp(now()),
+                        new.origin_session,
                     ),
                 )
         except sqlite3.IntegrityError:
@@ -706,6 +709,19 @@ class CollabState:  # pylint: disable=too-many-public-methods
         if cursor.lastrowid is None:
             raise RuntimeError("SQLite did not return a message ID")
         return self.message(cursor.lastrowid)
+
+    def question_session(self, peer_id: int, uid: str) -> str | None:
+        """Immutable local owner of an outgoing question; legacy questions have none."""
+        with closing(self._connect()) as db:
+            row = cast(
+                "tuple[str | None] | None",
+                db.execute(
+                    "SELECT origin_session FROM messages WHERE peer_id=? AND uid=? "
+                    "AND direction='out' AND kind='request'",
+                    (peer_id, uid),
+                ).fetchone(),
+            )
+        return row[0] if row else None
 
     def message(self, message_id: int) -> Message:
         with closing(self._connect()) as db:
@@ -801,21 +817,26 @@ def exposure_allowed(sender: str, recipient: str, home: Path | None = None) -> b
     ).partition(":")
     if not separator or not pair:
         return False
+    pair, _, question = pair.partition(":") if answer else (pair, "", "")
     state_home = home or default_home()
     if not (state_home / "collab.sqlite3").exists():
         return False
     try:
-        peers = CollabState(state_home).peers()
+        state = CollabState(state_home)
+        peers = state.peers()
     except (sqlite3.Error, OSError):
         return False
     return any(
         p["github_user"] == user
         and p["pair"] == pair
-        and p["session"] == recipient
         and (
-            (p["agent_replies"] and effective_mode(p) is not None)
+            (
+                (p["agent_replies"] or effective_mode(p) == FULL_MODE)
+                and effective_mode(p) is not None
+                and state.question_session(p["id"], question) == recipient
+            )
             if answer
-            else effective_mode(p) == FULL_MODE
+            else p["session"] == recipient and effective_mode(p) == FULL_MODE
         )
         for p in peers
     )

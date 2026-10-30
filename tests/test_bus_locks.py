@@ -597,7 +597,9 @@ def test_timer_handoff_does_not_reactivate_ended_holder(
         )
         assert db.execute("SELECT holder FROM resource_locks").fetchall() == [(waiter,)]
     assert wakes == [waiter]
-    [message] = store.inbox(waiter)
+    messages = store.inbox(waiter)
+    assert len(messages) == 1
+    message = messages[0]
     assert message["sender"] == holder
     assert message["body"].startswith("llm-bus lock granted:")
 

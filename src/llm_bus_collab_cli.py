@@ -139,7 +139,10 @@ def _send(state: CollabState, args: dict[str, object], session: str | None) -> d
     state.set_session(peer["id"], session)
     kind = "reply" if reply_to else "request"
     message = state.add_message(
-        peer["id"], NewMessage("out", kind, str(uuid.uuid4()), text, "queued", reply_to)
+        peer["id"],
+        NewMessage(
+            "out", kind, str(uuid.uuid4()), text, "queued", reply_to, origin_session=session
+        ),
     )
     if message is None:
         raise RuntimeError("Outgoing message was not stored")
