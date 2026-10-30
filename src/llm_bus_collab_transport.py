@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 ALPN = b"llm-bus/collab/0"
 MAX_FRAME_BYTES = 256 * 1024
 CONNECT_TIMEOUT_SECONDS = 30
+REQUEST_TIMEOUT_SECONDS = 30
 LOCAL_ONLY_ENV = "LLM_BUS_COLLAB_LOCAL_ONLY"
 
 type Frame = dict[str, object]
@@ -28,6 +29,13 @@ type Handler = Callable[[str, Frame], Awaitable[Frame]]
 
 class TransportError(OSError):
     """Peer unreachable or protocol violation."""
+
+
+def _ticket(text: str) -> iroh.EndpointTicket:
+    try:
+        return iroh.EndpointTicket.from_string(text)
+    except iroh.IrohError as exc:
+        raise TransportError("Malformed endpoint ticket") from exc
 
 
 def _decode(raw: bytes) -> Frame:
@@ -104,11 +112,18 @@ class Transport:
 
     @staticmethod
     def ticket_id(ticket: str) -> str:
-        return str(iroh.EndpointTicket.from_string(ticket).endpoint_addr().id())
+        return str(_ticket(ticket).endpoint_addr().id())
 
     async def request(self, ticket: str, frame: Frame) -> Frame:
         """Send one frame to the endpoint in `ticket` and return its response."""
-        address = iroh.EndpointTicket.from_string(ticket).endpoint_addr()
+        try:
+            async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
+                return await self._exchange(ticket, frame)
+        except TimeoutError as exc:
+            raise TransportError("Peer request timed out") from exc
+
+    async def _exchange(self, ticket: str, frame: Frame) -> Frame:
+        address = _ticket(ticket).endpoint_addr()
         try:
             connection = await asyncio.wait_for(
                 self.endpoint.connect(address, ALPN), CONNECT_TIMEOUT_SECONDS
@@ -138,18 +153,23 @@ class Transport:
 
     @staticmethod
     async def _handle(incoming: iroh.Incoming, handler: Handler) -> None:
+        connection = None
         try:
-            connection = await (await incoming.accept()).connect()
-            remote = str(connection.remote_id())
-            stream = await connection.accept_bi()
-            request = _decode(await stream.recv().read_to_end(MAX_FRAME_BYTES))
-            response = await handler(remote, request)
-            outgoing = stream.send()
-            await outgoing.write_all(json.dumps(response).encode())
-            await outgoing.finish()
-            await connection.closed()
-        except (iroh.IrohError, TransportError):
+            async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
+                connection = await (await incoming.accept()).connect()
+                remote = str(connection.remote_id())
+                stream = await connection.accept_bi()
+                request = _decode(await stream.recv().read_to_end(MAX_FRAME_BYTES))
+                response = await handler(remote, request)
+                outgoing = stream.send()
+                await outgoing.write_all(json.dumps(response).encode())
+                await outgoing.finish()
+                await connection.closed()
+        except (TimeoutError, iroh.IrohError, TransportError):
             return
+        finally:
+            if connection is not None:
+                connection.close(0, b"done")
 
     async def close(self) -> None:
         await self.endpoint.close()

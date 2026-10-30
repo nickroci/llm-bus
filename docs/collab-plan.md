@@ -57,6 +57,10 @@ Pinning: after approval, each side stores the peer as (GitHub user, iroh endpoin
 - One long-lived `llm-bus collab` daemon per machine owns the endpoint and its secret key (stored with the same file-permission rules as relay tokens).
 - ALPN: `llm-bus/collab/0`.
 
+Each request has a 30-second deadline covering connection and stream exchange;
+incoming exchanges are bounded too. Malformed endpoint tickets fail their join
+without stopping the daemon. Timed-out outgoing messages remain eligible for retry.
+
 The existing Cloudflare relay remains. Collaboration is a second transport that reuses the peer policy model.
 
 ## Trust modes
