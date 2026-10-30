@@ -28,7 +28,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/llm_bus.py", "src/llm_bus_install.py", "src/llm_bus_store.py", "src/llm_bus_wake.py", "src/llm_bus_policy.py", "src/llm_bus_remote.py", "src/llm_bus_remote_store.py", "src/llm_bus_reports.py", "src/llm_bus_collab_cli.py", "src/llm_bus_collab_daemon.py", "src/llm_bus_collab_identity.py", "src/llm_bus_collab_responder.py", "src/llm_bus_collab_state.py", "src/llm_bus_collab_transport.py", "src/llm_bus_collab_web.py"]
+packages = ["src/llm_bus.py", "src/llm_bus_install.py", "src/llm_bus_store.py", "src/llm_bus_wake.py", "src/llm_bus_policy.py", "src/llm_bus_remote.py", "src/llm_bus_remote_store.py", "src/llm_bus_reports.py", "src/llm_bus_collab_cli.py", "src/llm_bus_collab_daemon.py", "src/llm_bus_collab_identity.py", "src/llm_bus_collab_responder.py", "src/llm_bus_collab_state.py", "src/llm_bus_collab_transport.py", "src/llm_bus_collab_web.py", "src/llm_bus_schema.py", "src/llm_bus_dispatch.py", "src/llm_bus_locks.py"]
 
 [tool.hatch.build.targets.sdist]
 exclude = ["/cloudflare/node_modules", "/cloudflare/.wrangler", "/cloudflare/dist", "/cloudflare/.dev.vars"]
@@ -121,7 +121,7 @@ max-line-length = 100
 score = false
 
 [tool.deptry]
-known_first_party = ["llm_bus", "llm_bus_install", "llm_bus_store", "llm_bus_wake", "llm_bus_policy", "llm_bus_remote", "llm_bus_remote_store", "llm_bus_reports", "llm_bus_collab_cli", "llm_bus_collab_daemon", "llm_bus_collab_identity", "llm_bus_collab_responder", "llm_bus_collab_state", "llm_bus_collab_transport", "llm_bus_collab_web"]
+known_first_party = ["llm_bus", "llm_bus_install", "llm_bus_store", "llm_bus_wake", "llm_bus_policy", "llm_bus_remote", "llm_bus_remote_store", "llm_bus_reports", "llm_bus_collab_cli", "llm_bus_collab_daemon", "llm_bus_collab_identity", "llm_bus_collab_responder", "llm_bus_collab_state", "llm_bus_collab_transport", "llm_bus_collab_web", "llm_bus_schema", "llm_bus_dispatch", "llm_bus_locks"]
 
 [tool.poe.tasks]
 format = "ruff format src tests plugins/herdr-history tools"

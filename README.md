@@ -45,11 +45,24 @@ llm-bus install
 
 To [collaborate with another person](#collaborate-with-another-person-experimental), install the optional extra instead: `uv tool install --force '.[collab]'`.
 
-If your shell cannot find `llm-bus`, run `uv tool update-shell` and open a new shell. `llm-bus install` adds user-level start, prompt, and end hooks for Codex and Claude Code, plus a Claude Code allow rule for direct bus commands. After updating an existing installation, run `llm-bus install` again to add the end hooks. Close both agents before installing or uninstalling, and avoid simultaneous edits to their settings files. The installer preserves unrelated settings but cannot coordinate with another writer. It rejects symlinked settings files; use your dotfile manager to edit their targets.
+These steps apply to macOS and Linux. Run installation separately on each machine, as the operating-system user who runs the agents. If your shell cannot find `llm-bus`, run `uv tool update-shell` and open a new shell. To discover uv's executable directory without assuming a username, home directory, or package-manager prefix, run `uv tool dir --bin`.
+
+`llm-bus install` adds user-level `SessionStart`, `UserPromptSubmit`, and `SessionEnd` hooks for both hosts, plus a Claude Code allow rule for direct bus commands. It discovers `llm-bus` on the installing process's `PATH` and writes its absolute executable path, with shell quoting for paths containing spaces. The path belongs to that machine; do not copy generated hook files between machines or commit them as shared configuration. After upgrading, moving the installation, or changing configuration directories, run `llm-bus install` again. This also migrates older bare `llm-bus hook ...` commands without duplicating bus hooks.
+
+Close both agents before installing or uninstalling, and avoid simultaneous edits to their settings files. The installer preserves unrelated settings but cannot coordinate with another writer. It rejects symlinked settings files; use your dotfile manager to edit their targets.
+
+| Host | User hook file | Custom configuration directory |
+| --- | --- | --- |
+| Codex | `.codex/hooks.json` under the user's home | Set `CODEX_HOME` before installing and starting Codex. |
+| Claude Code | `.claude/settings.json` under the user's home | Set `CLAUDE_CONFIG_DIR` before installing and starting Claude Code. |
+
+GUI applications, services, SSH sessions, and shell tools can inherit different environments. An interactive terminal finding `llm-bus` does not prove a hook can find a bare command. The installed absolute paths avoid that dependency for hooks. Agent shell commands still need the tool directory on `PATH`, and Codex wake requests still need `codex` on the sender's `PATH`. Configure the environment of the process that actually launches the agent or service; changing only `.zshrc` or `.bashrc` may not affect it. Restart that process after environment changes. See [OpenAI's hook guide](https://learn.chatgpt.com/docs/hooks) and [Claude's hook reference](https://code.claude.com/docs/en/hooks).
 
 Restart Codex and Claude Code. In Codex, open `/hooks` and review and trust the bus hooks; untrusted hooks do not run. Remove any older project-level copies of the bus hooks to avoid duplicate notifications. See the [Codex](https://developers.openai.com/codex/hooks/) and [Claude Code](https://code.claude.com/docs/en/hooks) hook guides.
 
 Finally, run `llm-bus whoami` inside each agent's shell tool. It should return an address such as `codex:SESSION_ID` or `claude:SESSION_ID`. A session must register before another agent can address it. The hooks register it at session start or prompt submission; `whoami` registers it as well. A newly opened session that has not taken a turn may not have registered yet.
+
+If a hook exits with code 127, inspect its command in the active user hook file. On macOS or Linux, `command -v llm-bus` should identify the installation you intend to use. Re-run the installer from that environment, then review changed hooks in Codex's `/hooks`. To check executable lookup without registering a fake session or writing a message, run the installed hook command with `--help` appended, keeping its executable quoting and temporarily using a restricted `PATH`. For example, set `PATH=/usr/bin:/bin` for that check. Exit code 0 confirms the command can start; a real new session must still verify hook execution, identity, and any native wake permissions. Empty JSON is not a valid hook payload and must not be treated as a successful lifecycle test.
 
 ## Send, read, and acknowledge
 
@@ -82,16 +95,46 @@ llm-bus send codex:SESSION_ID --body "Please reply when you receive this"
 
 The response includes the stored message and a `wake` status. `requested` means the wake request was submitted; it does not prove the recipient received or handled the message. If wake fails, do not resend blindly: the message is already stored.
 
+## Coordinate shared resources
+
+Sessions that share a database, a generated file, or any other resource can take an advisory lock on it by name. Every holder must say when it expects to be done:
+
+```text
+llm-bus lock list
+llm-bus lock acquire db:orders --check 45m --describe "orders Postgres database" --reason "running migration 0042"
+llm-bus lock acquire db:orders --notify
+llm-bus lock status
+llm-bus lock release db:orders
+```
+
+A lock only protects anything if every session uses the same name for the same resource. The bus keeps a catalog of names with what each protects, free or held. `lock list` shows it, and hook notices show up to ten names with their descriptions at session start and when names or descriptions change. The first acquire of a new name must say what it protects with `--describe`. A new name that resembles an existing one, such as `orders-db` next to `db:orders`, is refused with the existing name and its description, unless `--new` confirms it is a different resource. Names unused for 30 days drop out of the catalog.
+
+`--check` is the holder's optimistic estimate of when the lock will be releasable, as minutes, hours, or days (`45m`, `2h`, `1d`). When that time arrives, the bus sends the holder a `lock check` message and wakes its session: release it if the task no longer needs it, or run `acquire` again with a new `--check` to be asked again then. A check is sent once per estimate. Until the holder answers, its hook notice marks the check as unanswered on every turn. Acquiring a free resource without `--check` is an error.
+
+The check fires from a small detached process that `acquire` starts and that sleeps until the estimate. If that process is gone, for example after a reboot, the next lock command or hook from any session on the machine sends the overdue check instead.
+
+`acquire` returns `acquired` for a free resource and `renewed` when you already hold it, which also resets the lease and the check. When another live session holds it, you are queued, the result is `waiting`, and nothing is sent unless you add `--notify`. With `--notify`, the holder receives a `lock request` message with your reason and is woken now rather than at its check time. Repeating `--notify` re-asks at most once every five minutes; the result's `notified` field says whether a message went out. On `release`, or when a lease lapses, the resource passes to the earliest live waiter, which is woken with a `lock granted` message asking for its own `--check`; otherwise the resource becomes free. Only the holder can release.
+
+Each lock is also a lease: 24 hours by default, up to 7 days with `--ttl` in minutes, and it ends at once when the holder's session ends. The lease is a backstop; the check is the normal way locks come back. Names are scoped to the current Git repository or folder; add `--shared` for a machine-wide name. `status` lists locks in this scope plus shared ones, with holders, check times, leases, and queues; `--all` lists every scope.
+
+Locks are advisory: nothing stops a session that never calls `acquire`. Lock messages are bus messages, so treat them as untrusted coordination data like any other. Locks do not cross machines.
+
 ## Wake behavior
 
 `send` commits the message before requesting a host wake. The CLI exits successfully when storage succeeds, even if the wake fails, and reports that failure in the JSON `wake` field. Inspect that field when a prompt reply matters.
+
+Concurrent sends share a recipient lease and may return `coalesced`. Each message remains separately stored and requires its own acknowledgement. The coordinator gathers a burst for up to 25 milliseconds, uses the oldest permitted pending message without a successful wake request as the notice anchor, and records exactly which pending IDs the request covered, including messages beyond the first inbox page. Successful wake coverage persists across restarts: the coordinator does not request another wake for those same IDs merely because handling is slow. A later message does not inherit that coverage and can request its own wake. Neither `coalesced` nor `requested` proves receipt or handling. If a successfully queued notice is lost by the host, messages remain pending for the recipient's next hook or explicit inbox read; the bus does not automatically resend that notice.
+
+A call makes at most two native wake attempts. Further arrivals remain due for a running bridge, a later send, or notification in the recipient's next hook. A bridge also recovers abandoned 30-second leases and retries failed or unknown wake outcomes with capped backoff. Unsupported wakes wait for a changed registered host capability or a later send; hooks still report pending items. Without a running bridge, a crashed sender has no autonomous recovery: another send or recipient turn is required. Current policy and ended-session state are checked before dispatch. Blocking a peer cannot recall an already submitted wake.
+
+Acknowledging a message does not cancel its already queued host notice. With the bus's trusted Codex `UserPromptSubmit` hook enabled, an exact bus wake receives no-op context when its ID, sender, and recipient match an acknowledged message and the inbox has no pending messages. The context tells the agent that no action is needed and not to retry or acknowledge the notice again. The hook allows the prompt rather than rejecting it, avoiding repeated hook rejections if the host resubmits a stale notice. Codex may still display the queued notice and run a redundant agent turn. Other prompts and wakes with pending work continue normally. Claude wake behavior is unchanged.
 
 | Recipient | Automatic wake path | Limit |
 | --- | --- | --- |
 | Codex | `codex queue` with the recipient's session ID | Requires `codex` on `PATH` and a reachable session. |
 | Claude Code | Native inbox Unix socket on macOS and Linux | Requires a registered socket and Claude inbound delivery permission; no terminal input is sent. |
 
-The wake status is `requested`, `failed`, `unknown` (timeout; the host might still have received it), or `unsupported`. The wake prompt includes the bus message ID and sender address, never the message body. Both hosts receive the same notice, such as `llm-bus message #1231 from codex:SESSION_ID. Read and handle it with llm-bus inbox`. Claude Code may still label its native approval dialog “Another Claude session”; that host label does not identify the bus sender. Read the sender address in the notice or stored inbox message. For Claude, `requested` means the frame was written to the native socket; inbound controls may still hold or refuse it. A successful request does not prove delivery or handling. Messages remain pending until the recipient reads and acknowledges them. Without a wake, hooks report pending messages at the recipient's next turn.
+The wake status is `requested`, `coalesced`, `failed`, `unknown` (outcome uncertain; the host might still have received it), or `unsupported`. The wake prompt includes the bus message ID and sender address, never the message body. Both hosts receive the same notice, such as `llm-bus message #1231 from codex:SESSION_ID. Read and handle it with llm-bus inbox`. Claude Code may still label its native approval dialog “Another Claude session”; that host label does not identify the bus sender. Read the sender address in the notice or stored inbox message. For Claude, `requested` means the frame was written to the native socket; inbound controls may still hold or refuse it. A successful request does not prove delivery or handling. Messages remain pending until the recipient reads and acknowledges them. Without a wake, hooks report pending messages at the recipient's next turn.
 
 Claude Code v2.1.224+ exposes `CLAUDE_CODE_MESSAGING_SOCKET` to hooks and shell commands. Restart Claude or run `llm-bus whoami` inside its shell tool after upgrading llm-bus to register the endpoint. Native messages enter Claude's queue between tool calls and can start a turn while idle, preserving the prompt draft. The bus sends a session-targeted JSON frame and never uses `herdr agent prompt`, which can submit unfinished user input. No messaging tokens are stored. Missing sockets and Windows named pipes use deferred notification (`unsupported`); unreachable sockets report `failed`. See [Claude's inbox socket](https://code.claude.com/docs/en/cross-session-messaging#the-sessions-inbox-socket).
 
@@ -115,12 +158,20 @@ requires the CLI above; copying it does not install the CLI or host hooks.
 
 The hooks tell agents their bus address and pending-message count, but a standing instruction also helps them discover the CLI and decide when to use it. Copy the [agent instruction snippet](examples/agent-instructions.md) into an instruction file that your agents load.
 
+SessionStart and missing or outdated guidance state emit full identity, trust, and usage guidance. Normal prompt hooks use a compact reminder with the current folder, pending count (capped at `100+`), inbox/ack hints, and current peer restrictions. Remote usage details appear in the full form only for a configured repository. To recover full guidance after context compaction, run `llm-bus guidance`; it returns the current guidance without changing messages or guidance-version state. SessionStart also restores full guidance when the host emits that event. No other compaction event is assumed.
+
 If you are an LLM installing the bus for someone, **ask whether to add the snippet to this project or to their global agent instructions before editing those files**. Preserve existing instructions and avoid duplicate copies.
 
 - **Project:** Add the snippet to the project's `AGENTS.md`. Codex reads it. Claude Code 2.1.277+ reads it unless a project or ancestor `CLAUDE.md`, `.claude/CLAUDE.md`, or `CLAUDE.local.md` takes precedence. If one does, or Claude is older, also add the snippet to this project's `CLAUDE.md` unless that file already imports `AGENTS.md`.
-- **Global:** Add the snippet to `AGENTS.md` in the Codex home directory (`CODEX_HOME` when set, otherwise `.codex` under the user profile) and `CLAUDE.md` in `.claude` under the user profile. If Codex has an `AGENTS.override.md`, it takes precedence; include the snippet there while that override is active. There is no single global instruction file shared by both hosts.
+- **Global:** Add the snippet to `AGENTS.md` in the Codex home directory (`CODEX_HOME` when set, otherwise `.codex` under the user profile) and `CLAUDE.md` in Claude's configuration directory (`CLAUDE_CONFIG_DIR` when set, otherwise `.claude` under the user profile). If Codex has an `AGENTS.override.md`, it takes precedence; include the snippet there while that override is active. There is no single global instruction file shared by both hosts. Configure these files on each machine; never copy another machine's executable paths or session IDs.
 
 Start a new agent session in the chosen scope and confirm `llm-bus whoami` succeeds. See the [Codex AGENTS.md](https://developers.openai.com/codex/agent-configuration/agents-md) and [Claude Code memory](https://code.claude.com/docs/en/memory#agents-md) guides for instruction loading rules.
+
+### Resource lock instruction examples
+
+See the [lock instruction examples](examples/resource-locks.md) for a copyable
+agent prompt, resource-name mappings, and an acquire/wait/release walkthrough.
+These examples require the lock implementation proposed in PR #51; it is not yet on `main`.
 
 ### Optional team coordination guidance
 
@@ -140,6 +191,10 @@ The basic snippet includes coordination rules. Use the same rules below when upd
 
 ## Browse message history
 
+`llm-bus status MESSAGE_ID` reads body-free diagnostics for one retained local integer message ID. Replace `MESSAGE_ID` with an ID from `send`, `inbox`, or `history`. It needs no host identity, configuration, token, network, or running bridge, and remains readable after blocking a peer or removing configuration. It never registers a session, migrates the mailbox, acknowledges a message, or requests a wake. A missing mailbox or unknown/nonpositive ID fails without creating data.
+
+The result separates `transport`, the message's own `wake` result and coverage, `acknowledged_at`, the last synchronized strict `work_report`, and `synchronization`. Native storage is `stored_local`; an imported message proves local durable admission, not current sender-side relay state. Missing metadata is null. Synchronization is stale without a successful observation, after 30 seconds, or after an error. Separate operation metadata prevents a successful transport read from implying a fresh report. Wake errors use fixed safe categories; original history is retained. A queued report intent is not a synchronized report, and no state proves task completion or authorizes work.
+
 `history` reads stored bus messages without acknowledging them. It does not need a Claude or Codex session ID, so a separate viewer can use it. It shows messages involving the current folder by default:
 
 ```text
@@ -149,12 +204,16 @@ llm-bus history --repository PROJECT_FOLDER
 llm-bus history --all
 llm-bus history --all --before 123 --limit 50
 llm-bus history --folder PROJECT_FOLDER --after 123
+llm-bus history --conversation 123 --peer codex:SESSION_ID
+llm-bus status MESSAGE_ID
 llm-bus agents
 ```
 
 `--folder` matches one exact folder. `--repository` includes that Git repository and its linked worktrees, using each message's send-time repository; outside Git, it matches the folder. Old messages whose worktree paths no longer exist may appear only under their exact folder. History rows contain message ID, sender, recipient, body, both folders at send time, send time, acknowledgement time, and the recorded wake status, path, reason, and check time. A null acknowledgement time means the message is pending. Null wake fields mean the message predates wake recording or the send stopped before its result could be stored. The default view and `--before` return newest messages first; `--after` returns oldest first for polling. Each call returns at most 100 messages. Use the lowest returned ID with `--before` for an older page and the highest seen ID with `--after` for new messages.
 
 `agents` returns registered addresses, provider kinds, last reported folders (`project`), and last activity times. Neither command changes message state. Old messages with unknown folders keep null values; the bus does not infer their past location from a session's current one. History contains bus messages, not full agent transcripts.
+
+Use `llm-bus send ADDRESS --reply-to 123 --body "Reply text"` to link a reply to a retained local message ID. Participants and their stored repository scopes must match; cross-folder replies still require `--cross-folder`. Unknown historical scopes cannot establish a link. Inbox and history JSON include nullable `reply_to`; old messages remain roots. `history --conversation 123` selects the root and descendants of that message, intersected with the usual scope, cursor, and limit filters. `--peer ADDRESS` matches either participant exactly and composes with conversation filtering. Both options remain read-only.
 
 ### Herdr viewer
 
@@ -172,6 +231,8 @@ The viewer starts with the active Herdr workspace repository, using the focused 
 ## Storage and permissions
 
 Sessions running as the same operating-system user share a SQLite mailbox. By default it lives at `~/.local/share/llm-bus/bus.sqlite3` on Linux and macOS, or under `LOCALAPPDATA/llm-bus/bus.sqlite3` on Windows. If `LOCALAPPDATA` is unavailable, Windows uses `AppData/Local` under the user profile. Set `LLM_BUS_DB` to use another path. The installed CLI works from any folder on the computer.
+
+Mailbox upgrades are additive and transactional. A current mailbox skips schema migration work; an older CLI rejects a mailbox with a newer schema version. Inbox reads scan bounded pages from the oldest pending message each time, skip remote messages denied by current machine policy, and retain them in history. Transport updates preserve delivery and acknowledgement progress when bridge responses arrive out of order; delivery takes precedence over unreceived expiry.
 
 After host setup, the bus itself asks for no per-message approval. Claude's installed allow rule covers direct `llm-bus` commands; shell pipelines and other commands may still prompt, and managed or explicit deny rules can override it. See [Claude Code permissions](https://code.claude.com/docs/en/permissions).
 

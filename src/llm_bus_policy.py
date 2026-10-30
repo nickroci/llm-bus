@@ -33,6 +33,49 @@ REPORT_REASONS: dict[str, tuple[str | None, ...]] = {
     "completed": (None,),
     "failed": ("validation_failed", "execution_failed", "permission_denied", "unavailable"),
 }
+REPORT_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+MAX_REVISION = 2**53 - 1
+
+
+class Report(TypedDict):
+    message_id: str
+    revision: int
+    status: str | None
+    reason: str | None
+
+
+def validate_status(status: object, reason: object) -> tuple[str, str | None]:
+    if (
+        not isinstance(status, str)
+        or status not in REPORT_REASONS
+        or (reason is not None and not isinstance(reason, str))
+        or reason not in REPORT_REASONS[status]
+    ):
+        raise llm_bus_store.BusError("Invalid built-in report status/reason")
+    return status, reason
+
+
+def parse_report(value: object, message_id: str) -> Report:
+    data = object_fields(value)
+    revision = data.get("revision")
+    if (
+        set(data) != {"message_id", "revision", "status", "reason"}
+        or not REPORT_UUID.fullmatch(message_id)
+        or data.get("message_id") != message_id
+    ):
+        raise llm_bus_store.BusError("Invalid work report response")
+    if (
+        isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or not 0 <= revision <= MAX_REVISION
+    ):
+        raise llm_bus_store.BusError("Invalid work report revision")
+    if revision == 0:
+        if data["status"] is not None or data["reason"] is not None:
+            raise llm_bus_store.BusError("Invalid initial work report")
+        return Report(message_id=message_id, revision=0, status=None, reason=None)
+    status, reason = validate_status(data["status"], data["reason"])
+    return Report(message_id=message_id, revision=revision, status=status, reason=reason)
 
 
 def object_fields(value: object) -> dict[str, object]:
@@ -96,6 +139,10 @@ class Config:
 
     def repository(self, project: str) -> Repository | None:
         scope = llm_bus_store.routing_scope(project)
+        return self.repository_scope(scope)
+
+    def repository_scope(self, scope: str) -> Repository | None:
+        """Match stored canonical scope without resolving a historical folder."""
         return next((repo for repo in self.repositories if repo.scope == scope), None)
 
     def peer(self, repo_id: str, machine_id: str) -> PeerPolicy | None:

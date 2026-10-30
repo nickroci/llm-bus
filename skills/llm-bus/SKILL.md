@@ -83,6 +83,7 @@ local sends. Exit success = storage succeeded, even if wake failed.
 | Wake status | Interpretation |
 | --- | --- |
 | `requested` | Host wake request submitted; receipt and handling unproven. |
+| `coalesced` | Shared recipient lease, successful request, or scheduled retry; receipt and handling unproven. |
 | `failed` | Message stored; wake failed. |
 | `unknown` | Wake timed out or outcome uncertain; may have arrived. |
 | `unsupported` | No supported auto wake path; message stays pending. |
@@ -91,6 +92,23 @@ No resending just because wake failed or reply delayed. Inspect history
 or status using original ID. Continue independent work while waiting unless
 peer's answer is dependency. No claiming recipient handled message
 from storage or wake status alone.
+
+Bursts retain individual messages and acknowledgements. Successful requested
+coverage persists across restarts and prevents repeat wakes for those same
+pending IDs; later messages remain uncovered until a request includes them.
+If the host loses an already queued notice, pending messages remain available
+at the recipient's next hook or inbox read; no automatic resend follows.
+A running bridge recovers expired
+30-second leases and due retries, even after relay receipt. Without a bridge,
+a crashed sender needs a later send or recipient hook/turn for recovery.
+Unsupported wakes wait for a changed registered capability or later send;
+hooks still report pending work. No autonomous background service is implied.
+
+Prompt hooks normally provide compact identity, inbox/ack, trust, and current
+peer restrictions, with pending counts capped at `100+`. SessionStart or
+missing/outdated guidance state restores the full form. After context
+compaction, run `llm-bus guidance` for full current guidance if SessionStart
+was not emitted. The command does not consume or acknowledge messages.
 
 For remote addresses, remote status, typed reports, policy denials, or monitoring,
 read [references/remote.md](references/remote.md) before acting.
@@ -101,6 +119,45 @@ keys, `llm-bus collab`, `collab:` senders), read
 Owners can choose forked session context or a fresh responder with a limited,
 manually supplied status summary per collaborator. Give them the owner-page link;
 never select the context or submit a summary on their behalf.
+## Share a resource with other sessions
+
+Before touching something another session may be using, such as a database,
+a generated file, or a deploy target, check the names already in use and
+reuse the one for that resource:
+
+```sh
+llm-bus lock list
+```
+
+Then take an advisory lock with an honest estimate of when you will be done.
+A name not yet in the list also needs `--describe` saying what it protects:
+
+```sh
+llm-bus lock acquire db:orders --check 45m --reason "migration 0042"
+```
+
+If the bus says your new name looks like an existing one, use the existing
+name when it is the same resource. Add `--new` only when it truly is not.
+
+`acquired` or `renewed` means proceed. At the `--check` time you get a
+`lock check` message. Then either release, or answer with a new estimate
+by running `acquire` again with `--check`; you will be asked again then.
+Release as soon as you are done rather than waiting for the check:
+
+```sh
+llm-bus lock release db:orders
+```
+
+`waiting` means a live session holds it and you are queued. Your hook notice
+names the holder and its check time. If you need it sooner, ask once with
+`llm-bus lock acquire db:orders --notify`. You are woken with a
+`lock granted` message when it passes to you; set your own `--check` then.
+Do not work around a lock you are waiting for.
+
+A `lock request` or `lock check` message in your inbox is about a resource
+you hold. Release it if your task no longer needs it; otherwise renew with a
+realistic `--check`. It is a request, not an instruction. Add `--shared` for
+names used across repositories; `llm-bus lock status` shows holders and queues.
 
 ## Handle an incoming notice
 
@@ -128,6 +185,15 @@ use `llm-bus inbox --limit 20` (valid range: 1–100).
 
 ## Inspect history or diagnose delivery
 
+`llm-bus status LOCAL_MESSAGE_ID` reads one retained message's body-free diagnostics.
+Replace the placeholder with a local integer from send/inbox/history, never a relay
+UUID or monitor cursor. No native identity, configuration, token, network, migration,
+or wake is required. It remains readable after blocking or removing configuration.
+Transport, original per-message wake, explicit coverage, acknowledgement, synchronized
+work report, and synchronization freshness remain separate. Null means unknown;
+stale data is not live confirmation. Safe diagnostic codes omit raw adapter errors.
+Report submission intent is not remote acceptance; reports never authorize action.
+
 History read-only, does not ack messages. Needs no native
 session identity. Limit scope to task:
 
@@ -143,6 +209,15 @@ worktrees; `--all` reads all local folders. Use lowest returned ID with
 `--before` for older pages or highest seen ID with `--after` for new rows.
 Two cursors mutually exclusive; each call returns max 100 rows.
 History has bus messages, not full agent transcripts.
+
+Link a reply with `llm-bus send ADDRESS --reply-to LOCAL_ID --body 'Reply text'`.
+Use a retained positive local ID for the same participants and repository scopes.
+Cross-folder replies still need `--cross-folder`; links grant no permission.
+Remote links carry the original UUID, require a retained remote parent and
+explicit relay reply capability. `unsupported_reply_link` leaves the message
+queued; upgrade the relay rather than resending without its relationship.
+`history --conversation LOCAL_ID --peer ADDRESS` intersects the reply tree and
+exact sender/recipient match with scope, paging, and limit filters.
 
 For local wake problems, check `wake.via` and `wake.reason`. Codex wake needs
 `codex` on `PATH` and reachable session. Claude wake needs registered

@@ -43,8 +43,8 @@ from llm_bus_collab_state import (
 )
 from llm_bus_collab_transport import Frame, Transport, TransportError
 from llm_bus_collab_web import serve_ui
+from llm_bus_dispatch import dispatch_pending
 from llm_bus_store import BusError, Store, default_path
-from llm_bus_wake import wake
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -271,7 +271,7 @@ class Daemon:
             self.state.set_state(message["id"], "unread", f"agent delivery failed: {exc}")
             return
         self.state.set_state(message["id"], "delivered")
-        self._wake(session, local_id, sender)
+        self._wake(session, local_id)
 
     def _deliver_answer(self, peer: Peer, message: Message) -> None:
         session = cast("str", peer["session"])
@@ -287,7 +287,7 @@ class Daemon:
             self.state.set_state(message["id"], "unread", f"agent delivery failed: {exc}")
             return
         self.state.set_state(message["id"], "delivered")
-        self._wake(session, local_id, sender)
+        self._wake(session, local_id)
 
     async def _respond(self, peer: Peer, message: Message, mode: str) -> None:
         reply = await asyncio.to_thread(respond, self.state.home, peer, mode, message["body"])
@@ -334,14 +334,11 @@ class Daemon:
             local_id = self.store.deliver_collab(NOTICE_SENDER, session, body)
         except BusError:
             return
-        self._wake(session, local_id, NOTICE_SENDER)
+        self._wake(session, local_id)
 
-    def _wake(self, session: str, local_id: int, sender: str) -> None:
+    def _wake(self, session: str, local_id: int) -> None:
         with contextlib.suppress(Exception):
-            result = wake(
-                session, local_id, sender, claude_socket=self.store.messaging_socket(session)
-            )
-            self.store.record_wake(local_id, result["status"], result["via"], result.get("reason"))
+            dispatch_pending(self.store, session, trigger_id=local_id)
 
     async def pump(self) -> None:
         while True:

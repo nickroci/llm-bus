@@ -330,7 +330,7 @@ def test_only_the_first_answer_to_an_own_question_is_delivered(
     def no_wake(*_args: object, **_kwargs: object) -> dict[str, str]:
         return {"status": "skipped", "via": "test"}
 
-    monkeypatch.setattr("llm_bus_collab_daemon.wake", no_wake)
+    monkeypatch.setattr("llm_bus_collab_daemon.dispatch_pending", no_wake)
     store = Store(tmp_path / "bus.sqlite3")
     me = store.register("claude", "me", str(tmp_path))
     state = CollabState(isolated_collab)
@@ -376,7 +376,7 @@ def test_automatic_answers_wake_the_owner_agent_only_when_held_or_chosen(
     def fake_respond(*_args: object) -> Reply:
         return Reply(next(replies), None)
 
-    monkeypatch.setattr("llm_bus_collab_daemon.wake", no_wake)
+    monkeypatch.setattr("llm_bus_collab_daemon.dispatch_pending", no_wake)
     monkeypatch.setattr("llm_bus_collab_daemon.respond", fake_respond)
     store = Store(tmp_path / "bus.sqlite3")
     me = store.register("claude", "me", str(tmp_path))
@@ -429,10 +429,14 @@ def test_peer_text_reaches_agents_only_in_full_mode(tmp_path: Path, isolated_col
     state = CollabState(isolated_collab)
     add_full_peer(state, me)
     store.deliver_collab("collab:_daemon", me, "notice without peer text")
-    store.deliver_collab("collab:bob:p", me, "peer text")
+    peer_message = store.deliver_collab("collab:bob:p", me, "peer text")
     assert [m["sender"] for m in store.inbox(me)] == ["collab:_daemon", "collab:bob:p"]
+    assert (peer_message, "collab:bob:p") in store.pending_members(me)
+    assert store.pending_allowed(peer_message)
     state.set_mode(state.peers()[0]["id"], grant("readonly"))
     assert [m["sender"] for m in store.inbox(me)] == ["collab:_daemon"]
+    assert (peer_message, "collab:bob:p") not in store.pending_members(me)
+    assert not store.pending_allowed(peer_message)
     assert store.pending_count(me) == 1
     assert not exposure_allowed("collab:bob:p", "claude:someone-else")
     assert all(a["address"] != "collab:bob:p" for a in store.agents())
