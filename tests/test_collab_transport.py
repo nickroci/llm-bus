@@ -81,8 +81,12 @@ def test_connected_peer_cannot_stall_request(monkeypatch: pytest.MonkeyPatch) ->
     client = transport.Transport(cast("iroh.Endpoint", cast("object", endpoint)))
     monkeypatch.setattr(transport, "_ticket", parse)
     monkeypatch.setattr(transport, "REQUEST_TIMEOUT_SECONDS", 0.01)
+
+    async def request() -> None:
+        await asyncio.wait_for(client.request("ticket", {"type": "msg"}), timeout=5)
+
     with pytest.raises(transport.TransportError, match="timed out"):
-        asyncio.run(client.request("ticket", {"type": "msg"}))
+        asyncio.run(request())
     assert endpoint.connected
     assert connection.closed
 
