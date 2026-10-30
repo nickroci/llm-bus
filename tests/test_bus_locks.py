@@ -537,6 +537,16 @@ def test_timer_sleeps_until_estimate_then_raises_the_check(
     locks = Locks(store, holder, "/project")
     key = locks.key("db", shared=False)
     locks.acquire(key, Request(check="2h", reason=None, ttl_minutes=None, describe="test resource"))
+    with store.transaction() as db:
+        db.execute(
+            "UPDATE agents SET last_seen=strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 hour') "
+            "WHERE address=?",
+            (holder,),
+        )
+        last_seen = cast(
+            "tuple[str]",
+            db.execute("SELECT last_seen FROM agents WHERE address=?", (holder,)).fetchone(),
+        )
     slept: list[float] = []
 
     def fake_sleep(seconds: float) -> None:
@@ -547,12 +557,49 @@ def test_timer_sleeps_until_estimate_then_raises_the_check(
     assert len(slept) == 1
     assert 0 < slept[0] <= TIMER_POLL_SECONDS
     assert wakes == [holder]
+    with store.transaction() as db:
+        assert db.execute("SELECT last_seen FROM agents WHERE address=?", (holder,)).fetchone() == (
+            last_seen
+        )
     run_timer(store, key, sleep=fake_sleep)
     assert wakes == [holder]
     assert len(slept) == 1
     locks.release(key)
     run_timer(store, key, sleep=fake_sleep)
     assert len(slept) == 1
+
+
+def test_timer_handoff_does_not_reactivate_ended_holder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wakes = _record_wakes(monkeypatch)
+    store = _store(tmp_path)
+    holder = store.register("claude", "one", "/project")
+    waiter = store.register("codex", "two", "/project")
+    locks = Locks(store, holder, "/project")
+    key = locks.key("db", shared=False)
+    locks.acquire(key, Request(check="1h", describe="database"))
+    Locks(store, waiter, "/project").acquire(key, Request())
+
+    def end_while_sleeping(_seconds: float) -> None:
+        store.end_session("claude", "one")
+        with store.transaction() as db:
+            db.execute(
+                "UPDATE agents SET ended_at='2000-01-01T00:00:00.000Z' WHERE address=?",
+                (holder,),
+            )
+        _overdue(store)
+
+    run_timer(store, key, sleep=end_while_sleeping)
+    with store.transaction() as db:
+        assert db.execute("SELECT ended_at FROM agents WHERE address=?", (holder,)).fetchone() == (
+            "2000-01-01T00:00:00.000Z",
+        )
+        assert db.execute("SELECT holder FROM resource_locks").fetchall() == [(waiter,)]
+    assert wakes == [waiter]
+    [message] = store.inbox(waiter)
+    assert message["sender"] == holder
+    assert message["body"].startswith("llm-bus lock granted:")
 
 
 def test_full_guidance_teaches_locks_and_reaches_running_sessions(

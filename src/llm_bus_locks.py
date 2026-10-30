@@ -14,7 +14,7 @@ import time
 from typing import TYPE_CHECKING, NamedTuple, TypedDict, cast
 
 from llm_bus_dispatch import dispatch_pending
-from llm_bus_store import BusError, Message, SenderContext, expire_idle_agents, routing_scope
+from llm_bus_store import BusError, Message, expire_idle_agents, routing_scope
 
 if TYPE_CHECKING:
     import sqlite3
@@ -333,10 +333,13 @@ class Locks:
         for notice in notices:
             if notice.sender is None and notice.recipient == self.agent_address:
                 continue
-            sender = self._sender(db, notice.sender or self.agent_address)
             messages.append(
                 self.store.send_in_transaction(
-                    db, sender, notice.recipient, notice.body, cross_folder=True
+                    db,
+                    notice.sender or self.agent_address,
+                    notice.recipient,
+                    notice.body,
+                    cross_folder=True,
                 )
             )
         return messages
@@ -355,20 +358,6 @@ class Locks:
                 }
             deliveries.append(Delivery(to=sent["recipient"], message_id=sent["id"], wake=wake))
         return deliveries
-
-    def _sender(self, db: sqlite3.Connection, sender_address: str) -> SenderContext:
-        kind, session_id = sender_address.split(":", 1)
-        project = self.project
-        if sender_address != self.agent_address:
-            row = cast(
-                "tuple[str] | None",
-                db.execute(
-                    "SELECT project FROM agents WHERE address=?", (sender_address,)
-                ).fetchone(),
-            )
-            if row is not None:
-                project = row[0]
-        return SenderContext(kind, session_id, project)
 
 
 def _scope_name(scope: str, resource: str) -> str:

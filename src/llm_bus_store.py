@@ -615,33 +615,39 @@ class Store:
         """Atomically register sender, check folder, and persist message."""
         with self.transaction() as db:
             db.execute("BEGIN IMMEDIATE")
+            sender = self._upsert_agent(
+                db,
+                sender_context.kind,
+                sender_context.session_id,
+                sender_context.project,
+                routing_scope(sender_context.project),
+            )
             return self.send_in_transaction(
-                db, sender_context, recipient, body, cross_folder=cross_folder, reply_to=reply_to
+                db, sender, recipient, body, cross_folder=cross_folder, reply_to=reply_to
             )
 
     def send_in_transaction(  # noqa: PLR0913 - same send contract plus caller-owned transaction
         self,
         db: sqlite3.Connection,
-        sender_context: SenderContext,
+        sender: str,
         recipient: str,
         body: str,
         *,
         cross_folder: bool = False,
         reply_to: int | None = None,
     ) -> Message:
-        """Validate and persist a message inside the caller's atomic state change."""
+        """Persist for an already registered sender without changing its activity or lifecycle."""
         if not body.strip():
             raise BusError("Message body cannot be empty")
         if len(body.encode("utf-8")) > MAX_MESSAGE_BYTES:
             raise BusError("Message body exceeds 64 KiB")
-        sender_scope = routing_scope(sender_context.project)
-        sender = self._upsert_agent(
-            db,
-            sender_context.kind,
-            sender_context.session_id,
-            sender_context.project,
-            sender_scope,
+        sender_row = cast(
+            "tuple[str, str] | None",
+            db.execute("SELECT project, scope FROM agents WHERE address = ?", (sender,)).fetchone(),
         )
+        if sender_row is None:
+            raise BusError(f"Unknown sender {sender!r}; register the session first")
+        sender_project, sender_scope = sender_row
         recipient_row = cast(
             "tuple[str, str] | None",
             db.execute(
@@ -660,7 +666,7 @@ class Store:
                 sender,
                 recipient,
                 body,
-                sender_context.project,
+                sender_project,
                 recipient_row[0],
                 sender_scope,
                 recipient_row[1],
