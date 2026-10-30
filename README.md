@@ -147,6 +147,12 @@ If you are an LLM installing the bus for someone, **ask whether to add the snipp
 
 Start a new agent session in the chosen scope and confirm `llm-bus whoami` succeeds. See the [Codex AGENTS.md](https://developers.openai.com/codex/agent-configuration/agents-md) and [Claude Code memory](https://code.claude.com/docs/en/memory#agents-md) guides for instruction loading rules.
 
+### Resource lock instruction examples
+
+See the [lock instruction examples](examples/resource-locks.md) for a copyable
+agent prompt, resource-name mappings, and an acquire/wait/release walkthrough.
+These examples require the lock implementation proposed in PR #51; it is not yet on `main`.
+
 ### Optional team coordination guidance
 
 The basic snippet includes coordination rules. Use the same rules below when updating an existing installation; replace older coordination sections instead of appending duplicates. `llm-bus list` includes linked worktrees and permitted cached remote peers; use `--all` for other locally permitted repositories or folders. The snippet also covers remote addressing, bridge requirements, and delivery status.
