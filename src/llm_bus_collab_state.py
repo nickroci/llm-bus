@@ -628,17 +628,6 @@ class CollabState:  # pylint: disable=too-many-public-methods
     def peer_by_pair(self, pair: str) -> Peer | None:
         return next((p for p in self.peers() if p["pair"] == pair), None)
 
-    def active_peer(self, user: str, repository: str) -> Peer | None:
-        """Latest unrevoked pairing with a GitHub user in this repository."""
-        matches = [
-            p
-            for p in self.peers()
-            if p["github_user"].lower() == user.lower()
-            and p["repository"] == repository
-            and p["revoked_at"] is None
-        ]
-        return matches[-1] if matches else None
-
     def set_mode(self, peer_id: int, choice: Grant) -> None:
         with self.transaction() as db:
             db.execute(
