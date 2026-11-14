@@ -1,17 +1,17 @@
 # Project State
 
-Last activity: 2026-11-15 - Coordination stall detection T1–T5 accepted; integrated verification and planner conformance passed; PR publication in progress.
+Last activity: 2026-11-15 - Coordination stall detection PR #90 review passed (R2) and reviewed-head CI passed; final tracking validation, current-head CI and merge pending.
 
 ## Registered Work
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
-| 261114-s7n | Coordination blocker reporting and stall detection | T1–T5 accepted; integrated verification and conformance passed on 61420f44; PR publication in progress; aggregate/PR review and CI pending; no installed rollout | [261114-s7n-coordination-blocker-reporting-and-stall](./quick/261114-s7n-coordination-blocker-reporting-and-stall/) |
 
 ## Quick Tasks Completed
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261114-s7n | Coordination blocker reporting and stall detection — PR #90 | PR #90 review passed (R2) and CI passed on 1166e361; final tracking validation, current-head CI and merge pending; no installed rollout | [261114-s7n-coordination-blocker-reporting-and-stall](./quick/261114-s7n-coordination-blocker-reporting-and-stall/) |
 | 261114-cua | Coordinator as user contact — PR #89 | PR #89 review passed (R1) and reviewed-head CI passed; tracking validation, current-head CI and merge pending; rollout requires separate authorization | [261114-cua-coordinator-user-actions](./quick/261114-cua-coordinator-user-actions/) |
 | 261113-ymx | Skill-driven coordination guidance — PR #86 | PR #86 review passed (R1); merge pending; owner reinstalls the skill copy and CLI together after merge | [261113-ymx-cli-driven-coordination-guidance](./quick/261113-ymx-cli-driven-coordination-guidance/) |
 | 261113-f5u | Host hook fixes and host-behaviour docs — PR #85 | PR #85 review passed (R2); merge pending; owner reinstall and manual Codex `/hooks` check pending after merge | [261113-f5u-host-hook-fixes-and-host-behaviour-docs](./quick/261113-f5u-host-hook-fixes-and-host-behaviour-docs/) |
