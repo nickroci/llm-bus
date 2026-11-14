@@ -135,7 +135,7 @@ def test_both_forms_carry_version_and_files(
         expected = [role if name == "{role}" else name for name in everything]
         for full in (True, False):
             data = data_of(guidance(project.store, address, str(tmp_path), full=full))
-            assert data["guidance_version"] == GUIDANCE_VERSION == 10
+            assert data["guidance_version"] == GUIDANCE_VERSION == 11
             full_form_only = [RECOVERY] if full else []
             assert data["guidance_files"] == [*expected, *full_form_only]
 
@@ -149,6 +149,7 @@ def test_inactive_compact_form_lists_recovery(
         db.execute("UPDATE coordination_grants SET revoked_at='revoked'")
     text = guidance(project.store, "claude:worker", str(tmp_path), full=False)
     assert files_of(text) == list(INACTIVE)
+    assert "Route questions, approval requests" not in text
 
 
 def test_load_sentences_are_exact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -11,6 +11,12 @@ authority; diagnosis and recovery checks stay allowed, accepting directions
 does not. Never auto-enroll or revive a grant. Only a fresh direct owner join
 renews ended automatic consent.
 
+Recovery reminders do not resume project work or revive consent. An active
+worker with an unreachable coordinator or unverifiable authority preserves its
+blocker and yields for user-directed recovery. A reachable coordinator may
+present a request for the owner's direct action in the exact owning session or
+machine; presenting it does not supply consent.
+
 - `out_of_scope`: working from a folder outside the project keeps consent, but
   directions do not verify there (sends fail with a folder mismatch error, or
   `wrong_scope` under `--cross-folder` and at delivery) and verify again once

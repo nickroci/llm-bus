@@ -394,14 +394,16 @@ The [canonical coordination reference](../skills/llm-bus/references/coordination
 
 **Goal:** let the coordinator approve commits, pushes and merges for you, on branches you choose.
 
-By default, a worker asks you before it commits, pushes or merges. Delegation moves some of those approvals to the coordinator. Two owner choices must agree before an approval counts:
+Workers route questions, approval requests and manual-action requests through the current coordinator by default, even without delegation. The coordinator asks you with the worker's identity, session banner and ticket/branch, records the outcome and follows up. You may directly override this communication default. Delegation lets the coordinator supply some approvals under existing contracts. Two owner choices must agree before an approval counts:
 
 1. **The coordinator side:** which gates the project delegates, and for which target branches.
 2. **The worker side:** what each worker accepts when you join it, optionally narrowed.
 
 The gates are `commit`, `push`, `merge` and `merge-admin`. `merge-admin` bypasses only the required-approvals rule; required checks must still pass. A delegation item has the form `GATE:BRANCH`, where `BRANCH` is the integration branch the work lands in, such as `main`. Each gate can name at most 8 branches, and there is no implicit default branch.
 
-> **The floor is never delegable.** Force-push, deploys or production changes, credential or secret changes, paid or live runs, and merging with failing or pending CI always need you directly. `--delegate force-push:main` fails with `Delegation never covers the floor action: force-push`. The bus does not inspect CI, reviews or branches itself; the worker checks that evidence live before it acts.
+> **The floor is never delegable.** Force-push, deploys or production changes, credential or secret changes, paid or live runs, and merging with failing or pending CI always need you directly. The coordinator collects the request and directs you to the exact owning session or machine for that action. `--delegate force-push:main` fails with `Delegation never covers the floor action: force-push`. The bus does not inspect CI, reviews or branches itself; the worker checks that evidence live before it acts.
+
+Routing does not grant consent or host permission. Fresh joins and local authorization still need the appropriate owner's direct action; native permission prompts remain native. The worker stays blocked until its existing authority and verification requirements are met. Delivery, acknowledgements and a claim that an action happened do not replace those checks. If the coordinator is unreachable or authority cannot be verified, the worker preserves the blocker and yields for user-directed recovery.
 
 ### Choose the delegation with the setup profile or wizard
 
@@ -587,6 +589,8 @@ Each session sees only its own role's text. The text appears verbatim in `llm-bu
 ## 9. Owner decisions and timed defaults
 
 **Goal:** record your answers to questions that block a worker, so the worker can act on them.
+
+Question routing through the coordinator is the default regardless of this optional capability. Recorded answers count only for bound workers under the acceptance rules below. Without that binding, or for remote decisions unsupported by the transport, the coordinator asks you to give required direct authorization in the exact owning session or machine. An ordinary message or `clarify` direction cannot substitute for an accepted decision or a verified gate approval. Routing adds no silence-based approval or timeout.
 
 Enable this with `--owner-decisions` on `coordinate` or `coordination amend`; it needs no gate. The coordinator records a question, and may record your answer only when you gave it directly in the coordinator session. The bus refuses an answer in a turn that a recognized bus wake started (`Decision answers must come from an owner turn, not a bus wake`); this check is partial, see [Known limits](#known-limits). The refusal names the remedy: type the answer as a new prompt in the coordinator session, then have the coordinator record it in that turn. An answer you give inside a wake-started turn does not count.
 
@@ -830,7 +834,7 @@ Run `llm-bus COMMAND --help` for the exact syntax installed on your machine.
 | `Coordination requires an existing Beads workspace` | `--beads-workspace` must be an absolute path that contains `.beads`. |
 | `Objective differs from the stored objective; use coordination amend PROJECT --objective` | A resume repeated a different objective. Repeat the current one, or amend it. |
 | `amend needs --objective or a delegation change` | `amend` had nothing to change. |
-| `Delegation never covers the floor action: …` | A delegation named a floor item. Remove it; ask the owner directly for that action. |
+| `Delegation never covers the floor action: …` | A delegation named a floor item. Remove it; route the request through the coordinator, which directs the owner to act in the exact owning session or machine. |
 | `Direction denied: gate_not_delegated` (or another reason) | The approval falls outside the project delegation, the worker's binding or the claim. Check `coordination show`. |
 | `Only the enrolled coordinator may set instructions` | A non-coordinator session ran `coordination instructions`. |
 | `Remote command requires a remote configuration file` | No `config.toml` was found. |

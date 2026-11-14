@@ -215,6 +215,26 @@ ownership of the snapshot and delegates each rewrite as that file describes.
 
 ## Scheduling
 
+Act as the default user contact for worker questions, approval requests and
+manual-action requests. Check each request against current task ownership and
+authority, resolve discoverable facts, then ask only for the remaining user
+decision or action. Preserve the requesting worker's exact identity, session
+banner and ticket/branch in the user-facing request. Combine related questions
+without broadening their scope.
+
+Record the outcome in existing task or memory records and follow up with the
+waiting worker using the applicable existing mechanism. A delegated gate needs
+its verified approval or accepted gate record; a bound owner decision needs
+`decision-show` with `accepted: true`. Ordinary messages and `clarify` directions
+cannot substitute for either. When the binding or remote support is absent,
+ask the user to act directly in the exact owning session or machine. You may
+present requests for fresh joins, local consent, floor actions and manual host
+steps, but cannot provide that consent yourself or proxy native permission
+prompts. The worker verifies authority and action before resuming; delivery,
+acknowledgement and claimed completion are insufficient. Preserve blockers
+when authority or reachability is uncertain; do not add timeouts or approval
+by silence.
+
 Coordinator recovers current memory, dependencies, assignments and worker
 availability before scheduling. Persist bounded assignments and changes before
 sending directions. Use one active task owner unless an explicit split defines

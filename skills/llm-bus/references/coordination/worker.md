@@ -58,6 +58,23 @@ llm-bus --format agent send codex:COORDINATOR_ID --reply-to LOCAL_ASSIGNMENT_ID 
 
 Work state is self-reported; the bus cannot see host activity.
 
+## Requests needing the user
+
+Send your current coordinator one concise blocker request for a question,
+approval or manual action. Link the assignment with `--reply-to` when available.
+Include your exact identity, session banner, affected ticket/branch, required
+decision or action and why work is blocked. Record `missing_information`,
+`needs_approval` or `dependency_blocked` as appropriate; the report alone wakes
+nobody. Native subagents send requests only to their parent.
+
+The coordinator obtains the user response and follows up. Check the applicable
+authority contract and verify the required action before resuming; a relayed
+answer or claimed completion is insufficient. If direct consent or a host step
+is required, the coordinator directs the user to your exact session or machine.
+Keep native permission prompts native. If the coordinator is unavailable or
+authority cannot be verified, preserve the blocker and yield. Direct user
+instructions may override the communication default within their stated scope.
+
 ## Progress notes and worktrees
 
 Workers own progress notes on assigned tasks. Read existing notes before updates,

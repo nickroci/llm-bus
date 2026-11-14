@@ -9,7 +9,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from llm_bus.cli.guidance import guidance
+from llm_bus.cli.guidance import Delivery, guidance
+from tests.coordination.test_approvals import Project
 from tests.coordination.test_delegation import TWO_GATES, join, start
 from tests.coordination.test_enrollment import invoke
 
@@ -59,15 +60,54 @@ def test_banner_for_coordinator_and_worker(tmp_path: Path, *, full: bool) -> Non
     claim(mailbox, tmp_path)
     after = text(mailbox, tmp_path, WORKER, full=full)
     assert 'ticket "roam-22m"; branch roam-22m-login;' in after
-    assert "Prefix every request for direct owner confirmation with the session banner." in after
+    assert (
+        "coordinator by default, with your exact identity, session banner and ticket/branch."
+        in after
+    )
     assert "name the owning session only when a claim conflict reveals it." in after
     owner = text(mailbox, tmp_path, OWNER, full=full)
     assert (
         f"Session banner: project demo; role coordinator; label none; ticket none; branch none; folder {tmp_path}."
         in owner
     )
-    assert "Prefix every request" not in owner
+    assert "Route questions, approval requests" not in owner
     assert "Delegated gates" not in owner
+
+
+@pytest.mark.parametrize("flags", [(), TWO_GATES, ("--owner-decisions",)])
+@pytest.mark.parametrize("full", [True, False])
+@pytest.mark.parametrize("delivery", list(Delivery))
+def test_active_roles_route_user_requests_without_capability_dependency(
+    tmp_path: Path, flags: tuple[str, ...], *, full: bool, delivery: Delivery
+) -> None:
+    project = Project(tmp_path, *flags)
+    worker = guidance(project.store, WORKER, str(tmp_path), full=full, delivery=delivery)
+    assert (
+        "Route questions, approval requests and manual-action requests to your current " in worker
+    )
+    assert (
+        "coordinator by default, with your exact identity, session banner and ticket/branch."
+        in worker
+    )
+    assert "Direct user instructions may override this communication default." in worker
+    assert (
+        "no consent or permission; verify the required authority and action before resuming."
+        in worker
+    )
+    assert (
+        "If the coordinator is unreachable or authority is unverifiable, keep the blocker" in worker
+    )
+    owner = guidance(project.store, OWNER, str(tmp_path), full=full, delivery=delivery)
+    assert (
+        "Collect worker questions, approval requests and manual-action requests; ask the user"
+        in owner
+    )
+    assert "record the outcome and follow up with the worker." in owner
+    assert "session or machine; routing grants no authority." in owner
+    assert "Route questions, approval requests" not in owner
+    # Actual coordinate/join results exercise the command-result wiring too.
+    assert "Collect worker questions, approval requests" in str(project.coordinated["guidance"])
+    assert "Route questions, approval requests" in str(project.joined["guidance"])
 
 
 def test_no_delegation_text_without_project_delegation(tmp_path: Path) -> None:
@@ -151,9 +191,11 @@ def test_foreign_folder_hides_gate_lines_but_keeps_rejoin_notice(tmp_path: Path)
     assert "Delegated gates" not in worker
     assert "Never delegated" not in worker
     assert NOTICE in worker
+    assert "Route questions, approval requests" not in worker
     owner = guidance(mailbox, OWNER, str(foreign), full=True)
     assert '"state": "out_of_scope"' in owner
     assert "Delegated gates" not in owner
+    assert "Collect worker questions, approval requests" not in owner
 
 
 def test_revoked_grant_suppresses_delegated_gates(tmp_path: Path) -> None:
@@ -166,6 +208,7 @@ def test_revoked_grant_suppresses_delegated_gates(tmp_path: Path) -> None:
     shown = text(mailbox, tmp_path, WORKER, full=True)
     assert "Delegated gates" not in shown
     assert "Never delegated" not in shown
+    assert "Route questions, approval requests" not in shown
 
 
 def test_expired_grant_suppresses_delegated_gates(tmp_path: Path) -> None:
@@ -177,6 +220,7 @@ def test_expired_grant_suppresses_delegated_gates(tmp_path: Path) -> None:
     assert '"state": "expired"' in shown
     assert "Delegated gates" not in shown
     assert "Never delegated" not in shown
+    assert "Route questions, approval requests" not in shown
 
 
 def test_unenrolled_session_output_has_no_banner(tmp_path: Path) -> None:
@@ -186,3 +230,4 @@ def test_unenrolled_session_output_has_no_banner(tmp_path: Path) -> None:
     assert "Session banner" not in shown
     assert "Delegated gates" not in shown
     assert "Coordination recovery" not in shown
+    assert "Route questions, approval requests" not in shown
