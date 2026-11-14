@@ -44,7 +44,7 @@ def count(db: sqlite3.Connection, table: str) -> int:
 
 
 def test_version_is_15() -> None:
-    assert SCHEMA_VERSION == 15
+    assert SCHEMA_VERSION == 16
 
 
 def test_fresh_store_has_empty_tables_after_base_commands(tmp_path: Path) -> None:
