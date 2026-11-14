@@ -23,7 +23,6 @@ WORKER_DUTIES = (
     "return control",
     "start every accepted direction that is no longer blocked",
     "llm-bus report ID --status",
-    "never for presence or routine progress",
     "a cancelled direction needs no report",
 )
 

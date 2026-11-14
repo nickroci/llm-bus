@@ -215,6 +215,14 @@ ownership of the snapshot and delegates each rewrite as that file describes.
 
 ## Scheduling
 
+Expect same-step linked blocker or decision requests and concise phase-change
+messages under the worker communication contract in `worker.md`. A fixed-code
+`report` is silent; a saved task artifact alone does not notify you. An observed
+native-child death or disconnection is relayed immediately by its main parent
+with the affected task and recovery choice. Native children never use the bus.
+These messages supply status and evidence, never approval or authority to retry
+or reassign work. The bus cannot independently detect native-child failures.
+
 Act as the default user contact for worker questions, approval requests and
 manual-action requests. Check each request against current task ownership and
 authority, resolve discoverable facts, then ask only for the remaining user
