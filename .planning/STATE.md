@@ -1,12 +1,12 @@
 # Project State
 
-Last activity: 2026-11-14 - Registered coordination blocker reporting and stall detection (stalls-v1); sequential T1–T5 implementation pending.
+Last activity: 2026-11-14 - Coordination stall detection T1–T4 accepted; T5 documentation and integrated verification in progress.
 
 ## Registered Work
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
-| 261114-s7n | Coordination blocker reporting and stall detection | Registered | [261114-s7n-coordination-blocker-reporting-and-stall](./quick/261114-s7n-coordination-blocker-reporting-and-stall/) |
+| 261114-s7n | Coordination blocker reporting and stall detection | T1–T4 accepted; T5 in progress; aggregate review and PR pending; no installed rollout | [261114-s7n-coordination-blocker-reporting-and-stall](./quick/261114-s7n-coordination-blocker-reporting-and-stall/) |
 
 ## Quick Tasks Completed
 

@@ -79,6 +79,11 @@ to their parent; the main parent sends the bus message. This obligation applies
 to observed failures and does not promise host-level failure detection.
 
 Work state is self-reported; the bus cannot see host activity.
+Only changed accepted reports and worker messages linked to an assignment or
+review advance its silence clock. Repeating a report, saving a task artifact
+or sending an unlinked message does not. Continue to send meaningful phase
+changes and immediate blocker requests; do not send periodic heartbeats to
+avoid notices. Native-child completion is not guaranteed to wake its parent.
 
 ## Requests needing the user
 

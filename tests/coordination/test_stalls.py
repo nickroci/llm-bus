@@ -30,6 +30,7 @@ from llm_bus.remote.outgoing import enqueue_remote
 from llm_bus.remote.store import RemoteStore
 from llm_bus.reports.store import Reports
 from llm_bus.routing import routing_scope
+from tests.coordination.stall_observation import assert_rejected_observations_isolated, clock_state
 from tests.coordination.test_work_state import OWNER, WORKER, relay_config, report, send
 
 if TYPE_CHECKING:
@@ -40,17 +41,6 @@ if TYPE_CHECKING:
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 DUE = START + timedelta(minutes=30)
-
-
-def clock_state(store: Store, message_id: int) -> tuple[str, int]:
-    with store.transaction() as db:
-        return cast(
-            "tuple[str, int]",
-            db.execute(
-                "SELECT last_communication_at,epoch FROM coordination_stall_state WHERE message_id=?",
-                (message_id,),
-            ).fetchone(),
-        )
 
 
 def test_admitted_local_events_and_invalid_replies(
@@ -168,6 +158,7 @@ def test_remote_events_use_local_acceptance_and_reject_replays(
     observed = clock_state(store, message_id)
     assert before <= datetime.fromisoformat(observed[0]) <= datetime.now(UTC)
     assert observed[1] == 2
+    assert_rejected_observations_isolated(store, config, message_id, envelope, monkeypatch)
     reports.receive(envelope, value, config)
     with pytest.raises(BusError, match="revision"):
         reports.receive(envelope, {**value, "revision": 0, "status": None, "reason": None}, config)

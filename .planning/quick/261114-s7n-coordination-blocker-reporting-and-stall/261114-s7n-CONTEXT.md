@@ -20,4 +20,4 @@ Existing work-state projection and report validation supply the lifecycle and ev
 
 Implementation starts from main at `d1b8712de466f7b6f9bc9f31c5546ef7a74c79cc` on branch `feat/coordination-stall-detection` in /Users/davidfava/Projects/Personal/llm-bus-stall-detection. The primary checkout has unrelated untracked `.vscode/`, which remains untouched. Global client loaders apply; no per-worktree loader is required.
 
-Canonical execution ledger and role reports are under /Users/davidfava/.local/state/llm-bus/flows/coordination-stall-detection/. Implementation and task review remain pending at registration.
+Canonical execution ledger and role reports are under /Users/davidfava/.local/state/llm-bus/flows/coordination-stall-detection/. T1–T4 implementation and task reviews are accepted through `8dbfd09838191050724ae1e0c76999f47389f587`. T5 updates existing guidance and references, extends observer-specific trust-boundary assertions, and runs integrated verification. T5 review, aggregate review and PR delivery remain pending. The installed CLI, skill, live mailbox and relay have not been upgraded by this flow.
