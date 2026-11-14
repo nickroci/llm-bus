@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
@@ -10,11 +13,15 @@ from uuid import uuid4
 
 import pytest
 
+from llm_bus.cli.commands import human_command
 from llm_bus.cli.parser import build_parser
 from llm_bus.coordination import stalls
 from llm_bus.coordination.cli import run
 from llm_bus.coordination.store import project
 from llm_bus.errors import BusError
+from llm_bus.locks import notices
+from llm_bus.locks import timer as lock_timer
+from llm_bus.locks.timer import TIMER_POLL_SECONDS
 from llm_bus.mailbox.models import SenderContext
 from llm_bus.mailbox.schema import SCHEMA_VERSION
 from llm_bus.mailbox.store import Store
@@ -601,10 +608,369 @@ def test_settings_binding_authority_and_schema_reupgrade(
         assert stalls.threshold(db, record) == 1800
         stalls.configure(db, record, OWNER, 3600)
         assert stalls.threshold(db, {**record, "generation": "new"}) == 1800
+        db.execute(
+            "INSERT INTO coordination_stall_timers VALUES (?,?,?,?,?,?)",
+            (
+                record["scope"],
+                record["project_id"],
+                record["generation"],
+                "retained-token",
+                DUE.isoformat(),
+                DUE.isoformat(),
+            ),
+        )
         db.execute("PRAGMA user_version=15")
     upgraded = Store(store.path)
     with upgraded.transaction() as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 16
         assert stalls.threshold(db, record) == 3600
-        assert db.execute("SELECT count(*) FROM coordination_stall_timers").fetchone()[0] == 0
+        assert db.execute(
+            "SELECT token,lease_until,due_at FROM coordination_stall_timers"
+        ).fetchone() == ("retained-token", DUE.isoformat(), DUE.isoformat())
+        assert db.execute("SELECT count(*) FROM coordination_stall_state").fetchone()[0] == 0
+
+
+def timer_claim(store: Store) -> tuple[str, str, str] | None:
+    with store.transaction() as db:
+        return cast(
+            "tuple[str, str, str] | None",
+            db.execute("SELECT token,lease_until,due_at FROM coordination_stall_timers").fetchone(),
+        )
+
+
+def prepare_timer(store: Store) -> dict[str, object]:
+    with store.transaction() as db:
+        record = setup_clock(db)
+        db.execute("DELETE FROM coordination_stall_timers")
+    return record
+
+
+def notices_for(store: Store) -> list[tuple[int, str]]:
+    with store.transaction() as db:
+        return list(db.execute("SELECT id,body FROM messages WHERE sender=recipient"))
+
+
+def test_concurrent_hooks_persist_once_and_real_reply_rearms(
+    enrolled: tuple[Store, Direction, SenderContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _direction, owner = enrolled
+    message_id = send(store, owner, "assign")
+    prepare_timer(store)
+    delivered: list[int] = []
+
+    def dispatch(mailbox: Store, _recipient: str, *, trigger_id: int) -> dict[str, str]:
+        # A distinct connection must see both notice and marker before the wake.
+        with mailbox.transaction() as db:
+            assert (
+                db.execute(
+                    "SELECT notice_message_id FROM coordination_stall_state WHERE message_id=?",
+                    (message_id,),
+                ).fetchone()[0]
+                == trigger_id
+            )
+        delivered.append(trigger_id)
+        raise RuntimeError("host unavailable")
+
+    monkeypatch.setattr(notices, "dispatch_pending", dispatch)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(stalls.apply_for_coordinator, store, OWNER, now=DUE) for _ in range(2)
+        ]
+        for future in futures:
+            future.result()
+    first = notices_for(store)
+    assert len(first) == 1
+    assert delivered == [first[0][0]]
+    assert f"direction #{message_id}" in first[0][1]
+    assert "informational" in first[0][1]
+    store.acknowledge(OWNER, [first[0][0]])
+    stalls.apply_for_coordinator(store, OWNER, now=DUE + timedelta(minutes=1))
+    assert notices_for(store) == first
+    worker = SenderContext("claude", "worker", owner.project)
+    store.send(worker, OWNER, "PRIVATE WORKER TEXT", reply_to=message_id)
+    at = datetime.fromisoformat(clock_state(store, message_id)[0])
+    stalls.apply_for_coordinator(store, OWNER, now=at + timedelta(minutes=30))
+    assert len(notices_for(store)) == 2
+    assert all("PRIVATE WORKER TEXT" not in body for _identifier, body in notices_for(store))
+
+
+def test_timer_claim_reuse_earlier_deadline_failure_and_lease_recovery(
+    enrolled: tuple[Store, Direction, SenderContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _direction, owner = enrolled
+    send(store, owner, "assign")
+    record = prepare_timer(store)
+    launches: list[tuple[tuple[str, ...], object]] = []
+
+    def launch(*args: str, database: object) -> bool:
+        launches.append((args, database))
+        return True
+
+    monkeypatch.setattr(stalls, "spawn_checked", launch)
+    stalls.schedule(store, record, now=START)
+    first = timer_claim(store)
+    assert first is not None
+    assert first[2] == DUE.isoformat()
+    assert launches[0][1] == store.path
+    assert launches[0][0][2] == record["project_id"]
+    stalls.schedule(store, record, now=START + timedelta(seconds=1))
+    assert timer_claim(store) == first
+    assert len(launches) == 1
+    with store.transaction() as db:
+        stalls.configure(db, record, OWNER, 60)
+    stalls.schedule(store, record, now=START + timedelta(seconds=2))
+    earlier = timer_claim(store)
+    assert earlier is not None
+    assert earlier[0] != first[0]
+    assert earlier[2] == (START + timedelta(minutes=1)).isoformat()
+    stalls.run_timer(
+        store,
+        str(record["scope"]),
+        str(record["project_id"]),
+        str(record["generation"]),
+        first[0],
+        clock=lambda: START,
+    )
+    assert notices_for(store) == []
+    expiry = datetime.fromisoformat(earlier[1])
+
+    def failed_launch(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    monkeypatch.setattr(stalls, "spawn_checked", failed_launch)
+    stalls.schedule(store, record, now=expiry)
+    assert timer_claim(store) is None
+    monkeypatch.setattr(stalls, "spawn_checked", launch)
+    stalls.schedule(store, record, now=expiry)
+    recovered = timer_claim(store)
+    assert recovered is not None
+    assert recovered[0] != earlier[0]
+    assert len(launches) == 3
+
+
+def test_timer_bounded_sleep_cwd_independence_and_hook_race(
+    enrolled: tuple[Store, Direction, SenderContext],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _direction, owner = enrolled
+    send(store, owner, "assign")
+    record = prepare_timer(store)
+    stalls.schedule(store, record, now=START)
+    claim = timer_claim(store)
+    assert claim is not None
+    moment = START
+    slept: list[float] = []
+    monkeypatch.chdir(tmp_path.parent)
+
+    def unsupported(*_args: object, **_kwargs: object) -> dict[str, str]:
+        return {"status": "unsupported"}
+
+    monkeypatch.setattr(notices, "dispatch_pending", unsupported)
+
+    def sleep(seconds: float) -> None:
+        nonlocal moment
+        slept.append(seconds)
+        moment += timedelta(seconds=seconds)
+        if moment == DUE:
+            stalls.apply_for_coordinator(store, OWNER, now=moment)
+
+    stalls.run_timer(
+        store,
+        str(record["scope"]),
+        str(record["project_id"]),
+        str(record["generation"]),
+        claim[0],
+        sleep=sleep,
+        clock=lambda: moment,
+    )
+    assert slept == [TIMER_POLL_SECONDS, TIMER_POLL_SECONDS]
+    assert len(notices_for(store)) == 1
+    assert timer_claim(store) is None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "UPDATE coordination_grants SET revoked_at='2026-01-01'",
+        "UPDATE coordination_projects SET generation='replacement'",
+        "UPDATE coordination_projects SET revoked_at='2026-01-01'",
+        "DELETE FROM coordination_enrollments WHERE role='coordinator'",
+        "UPDATE agents SET ended_at='2026-01-01' WHERE address='codex:owner'",
+    ],
+)
+def test_timer_rechecks_lifecycle_before_notice(
+    enrolled: tuple[Store, Direction, SenderContext],
+    mutation: str,
+) -> None:
+    store, _direction, owner = enrolled
+    send(store, owner, "assign")
+    record = prepare_timer(store)
+    stalls.schedule(store, record, now=START)
+    claim = timer_claim(store)
+    assert claim is not None
+    moment = START
+
+    def sleep(seconds: float) -> None:
+        nonlocal moment
+        moment += timedelta(seconds=seconds)
+        with store.transaction() as db:
+            db.execute(mutation)
+
+    stalls.run_timer(
+        store,
+        str(record["scope"]),
+        str(record["project_id"]),
+        str(record["generation"]),
+        claim[0],
+        sleep=sleep,
+        clock=lambda: moment,
+    )
+    assert notices_for(store) == []
+
+
+def test_worker_and_native_child_hook_cannot_start_detection(
+    enrolled: tuple[Store, Direction, SenderContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _direction, owner = enrolled
+    send(store, owner, "assign")
+    prepare_timer(store)
+    stalls.apply_for_coordinator(store, WORKER, now=DUE)
+
+    def child(_address: str) -> bool:
+        return True
+
+    monkeypatch.setattr(stalls, "is_subagent", child)
+    stalls.apply_for_coordinator(store, OWNER, now=DUE)
+    assert notices_for(store) == []
+    assert timer_claim(store) is None
+
+
+@pytest.mark.parametrize("terminal", ["cancel", "completed"])
+def test_terminal_work_stops_running_timer(
+    enrolled: tuple[Store, Direction, SenderContext],
+    terminal: str,
+) -> None:
+    store, _direction, owner = enrolled
+    message_id = send(store, owner, "assign")
+    record = prepare_timer(store)
+    stalls.schedule(store, record, now=START)
+    claim = timer_claim(store)
+    assert claim is not None
+    moment = START
+
+    def sleep(seconds: float) -> None:
+        nonlocal moment
+        moment += timedelta(seconds=seconds)
+        if terminal == "cancel":
+            send(store, owner, "cancel")
+        else:
+            report(store, message_id, "completed")
+
+    stalls.run_timer(
+        store,
+        str(record["scope"]),
+        str(record["project_id"]),
+        str(record["generation"]),
+        claim[0],
+        sleep=sleep,
+        clock=lambda: moment,
+    )
+    assert notices_for(store) == []
+    assert timer_claim(store) is None
+
+
+def test_scheduled_hidden_dispatch_reaches_durable_notice(
+    enrolled: tuple[Store, Direction, SenderContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _direction, owner = enrolled
+    send(store, owner, "assign")
+    record = prepare_timer(store)
+    actual_timer = stalls.run_timer
+    moment = START
+    dispatched: list[dict[str, object]] = []
+
+    def sleep(seconds: float) -> None:
+        nonlocal moment
+        moment += timedelta(seconds=seconds)
+
+    def run_bound_timer(
+        mailbox: Store, scope: str, project_id: str, generation: str, token: str
+    ) -> None:
+        actual_timer(
+            mailbox, scope, project_id, generation, token, sleep=sleep, clock=lambda: moment
+        )
+
+    def launch(*args: str, database: object) -> bool:
+        assert database == store.path
+        parsed = cast("dict[str, object]", vars(build_parser().parse_args(args)))
+        dispatched.append(parsed)
+        # Equivalent hidden-child path, without a real fork or host environment.
+        assert human_command(store, parsed["command"], parsed)
+        return True
+
+    def unsupported(*_args: object, **_kwargs: object) -> dict[str, str]:
+        return {"status": "unsupported"}
+
+    monkeypatch.setattr(stalls, "spawn_checked", launch)
+    monkeypatch.setattr(stalls, "run_timer", run_bound_timer)
+    monkeypatch.setattr("llm_bus.cli.commands.detach", lambda: False)
+    monkeypatch.setattr(notices, "dispatch_pending", unsupported)
+    stalls.schedule(store, record, now=START)
+    assert len(dispatched) == 1
+    assert moment == DUE
+    assert len(notices_for(store)) == 1
+    assert timer_claim(store) is None
+
+
+@pytest.mark.parametrize("failure", [None, "exit", "os", "timeout"])
+def test_checked_launcher_reports_outcome_and_binds_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str | None,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def run_process(command: list[str], **options: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(options)
+        assert command[-2:] == ["coordination", "stall-timer"]
+        if failure == "os":
+            raise OSError("launch unavailable")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, 10)
+        return subprocess.CompletedProcess(command, 1 if failure == "exit" else 0)
+
+    monkeypatch.setattr("llm_bus.locks.timer.subprocess.run", run_process)
+    database = tmp_path / "isolated.sqlite"
+    assert lock_timer.spawn_checked("coordination", "stall-timer", database=database) == (
+        failure is None
+    )
+    assert cast("dict[str, str]", calls[0]["env"])["LLM_BUS_DB"] == str(database.resolve())
+
+
+def test_notice_and_marker_rollback_together(
+    enrolled: tuple[Store, Direction, SenderContext],
+) -> None:
+    store, _direction, owner = enrolled
+    send(store, owner, "assign")
+    record = prepare_timer(store)
+    with store.transaction() as db:
+        db.execute(
+            "CREATE TRIGGER fail_marker BEFORE UPDATE OF notified_epoch ON coordination_stall_state "
+            "BEGIN SELECT RAISE(ABORT,'marker failed'); END"
+        )
+
+    def persist() -> None:
+        with store.transaction() as db:
+            db.execute("BEGIN IMMEDIATE")
+            stalls.apply_due(store, db, record, now=DUE)
+
+    with pytest.raises(sqlite3.IntegrityError, match="marker failed"):
+        persist()
+    assert notices_for(store) == []
+    with store.transaction() as db:
         assert db.execute("SELECT count(*) FROM coordination_stall_state").fetchone()[0] == 0

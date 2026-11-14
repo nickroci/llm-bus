@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, cast
 
 from llm_bus.cli.guidance_files import ACTIVE as COORDINATION_ACTIVE
 from llm_bus.cli.guidance_files import RuleContext, select
-from llm_bus.coordination import decisions, delegation, instructions
+from llm_bus.coordination import decisions, delegation, instructions, stalls
 from llm_bus.coordination.authority import authorize
 from llm_bus.coordination.models import OPERATIONS, Direction
 from llm_bus.locks.service import Locks
@@ -343,6 +343,7 @@ def _enrollment(db: Connection, address: str, folder: str) -> tuple[dict[str, ob
 def _coordination(store: Store, address: str, folder: str, view: _View) -> str:
     """Serialize local references as data; never read task content or execute tools."""
     decisions.apply_for_coordinator(store, address)
+    stalls.apply_for_coordinator(store, address)
     with store.transaction() as db:
         enrolled = _enrollment(db, address, folder)
         if enrolled is None:

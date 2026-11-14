@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from llm_bus.coordination import stalls
 from llm_bus.remote.store import RemoteStore
 from llm_bus.reports import snapshots, submissions
 
@@ -58,4 +59,5 @@ class Reports:
         return snapshots.snapshot(self, remote_id)
 
     def receive(self, envelope: Envelope, value: object, config: Config) -> None:
-        return snapshots.receive(self, envelope, value, config)
+        snapshots.receive(self, envelope, value, config)
+        stalls.schedule_remote(self.remote.store, envelope["id"])

@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, closing
 from typing import TYPE_CHECKING
 
+from llm_bus.coordination import stalls
 from llm_bus.diagnostics.messages import message_status
 from llm_bus.mailbox import agents, connection, history, labels, pending, writes
 from llm_bus.mailbox.models import MAX_BATCH, Agent, HistoryMessage, Message, SenderContext
@@ -120,7 +121,7 @@ class Store:  # pylint: disable=too-many-public-methods
                 sender_context.project,
                 routing_scope(sender_context.project),
             )
-            return writes.send_in_transaction(
+            sent = writes.send_in_transaction(
                 db,
                 sender,
                 recipient,
@@ -130,6 +131,9 @@ class Store:  # pylint: disable=too-many-public-methods
                 direction=direction,
                 approval=approval,
             )
+        if reply_to is not None:
+            stalls.schedule_messages(self, [sent["id"]])
+        return sent
 
     def send_in_transaction(  # noqa: PLR0913  # pylint: disable=too-many-arguments
         self,
@@ -237,4 +241,6 @@ class Store:  # pylint: disable=too-many-public-methods
     def acknowledge(self, recipient: str, ids: list[int]) -> int:
         """Acknowledge only own messages; reject mixed or unknown batches atomically."""
         with self.transaction() as db:
-            return writes.acknowledge(db, recipient, ids)
+            count = writes.acknowledge(db, recipient, ids)
+        stalls.schedule_messages(self, ids)
+        return count

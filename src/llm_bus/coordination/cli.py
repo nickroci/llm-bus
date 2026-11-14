@@ -248,6 +248,10 @@ def _stall_parsers(add_action: Callable[..., argparse.ArgumentParser]) -> None:
         action = add_action(name)
         action.add_argument("project")
         action.add_argument("--threshold", required=name == "stall-config")
+    timer = add_action("stall-timer", help=argparse.SUPPRESS)
+    timer.add_argument("project")
+    for option in ("scope", "generation", "token"):
+        timer.add_argument(f"--{option}", required=True)
 
 
 def _inspect_stalls(
@@ -326,6 +330,10 @@ def run(  # noqa: C901, PLR0912, PLR0915 - owner action dispatch
         if remote_notice is not None:
             result["availability"] = remote_notice
     _schedule_default(action, label, result)
+    if action == "coordinate":
+        stalls.apply_for_coordinator(mailbox, address)
+    elif action == "stall-config":
+        stalls.schedule(mailbox, record)
     if messages:
         result["wakes"] = notices.deliver(mailbox, messages)
     if notice_id is not None:

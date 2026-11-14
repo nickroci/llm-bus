@@ -8,19 +8,27 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
 from llm_bus.coordination import store, work_state
 from llm_bus.coordination.models import timestamp
 from llm_bus.errors import BusError
+from llm_bus.hosts.sessions import is_subagent
+from llm_bus.locks import notices
+from llm_bus.locks.timer import TIMER_POLL_SECONDS, TIMER_START_SECONDS, spawn_checked
 from llm_bus.mailbox.agents import SESSION_IDLE_HOURS
 from llm_bus.policy.config import optional_config
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
     from sqlite3 import Connection
+
+    from llm_bus.mailbox.models import Message
+    from llm_bus.mailbox.store import Store
 
 DEFAULT_THRESHOLD_SECONDS = 1800
 MIN_THRESHOLD_SECONDS = 60
@@ -30,6 +38,7 @@ REMOTE_ADDRESS_PARTS = 3
 OBSERVATION_PENDING = "observation_pending"
 MINUTE_SECONDS = 60
 HOUR_SECONDS = 3600
+TIMER_LEASE_SECONDS = TIMER_POLL_SECONDS + 2 * TIMER_START_SECONDS
 
 
 def create_tables(db: Connection) -> None:
@@ -50,7 +59,7 @@ def create_tables(db: Connection) -> None:
     db.execute(
         "CREATE TABLE IF NOT EXISTS coordination_stall_timers (scope TEXT NOT NULL, "
         "project_id TEXT NOT NULL, generation TEXT NOT NULL, token TEXT NOT NULL, "
-        "lease_until TEXT NOT NULL, PRIMARY KEY(scope,project_id,generation))"
+        "lease_until TEXT NOT NULL, due_at TEXT NOT NULL, PRIMARY KEY(scope,project_id,generation))"
     )
 
 
@@ -395,3 +404,234 @@ def inspect(
         if item["due_at"] is None or timestamp(cast("str", item["due_at"])) <= now
     ]
     return result
+
+
+def _items(db: Connection, record: dict[str, object], now: datetime) -> list[dict[str, object]]:
+    if is_subagent(str(record["coordinator"])):
+        return []
+    reconcile(db, record, now=now)
+    try:
+        result = projection(db, record, str(record["coordinator"]), now=now)
+    except BusError:
+        return []
+    return [
+        item for item in cast("list[dict[str, object]]", result["items"]) if not item["notified"]
+    ]
+
+
+def apply_due(
+    mailbox: Store, db: Connection, record: dict[str, object], *, now: datetime
+) -> list[Message]:
+    """Persist informational self-notices and epoch markers in caller's write transaction."""
+    messages: list[Message] = []
+    for item in _items(db, record, now):
+        if timestamp(str(item["due_at"])) > now:
+            continue
+        coordinator = str(record["coordinator"])
+        body = (
+            f"llm-bus coordination silence: project {record['label']!r}, "
+            f"direction #{item['message_id']} to {item['recipient']}; "
+            f"last recorded communication {item['last_communication_at']}, "
+            f"interval {threshold(db, record)} seconds. "
+            f"Inspect with `llm-bus coordination stalls {record['label']}` "
+            "(pass the project label as one literal argument). "
+            "Silence is informational, not proof of failure or progress. "
+            "Recheck current authority and evidence before deciding any action; "
+            "this notice does not approve, retry, cancel, reassign or resume work."
+        )
+        sent = mailbox.send_in_transaction(db, coordinator, coordinator, body, cross_folder=True)
+        db.execute(
+            "UPDATE coordination_stall_state SET notified_epoch=?,notice_message_id=? "
+            "WHERE message_id=?",
+            (item["epoch"], sent["id"], item["message_id"]),
+        )
+        messages.append(sent)
+    return messages
+
+
+def _release(db: Connection, record: dict[str, object], token: str) -> None:
+    db.execute(
+        "DELETE FROM coordination_stall_timers "
+        "WHERE scope=? AND project_id=? AND generation=? AND token=?",
+        (*_binding(record), token),
+    )
+
+
+def _claim(db: Connection, record: dict[str, object], now: datetime) -> str | None:
+    pending = _items(db, record, now)
+    if not pending:
+        db.execute(
+            "DELETE FROM coordination_stall_timers WHERE scope=? AND project_id=? AND generation=?",
+            _binding(record),
+        )
+        return None
+    due_at = str(pending[0]["due_at"])
+    claim = cast(
+        "tuple[str, str] | None",
+        db.execute(
+            "SELECT lease_until,due_at FROM coordination_stall_timers "
+            "WHERE scope=? AND project_id=? AND generation=?",
+            _binding(record),
+        ).fetchone(),
+    )
+    if claim and timestamp(claim[0]) > now and timestamp(claim[1]) <= timestamp(due_at):
+        return None
+    token = uuid4().hex
+    db.execute(
+        "INSERT INTO coordination_stall_timers VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(scope,project_id,generation) DO UPDATE SET "
+        "token=excluded.token,lease_until=excluded.lease_until,due_at=excluded.due_at",
+        (
+            *_binding(record),
+            token,
+            (now + timedelta(seconds=TIMER_LEASE_SECONDS)).isoformat(),
+            due_at,
+        ),
+    )
+    return token
+
+
+def schedule(mailbox: Store, record: dict[str, object], *, now: datetime | None = None) -> None:
+    """Arrange deadlines after commit; bookkeeping itself never delivers a wake."""
+    moment = datetime.now(UTC) if now is None else now
+    with mailbox.transaction() as db:
+        db.execute("BEGIN IMMEDIATE")
+        token = _claim(db, record, moment)
+    if token is None:
+        return
+    started = spawn_checked(
+        "coordination",
+        "stall-timer",
+        str(record["project_id"]),
+        "--scope",
+        str(record["scope"]),
+        "--generation",
+        str(record["generation"]),
+        "--token",
+        token,
+        database=mailbox.path,
+    )
+    if not started:
+        with mailbox.transaction() as db:
+            db.execute("BEGIN IMMEDIATE")
+            _release(db, record, token)
+
+
+def schedule_messages(mailbox: Store, message_ids: list[int]) -> None:
+    """Rearm locally owned projects affected by committed message evidence."""
+    records: dict[tuple[object, object, object], dict[str, object]] = {}
+    with mailbox.transaction() as db:
+        for message_id in message_ids:
+            bindings = cast(
+                "list[tuple[str, str]]",
+                db.execute(
+                    "SELECT scope,label FROM coordination_projects WHERE scope IN "
+                    "(SELECT sender_scope FROM messages WHERE id=? UNION "
+                    "SELECT recipient_scope FROM messages WHERE id=?)",
+                    (message_id, message_id),
+                ).fetchall(),
+            )
+            for scope, label in bindings:
+                record = store.project(db, scope, label)
+                records[_binding(record)] = record
+    for record in records.values():
+        schedule(mailbox, record)
+
+
+def schedule_remote(mailbox: Store, remote_id: str) -> None:
+    with mailbox.transaction() as db:
+        row = cast(
+            "tuple[int] | None",
+            db.execute("SELECT local_id FROM remote_outbox WHERE id=?", (remote_id,)).fetchone(),
+        )
+    if row:
+        schedule_messages(mailbox, [row[0]])
+
+
+def apply_for_coordinator(mailbox: Store, address: str, *, now: datetime | None = None) -> None:
+    """Recover due notices and missing timers only for the current main coordinator."""
+    if is_subagent(address):
+        return
+    moment = datetime.now(UTC) if now is None else now
+    with mailbox.transaction() as db:
+        bindings = cast(
+            "list[tuple[str, str]]",
+            db.execute(
+                "SELECT p.scope,p.label FROM coordination_projects p "
+                "JOIN coordination_enrollments e "
+                "ON e.scope=p.scope AND e.project_id=p.project_id AND e.generation=p.generation "
+                "WHERE p.coordinator=? AND e.address=? AND e.role='coordinator'",
+                (address, address),
+            ).fetchall(),
+        )
+    for scope, label in bindings:
+        with mailbox.transaction() as db:
+            db.execute("BEGIN IMMEDIATE")
+            record = store.project(db, scope, label)
+            try:
+                require_coordinator(db, record, address, now=moment)
+            except BusError:
+                continue
+            messages = apply_due(mailbox, db, record, now=moment)
+        notices.deliver(mailbox, messages)
+        schedule(mailbox, record, now=moment)
+
+
+def run_timer(  # noqa: PLR0913 - exact timer binding plus injectable clock/sleep
+    mailbox: Store,
+    scope: str,
+    project_id: str,
+    generation: str,
+    token: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> None:
+    """Check ownership/lifecycle at bounded intervals, persist due notices, then exit when idle."""
+    # pylint: disable=too-many-arguments
+    while True:
+        moment = clock()
+        with mailbox.transaction() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = cast(
+                "tuple[str, str] | None",
+                db.execute(
+                    "SELECT p.label,t.lease_until FROM coordination_stall_timers t "
+                    "JOIN coordination_projects p ON p.scope=t.scope AND p.project_id=t.project_id "
+                    "AND p.generation=t.generation WHERE t.scope=? AND t.project_id=? "
+                    "AND t.generation=? AND t.token=?",
+                    (scope, project_id, generation, token),
+                ).fetchone(),
+            )
+            if row is None:
+                db.execute(
+                    "DELETE FROM coordination_stall_timers WHERE scope=? AND project_id=? "
+                    "AND generation=? AND token=?",
+                    (scope, project_id, generation, token),
+                )
+                return
+            record = store.project(db, scope, row[0])
+            if timestamp(row[1]) <= moment:
+                _release(db, record, token)
+                return
+            messages = apply_due(mailbox, db, record, now=moment)
+            pending = _items(db, record, moment)
+            if pending:
+                remaining = (timestamp(str(pending[0]["due_at"])) - moment).total_seconds()
+                db.execute(
+                    "UPDATE coordination_stall_timers SET lease_until=?,due_at=? "
+                    "WHERE scope=? AND project_id=? AND generation=? AND token=?",
+                    (
+                        (moment + timedelta(seconds=TIMER_LEASE_SECONDS)).isoformat(),
+                        pending[0]["due_at"],
+                        *_binding(record),
+                        token,
+                    ),
+                )
+            else:
+                remaining = None
+                _release(db, record, token)
+        notices.deliver(mailbox, messages)
+        if remaining is None:
+            return
+        sleep(min(max(0, remaining), TIMER_POLL_SECONDS))

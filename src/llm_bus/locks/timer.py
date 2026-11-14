@@ -14,6 +14,7 @@ from llm_bus.locks.notices import deliver, persist
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from llm_bus.locks.models import Key
     from llm_bus.mailbox.store import Store
@@ -34,8 +35,16 @@ def schedule_check(key: Key) -> None:
 
 def spawn(*command: str) -> None:
     """Run ``llm-bus COMMAND`` in a child that forks its hidden timer and exits at once."""
+    spawn_checked(*command)
+
+
+def spawn_checked(*command: str, database: Path | None = None) -> bool:
+    """Report confirmed startup failure; optionally bind the child to an exact mailbox."""
+    environment = (
+        None if database is None else {**os.environ, "LLM_BUS_DB": str(database.resolve())}
+    )
     with contextlib.suppress(OSError, subprocess.SubprocessError):
-        subprocess.run(  # noqa: S603 - fixed argument list, no shell
+        result = subprocess.run(  # noqa: S603 - fixed argument list, no shell
             [sys.executable, "-m", "llm_bus", *command],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -43,7 +52,10 @@ def spawn(*command: str) -> None:
             close_fds=True,
             check=False,
             timeout=TIMER_START_SECONDS,
+            env=environment,
         )
+        return result.returncode == 0
+    return False
 
 
 def detach() -> bool:
