@@ -1,17 +1,17 @@
 # Project State
 
-Last activity: 2026-11-14 - 261114-cua implementation, independent task review, conformance and local verification passed; PR publication and final PR gate in progress.
+Last activity: 2026-11-14 - 261114-cua final PR #89 review and reviewed-head CI passed; premerge summary prepared; tracking validation, current-head CI and merge remain pending.
 
 ## Registered Work
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
-| 261114-cua | Coordinator as user contact | Implementation, task review, conformance and local verification passed; PR publication and final PR gate in progress | [261114-cua-coordinator-user-actions](./quick/261114-cua-coordinator-user-actions/) |
 
 ## Quick Tasks Completed
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261114-cua | Coordinator as user contact — PR #89 | PR #89 review passed (R1) and reviewed-head CI passed; tracking validation, current-head CI and merge pending; rollout requires separate authorization | [261114-cua-coordinator-user-actions](./quick/261114-cua-coordinator-user-actions/) |
 | 261113-ymx | Skill-driven coordination guidance — PR #86 | PR #86 review passed (R1); merge pending; owner reinstalls the skill copy and CLI together after merge | [261113-ymx-cli-driven-coordination-guidance](./quick/261113-ymx-cli-driven-coordination-guidance/) |
 | 261113-f5u | Host hook fixes and host-behaviour docs — PR #85 | PR #85 review passed (R2); merge pending; owner reinstall and manual Codex `/hooks` check pending after merge | [261113-f5u-host-hook-fixes-and-host-behaviour-docs](./quick/261113-f5u-host-hook-fixes-and-host-behaviour-docs/) |
 | 261112-av6 | Coordination worker stall visibility: guidance and per-direction work state — PR #78 | PR #78 review passed (R2); merge pending; owner rollout pending after merge (upgrade to schema 15) | [261112-av6-coordination-worker-stall-visibility](./quick/261112-av6-coordination-worker-stall-visibility/) |
