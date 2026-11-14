@@ -17,6 +17,7 @@ from llm_bus.coordination import (
     decisions,
     delegation,
     gate_records,
+    stalls,
     store,
     work_state,
 )
@@ -54,7 +55,9 @@ MAX_REFERENCES = 32
 CONTROL_BOUNDARY = 32
 
 
-def add_parsers(add_parser: Callable[..., argparse.ArgumentParser]) -> None:
+def add_parsers(  # pylint: disable=too-many-statements
+    add_parser: Callable[..., argparse.ArgumentParser],
+) -> None:
     coordinate = add_parser("coordinate", help="Owner enrolls this coordinator")
     coordinate.add_argument("project")
     _references(coordinate, required=False)
@@ -83,6 +86,7 @@ def add_parsers(add_parser: Callable[..., argparse.ArgumentParser]) -> None:
     _gate_parsers(actions.add_parser)
     _decision_parsers(actions.add_parser)
     _instructions_parser(actions.add_parser)
+    _stall_parsers(actions.add_parser)
     approve = actions.add_parser("approve")
     approve.add_argument("project")
     approve.add_argument("--recipient", required=True)
@@ -239,11 +243,42 @@ def beads_workspace(value: object) -> str:
     return workspace
 
 
-def run(  # noqa: C901, PLR0912 - owner action dispatch
+def _stall_parsers(add_action: Callable[..., argparse.ArgumentParser]) -> None:
+    for name in ("stalls", "stall-config"):
+        action = add_action(name)
+        action.add_argument("project")
+        action.add_argument("--threshold", required=name == "stall-config")
+    timer = add_action("stall-timer", help=argparse.SUPPRESS)
+    timer.add_argument("project")
+    for option in ("scope", "generation", "token"):
+        timer.add_argument(f"--{option}", required=True)
+
+
+def _inspect_stalls(
+    mailbox: Store, scope: str, label: str, address: str, args: dict[str, object]
+) -> dict[str, object]:
+    seconds = stalls.parse_threshold(str(args["threshold"])) if args.get("threshold") else None
+    with mailbox.transaction() as db:
+        return stalls.inspect(
+            db,
+            store.project(db, scope, label),
+            address,
+            now=datetime.now(UTC),
+            threshold_seconds=seconds,
+        )
+
+
+def _stall_config(
+    db: Connection, record: dict[str, object], args: dict[str, object], address: str
+) -> ActionResult:
+    return stalls.configure(db, record, address, stalls.parse_threshold(str(args["threshold"]))), []
+
+
+def run(  # noqa: C901, PLR0912, PLR0915 - owner action dispatch
     mailbox: Store, args: dict[str, object], address: str, cwd: str
 ) -> dict[str, object]:
     """Use app-selected native identity. These commands grant no remote owner power."""
-    # pylint: disable=too-many-branches,too-many-locals
+    # pylint: disable=too-many-branches,too-many-locals,too-many-statements
     scope = routing_scope(cwd)
     args = dict(args)
     for field in ("coordinator", "recipient", "worker"):
@@ -251,6 +286,8 @@ def run(  # noqa: C901, PLR0912 - owner action dispatch
             args[field] = resolve_reference(mailbox, str(args[field]), cwd)
     label = text_reference(args["project"])
     action = str(args["command"] if args["command"] != "coordination" else args["action"])
+    if action == "stalls":
+        return _inspect_stalls(mailbox, scope, label, address, args)
     with mailbox.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
         new_project = False
@@ -293,6 +330,10 @@ def run(  # noqa: C901, PLR0912 - owner action dispatch
         if remote_notice is not None:
             result["availability"] = remote_notice
     _schedule_default(action, label, result)
+    if action == "coordinate":
+        stalls.apply_for_coordinator(mailbox, address)
+    elif action == "stall-config":
+        stalls.schedule(mailbox, record)
     if messages:
         result["wakes"] = notices.deliver(mailbox, messages)
     if notice_id is not None:
@@ -541,6 +582,7 @@ def _instructions(
 
 
 ACTIONS: dict[str, Callable[..., ActionResult]] = {
+    "stall-config": _stall_config,
     "show": _show,
     "instructions": _instructions,
     "gate-record": _gate_record,

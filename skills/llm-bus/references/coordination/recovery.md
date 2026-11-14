@@ -76,6 +76,16 @@ The exact stale-wake no-op may omit recovery until the next real prompt.
 Hooks neither execute Beads nor contact the network. No dedicated compaction
 hook or live host compaction guarantee is implied.
 
+Silence notices also recover through normal coordinator hook/guidance recovery
+and `coordinate PROJECT`. These entry points reconcile overdue notices and
+missing or expired timer claims. Machine sleep, process loss, missing hooks or
+database unavailability can delay delivery; a lost helper has no guaranteed
+wall-clock recovery until a normal entry point runs. The read-only
+`coordination stalls PROJECT` command never repairs timers or creates notices.
+If a host wake fails or is unsupported, resume the coordinator manually and
+read its durable inbox. Do not resend a stored notice or treat it as permission
+to retry work. Revoked or ended authority stops new detection; history remains.
+
 ### Recovery brief
 
 Give the reading to one read-only native subagent (`core.md`, "Delegated

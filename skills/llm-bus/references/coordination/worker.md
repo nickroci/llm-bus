@@ -48,15 +48,42 @@ llm-bus --format agent report LOCAL_ASSIGNMENT_ID --status completed
 `out_of_scope` or `declined`; `completed`; `failed` with
 `validation_failed`, `execution_failed`, `permission_denied` or
 `unavailable`) and only for a direction you received and acknowledged. A
-cancelled direction needs no report. Persist progress, then send an
-ordinary linked result only for a blocker or an outcome the coordinator must
-act on or learn, never for presence or routine progress:
+cancelled direction needs no report. Persist progress and send concise ordinary
+linked messages for phase changes, blockers and outcomes the coordinator must
+act on or learn. A phase-change message names the new phase and its outcome or
+next dependency; it is not a periodic heartbeat:
 
 ```sh
-llm-bus --format agent send codex:COORDINATOR_ID --reply-to LOCAL_ASSIGNMENT_ID --body 'TASK_ID result. Evidence: references. Remaining blockers: none.'
+llm-bus --format agent send codex:COORDINATOR_ID --reply-to LOCAL_ASSIGNMENT_ID --body 'TASK_ID phase: verification. Implementation complete; tests next. Evidence: references.'
 ```
 
+Whenever you record `BLOCKED` or request a coordinator or owner decision in a
+task artifact, record the appropriate fixed-code report and send one ordinary
+linked blocker message in the same step, before yielding or moving to another
+task. Include the task, exact worker identity and session banner, blocker,
+needed decision or action, and evidence reference. Saving an artifact alone
+does not communicate the blocker. For example:
+
+```sh
+llm-bus --format agent report LOCAL_ASSIGNMENT_ID --status not_proceeding --reason dependency_blocked
+llm-bus --format agent send codex:COORDINATOR_ID --reply-to LOCAL_ASSIGNMENT_ID --body 'TASK_ID blocked. Worker: codex:WORKER_ID; session: PROJECT worker LABEL TICKET BRANCH FOLDER. Blocker: dependency unavailable. Need: coordinator resolve dependency. Evidence: references.'
+```
+
+If sending fails, preserve the blocker and delivery failure in existing task
+memory. Retry only through the existing recovery rules; a saved request does
+not count as delivered communication.
+
+If you observe a native child's death or disconnection, immediately tell your
+coordinator the affected task and recovery choice. Native children report only
+to their parent; the main parent sends the bus message. This obligation applies
+to observed failures and does not promise host-level failure detection.
+
 Work state is self-reported; the bus cannot see host activity.
+Only changed accepted reports and worker messages linked to an assignment or
+review advance its silence clock. Repeating a report, saving a task artifact
+or sending an unlinked message does not. Continue to send meaningful phase
+changes and immediate blocker requests; do not send periodic heartbeats to
+avoid notices. Native-child completion is not guaranteed to wake its parent.
 
 ## Requests needing the user
 

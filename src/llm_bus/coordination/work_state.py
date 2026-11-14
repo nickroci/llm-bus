@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 from llm_bus.errors import BusError
@@ -10,6 +11,7 @@ from llm_bus.reports.lifecycle import TERMINAL, TRANSITION_CONFLICT, transition_
 from llm_bus.reports.protocol import MAX_REVISION, parse_report, validate_status
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from sqlite3 import Connection
 
 WORK_OPERATIONS = ("assign", "review", "reprioritize")
@@ -61,6 +63,7 @@ def record(
     db: Connection, message_id: int, recipient: str, status: object, reason: object
 ) -> dict[str, object]:
     """Record state; the caller already holds a write transaction."""
+    # pylint: disable=import-outside-toplevel,cyclic-import,clean-code-commented-out-code
     selected, why = validate_status(status, reason)
     row = cast(
         "tuple[str, str | None] | None",
@@ -91,6 +94,9 @@ def record(
         "reported_at=excluded.reported_at",
         (message_id, revision, selected, why),
     )
+    from llm_bus.coordination.stalls import observe_message  # noqa: PLC0415
+
+    observe_message(db, message_id, now=datetime.now(UTC))
     return cast("dict[str, object]", snapshot(db, message_id))
 
 
@@ -116,7 +122,7 @@ def work_report(
     return snapshot(db, message_id)
 
 
-class _Row(NamedTuple):
+class DirectionRow(NamedTuple):
     message_id: int
     operation: str
     grant: str
@@ -140,7 +146,7 @@ def table_names(db: Connection) -> set[str]:
 
 def _direction_rows(
     db: Connection, record: dict[str, object], viewer: str, *, coordinator: bool
-) -> list[_Row]:
+) -> list[DirectionRow]:
     # pylint: disable=redefined-outer-name  # `record` parameter shadows the module function
     found = cast(
         "list[tuple[int, str, str, str, str, str, str | None, str | None, str | None]]",
@@ -157,7 +163,7 @@ def _direction_rows(
             (record["project_id"], record["generation"], coordinator, viewer, viewer),
         ).fetchall(),
     )
-    return [_Row(*row) for row in found]
+    return [DirectionRow(*row) for row in found]
 
 
 def _is_open(
@@ -172,7 +178,7 @@ def _is_open(
     )
 
 
-def _state_changed_at(row: _Row, report: dict[str, object] | None) -> str | None:
+def _state_changed_at(row: DirectionRow, report: dict[str, object] | None) -> str | None:
     if report is None:
         return row.acked
     if row.outbox_id is None:
@@ -182,7 +188,7 @@ def _state_changed_at(row: _Row, report: dict[str, object] | None) -> str | None
 
 
 def _item(
-    row: _Row,
+    row: DirectionRow,
     report: dict[str, object] | None,
 ) -> dict[str, object]:
     return {
@@ -197,22 +203,13 @@ def _item(
     }
 
 
-def listing(
-    db: Connection,
-    record: dict[str, object],
-    viewer: str,
-    *,
-    coordinator: bool,
-    only: str = "all",
-) -> list[dict[str, object]]:
-    """Directions the viewer sent (coordinator) or received, newest first, with work state."""
-    # pylint: disable=redefined-outer-name  # `record` parameter shadows the module function
-    if only not in FILTERS:
-        raise ValueError(f"only must be one of {FILTERS}")
+def direction_states(
+    db: Connection, project: dict[str, object], viewer: str, *, coordinator: bool
+) -> Iterator[tuple[DirectionRow, dict[str, object] | None, bool, bool]]:
+    """Uncapped lifecycle traversal shared by historical listing and stall detection."""
     tables = table_names(db)
     cancels: set[tuple[str, str, str]] = set()
-    items: list[dict[str, object]] = []
-    for row in _direction_rows(db, record, viewer, coordinator=coordinator):
+    for row in _direction_rows(db, project, viewer, coordinator=coordinator):
         key = (row.grant, row.sender, row.recipient)
         if row.operation == "cancel" and row.acked is not None:
             cancels.add(key)
@@ -235,6 +232,25 @@ def listing(
             cancelled=cancelled,
             status=None if report is None else report["status"],
         )
+        yield row, report, is_open, cancelled
+
+
+def listing(
+    db: Connection,
+    record: dict[str, object],
+    viewer: str,
+    *,
+    coordinator: bool,
+    only: str = "all",
+) -> list[dict[str, object]]:
+    """Directions the viewer sent (coordinator) or received, newest first, with work state."""
+    # pylint: disable=redefined-outer-name  # `record` parameter shadows the module function
+    if only not in FILTERS:
+        raise ValueError(f"only must be one of {FILTERS}")
+    items: list[dict[str, object]] = []
+    for row, report, is_open, cancelled in direction_states(
+        db, record, viewer, coordinator=coordinator
+    ):
         if only == "all":
             wanted = True
         elif only == "open":

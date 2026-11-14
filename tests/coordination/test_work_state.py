@@ -158,7 +158,7 @@ def test_upgrade_from_14(enrolled: tuple[Store, Direction, SenderContext], tmp_p
         db.execute("PRAGMA user_version = 14")
     upgraded = Store(tmp_path / "bus.db")
     with upgraded.transaction() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 15
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 16
         assert db.execute("SELECT count(*) FROM coordination_work_reports").fetchone()[0] == 0
         assert db.execute("SELECT id FROM messages WHERE id=?", (message_id,)).fetchone()
 
@@ -174,7 +174,7 @@ def test_reupgrade_after_rollback(
         db.execute("PRAGMA user_version = 14")
     upgraded = Store(tmp_path / "bus.db")
     with upgraded.transaction() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 15
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     assert rows(upgraded) == 1
 
 

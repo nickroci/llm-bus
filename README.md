@@ -81,7 +81,7 @@ If a hook exits with code 127, inspect its command in the active user hook file.
 
 ### Upgrade
 
-From a checkout with no uncommitted tracked changes, run `uv run llm-bus upgrade`. It builds a wheel from `HEAD`, installs it with the currently installed extras and the Python pinned by the checkout (`.python-version`) and verifies the new install. Only after verification passes does it delete every older folder in `~/.local/share/llm-bus/packages/` and everything in `~/.local/state/llm-bus/releases/`; it keeps no old versions, and rolling back means checking out the older commit and upgrading again. If the install or verification fails, it deletes nothing, reinstalls the previous wheel and exits with status 1. It never touches `backups/`, `deploy-backups/` or other bus state. Run it from a checkout outside both folders it prunes.
+From a checkout with no uncommitted tracked changes, run `uv run llm-bus upgrade`. It builds a wheel from `HEAD`, installs it with the currently installed extras and the Python pinned by the checkout (`.python-version`) and verifies the new install. Only after verification passes does it delete every older folder in `~/.local/share/llm-bus/packages/` and everything in `~/.local/state/llm-bus/releases/`; it keeps no old versions. Reinstalling older code requires checking out that commit and upgrading again, plus a compatible mailbox; see the [schema rollback limits](skills/llm-bus/references/coordination.md#installation-and-rollback). If the install or verification fails, it deletes nothing, reinstalls the previous wheel and exits with status 1. It never touches `backups/`, `deploy-backups/` or other bus state. Run it from a checkout outside both folders it prunes.
 
 To update the installed skill in the same step, add `--skills-dir DIR`, for example `uv run llm-bus upgrade --skills-dir ~/.agents/skills`. After verification and before pruning, it replaces `DIR/llm-bus` with `skills/llm-bus` from the same `HEAD`, so the skill's guidance version matches the new CLI. Local edits in the installed copy are lost; untracked files in the checkout are not copied. `DIR` must already exist. If `DIR/llm-bus` is a symlink or a file, the command refuses: pass the directory that holds the real copy instead (here, `~/.agents/skills` rather than a linked `~/.claude/skills`). If the skill update fails, the new CLI stays installed and nothing is pruned. Without the option, the installed skill is left alone. Rule files are never copied; update them yourself.
 
@@ -348,8 +348,8 @@ when the coordinator owner's delegation, the receiver owner's own delegation
 (`coordination setup --delegate`), the worker's binding and the receiver's peer
 policy `accept_delegated_gates` all allow them; see the
 [remote guide](docs/remote-bus.md#remote-gate-approvals).
-The first command run by this version upgrades the mailbox to schema version
-13; older binaries then refuse it, so upgrade every llm-bus installation that
+Database access by this version upgrades the mailbox to schema version
+16; binaries supporting earlier schemas then refuse it, so upgrade every llm-bus installation that
 shares the mailbox (`uv run llm-bus upgrade` from a checkout) before any
 session uses it. See the
 [canonical workflow](skills/llm-bus/references/coordination/gates.md#gate-approvals-local-projects).
@@ -395,7 +395,14 @@ it filtered by role. Hooks never print the text: every hook carries a one-line
 pointer with a digest, and the session runs `llm-bus guidance` before acting
 unless its context already holds the text with that digest.
 
-The coordinator lists the directions it sent, with each one's work state and age, with `llm-bus coordination direction-list PROJECT [--open]`. A worker reports progress on a local direction with `llm-bus report ID --status STATUS`; the report stays on that machine and wakes nobody. See the [tutorial](docs/tutorial.md#5-coordinate-a-project).
+The coordinator inspects direction history with `llm-bus coordination direction-list PROJECT [--open]` and silence with `llm-bus coordination stalls PROJECT [--threshold 30m]`. Eligible acknowledged open assignments and reviews receive one informational durable notice per silence epoch, with an attempted host wake. The local interval defaults to 30 minutes; the current local coordinator changes it with `llm-bus coordination stall-config PROJECT --threshold 1h` (integer `m` or `h` units, `1m` through `24h`). Changed accepted reports and linked worker replies advance the clock. Silence is not proof of failure or authority to act. A worker records state with `llm-bus report ID --status STATUS`; recording itself sends no message and wakes nobody. Remote evidence uses local admission times and existing bridge observations; monitor-only text and denied peers cannot refresh it. See the [tutorial](docs/tutorial.md#5-coordinate-a-project) and [canonical silence reference](skills/llm-bus/references/coordination/coordinator.md#silence-inspection-and-notices) for inspection fields, observation limits and recovery.
+
+Schema 16 adds local silence state without changing relay protocols. Migration
+does not start timers. An older binary requires an owner-approved restoration
+of a pre-upgrade mailbox backup; there is no supported in-place schema downgrade.
+Machine sleep or lost helpers can delay notices until normal coordinator
+recovery. Failed or unsupported wakes leave notices in the durable inbox for
+manual resume.
 
 Current enrollment reminders survive normal prompt recovery: SessionStart gives
 full references; UserPromptSubmit rereads authority after compaction. Use
@@ -500,8 +507,8 @@ Run `llm-bus uninstall` to remove the user-level bus hooks and Claude allow rule
 Revoke active coordination grants/projects on each machine before removing
 recovery tooling. Uninstall retains coordination records and native-home
 bindings. Copied skills, rule files and pointer blocks require separate
-owner-requested removal. Stop bridges and retain backups before rollback; schema 13 mailboxes
-reject older clients. Never downgrade directions into ordinary messages.
+owner-requested removal. Stop bridges and retain backups before rollback; schema 16 mailboxes
+reject binaries supporting earlier schemas. Never downgrade directions into ordinary messages.
 
 ## Development
 

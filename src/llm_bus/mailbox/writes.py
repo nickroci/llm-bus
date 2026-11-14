@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, cast
 import llm_bus.collab.models
 from llm_bus.coordination.authority import authorize
 from llm_bus.coordination.delivery import persist, require_coordinator
+from llm_bus.coordination.stalls import observe_message
 from llm_bus.errors import BusError
 from llm_bus.hosts.sessions import require_main_agent
 from llm_bus.mailbox.models import (
@@ -87,6 +88,8 @@ def send_in_transaction(  # noqa: PLR0913, C901  # pylint: disable=too-many-argu
         raise RuntimeError("SQLite did not return a message ID")
     if direction is not None:
         persist(db, message_id, direction, approval)
+    elif reply_to is not None:
+        observe_message(db, message_id, now=datetime.now(UTC))
     request_dispatch(db, recipient)
     row = cast(
         "tuple[int, str, str, str, str | None, str | None, str] | None",
@@ -218,4 +221,6 @@ def acknowledge(db: sqlite3.Connection, recipient: str, ids: list[int]) -> int:
             (recipient, message_id),
         )
         acknowledged += cursor.rowcount
+        if cursor.rowcount:
+            observe_message(db, message_id, now=datetime.now(UTC))
     return acknowledged

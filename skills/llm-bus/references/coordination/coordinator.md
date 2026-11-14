@@ -119,13 +119,67 @@ Each item has `message_id`, `recipient`, `operation`, `sent_at`,
 `state_changed_at` is the report time, else the acknowledgement time. It is
 null for an unacknowledged direction and for an outgoing relay direction
 whose relay report has a status; a relay direction with no report yet keeps
-its acknowledgement time. Judge
-each open direction's age from it and follow up with a `clarify` direction
-when one looks stalled; an open direction is not proof of a stall. Without
+its acknowledgement time. Use this list for direction history. Without
 `--open` the list also shows unacknowledged, finished and cancelled
 directions. `coordination show PROJECT` adds `directions` when any
 direction is unacknowledged or open. The coordinator sees directions it
 sent; any other viewer sees only directions addressed to itself.
+
+### Silence inspection and notices
+
+The current local coordinator inspects silence with:
+
+```sh
+llm-bus --format agent coordination stalls PROJECT
+llm-bus --format agent coordination stalls PROJECT --threshold 1h
+llm-bus --format agent coordination stall-config PROJECT --threshold 30m
+```
+
+The default interval is 30 minutes. Both commands accept integer `m` or `h`
+durations from `1m` through `24h`. The inspection override affects only that
+read. `stall-config` persists the interval locally for this project generation;
+it survives process restarts, resets on generation replacement and never
+synchronizes to peers or changes permissions.
+
+Detection covers acknowledged, open `assign` and `review` directions sent by
+this coordinator under current enrollment, scope, grant and local policy.
+Completed, failed or cancelled work is excluded. `reprioritize` can appear in
+`direction-list --open`, but does not qualify for silence detection.
+
+The clock starts with acknowledgement and advances on a changed, accepted
+fixed-code report or an ordinary worker reply linked to the direction through
+`--reply-to`, including linked descendants. Unlinked messages, coordinator
+messages, duplicate reports, roster activity and saved task artifacts do not
+advance it. A `not_proceeding` report advances the clock once and remains open;
+it still needs the immediate linked blocker message required by `worker.md`.
+
+Inspection returns `project_id`, `generation`, `threshold_seconds`,
+`observed_at` and `items`, ordered by deadline then message ID. Known-stale
+items include the last communication time, deadline, silence age, work status,
+epoch and `notified` flag. `observation` distinguishes `local` from
+`remote_observed`. An `observation_pending` item has null time, deadline and
+age; it has no trustworthy baseline and must not be called stale. Inspection
+does not acknowledge messages, record progress, fetch remote state, apply
+decision defaults, create notices or start timers.
+
+A detached helper stores one informational notice per silence epoch in the
+coordinator's durable inbox, then attempts the existing host wake. A changed
+report or linked worker reply rearms detection for a new interval. Reading or
+acknowledging the notice, or changing the interval, does not rearm that epoch.
+The notice grants no retry, reassignment, cancellation or approval authority.
+Follow up only within current authority; silence does not prove task failure.
+
+Remote clocks use local acceptance times for admitted report revisions and
+replies, never a peer's asserted clock. They are separate from the nullable
+outgoing remote timestamps in `direction-list`. Denied or monitor-only text,
+rejected reports and replayed snapshots cannot advance them. The existing
+bridge supplies remote observations; inspection performs no network fetch.
+Unavailable reports leave the last admitted observation in place, and remote
+revocations unknown locally remain an observation limit. Recovery seeds an
+unknown historical remote baseline at reconciliation time rather than
+inventing its age. No private task file or native-child activity is observed.
+
+See `recovery.md` for delayed timers and manual wake recovery.
 
 ## Amending delegation
 
@@ -214,6 +268,14 @@ Load `memory-snapshot.md` before any memory rewrite. The coordinator keeps
 ownership of the snapshot and delegates each rewrite as that file describes.
 
 ## Scheduling
+
+Expect same-step linked blocker or decision requests and concise phase-change
+messages under the worker communication contract in `worker.md`. A fixed-code
+`report` is silent; a saved task artifact alone does not notify you. An observed
+native-child death or disconnection is relayed immediately by its main parent
+with the affected task and recovery choice. Native children never use the bus.
+These messages supply status and evidence, never approval or authority to retry
+or reassign work. The bus cannot independently detect native-child failures.
 
 Act as the default user contact for worker questions, approval requests and
 manual-action requests. Check each request against current task ownership and

@@ -1,4 +1,4 @@
-<!-- llm-bus guidance-version: 11 -->
+<!-- llm-bus guidance-version: 12 -->
 # Coordination core rules
 
 Every coordination session loads this file first, in either role. It holds the
@@ -73,7 +73,8 @@ Active workers route questions, approval requests and manual-action requests to
 their current coordinator by default, regardless of delegated capabilities.
 The coordinator asks the user, records the outcome and follows up with the
 waiting worker. Direct user instructions may override this communication
-default within their stated scope. Native subagents report only to their parent.
+default within their stated scope. Native subagents report only to their parent;
+the main parent handles bus communication, including observed child failures.
 
 Include the requesting worker's exact identity and session banner (project,
 role, label, ticket, branch, folder) from recovery data in each request and in

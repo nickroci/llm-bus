@@ -92,7 +92,7 @@ The command builds a wheel from `HEAD`, reinstalls the tool, verifies it and onl
 
 A first install or a directory install (`uv tool install .`) needs a one-time bootstrap before `upgrade` can work; see [Upgrade](../README.md#upgrade).
 
-> **Upgrade every installation together.** The first command run by a current client migrates the mailbox to schema version 13, and older binaries then refuse that mailbox. Upgrade every `llm-bus` installation that shares a mailbox before any session uses it. Upgrade the copied skill and rule files at the same time, or agents follow stale rules.
+> **Upgrade every installation together.** Database access by a current client migrates the mailbox to schema version 16, and binaries supporting earlier schemas then refuse that mailbox. Upgrade every `llm-bus` installation that shares a mailbox before any session uses it. Upgrade the copied skill and rule files at the same time, or agents follow stale rules. There is no supported in-place schema downgrade; an older binary requires an owner-approved restoration of a pre-upgrade backup.
 
 ### Teach agents when to use the bus
 
@@ -357,7 +357,48 @@ The coordinator lists directions with their state, newest first, at most 100:
 llm-bus --format agent coordination direction-list orders-export --open
 ```
 
-Each item has `message_id`, `recipient`, `operation`, `sent_at`, `acknowledged_at`, `remote_id`, `work_report` and `state_changed_at`. `state_changed_at` is the report time, or the acknowledgement time when there is no report. It is null for an unacknowledged direction and for an outgoing relay direction whose relay report has a status; a relay direction with no report yet keeps its acknowledgement time. `--open` keeps acknowledged `assign`, `review` and `reprioritize` directions that have no `completed` or `failed` report and are not cancelled. Without the flag, the list also holds unacknowledged, finished and cancelled directions. The coordinator judges each open direction's age and follows up with a `clarify` direction when one looks stalled. `coordination show` adds a `directions` list when any direction is unacknowledged or open. The coordinator sees the directions it sent; any other session sees only directions addressed to itself.
+Each item has `message_id`, `recipient`, `operation`, `sent_at`, `acknowledged_at`, `remote_id`, `work_report` and `state_changed_at`. `state_changed_at` is the report time, or the acknowledgement time when there is no report. It is null for an unacknowledged direction and for an outgoing relay direction whose relay report has a status; a relay direction with no report yet keeps its acknowledgement time. `--open` keeps acknowledged `assign`, `review` and `reprioritize` directions that have no `completed` or `failed` report and are not cancelled. Without the flag, the list also holds unacknowledged, finished and cancelled directions. Use this command for history. `coordination show` adds a `directions` list when any direction is unacknowledged or open. The coordinator sees the directions it sent; any other session sees only directions addressed to itself.
+
+Inspect silence separately, or change the local default interval:
+
+```sh
+llm-bus --format agent coordination stalls orders-export
+llm-bus --format agent coordination stalls orders-export --threshold 1h
+llm-bus --format agent coordination stall-config orders-export --threshold 30m
+```
+
+Only the current local coordinator runs these commands. The default is 30
+minutes; both thresholds accept integer `m` or `h` durations from `1m` through
+`24h`. Inspection overrides only that read. Configuration persists locally
+for the current generation and resets on replacement; peers keep their own
+settings and permissions.
+
+Silence detection covers acknowledged open `assign` and `review` directions
+under current authority, excluding cancelled, completed and failed work.
+Changed accepted reports and ordinary linked worker replies advance the clock;
+unlinked messages, duplicate reports and task artifacts do not. Send phase
+changes and immediate blocker requests with `send ... --reply-to ID` even
+after recording a fixed-code report. A blocked report advances the clock once
+but does not close the direction. Native children report through their main
+parent, and child completion is not guaranteed to wake that parent.
+
+A detached helper stores one informational notice per silence epoch and
+attempts a host wake. New accepted communication rearms the interval; reading
+the notice or changing the interval does not. The notice grants no authority
+to retry, reassign, cancel or approve work, and silence does not prove failure.
+Inspection is read-only and never fetches remote state or starts timers.
+
+Remote observations use local acceptance times from the existing bridge,
+separately from `direction-list` timestamps. Denied or monitor-only messages
+and rejected or replayed reports cannot refresh the clock. Unavailable remote
+reports leave the last admitted observation in place. An `observation_pending`
+item has null age and deadline and must not be called stale; normal recovery
+seeds an unknown historical baseline at reconciliation time. Sleep or lost
+helpers can delay notices until coordinator hook/guidance recovery or
+`coordinate orders-export`. Failed or unsupported wakes leave the durable
+notice for manual resume and inbox reading. See the
+[canonical reference](../skills/llm-bus/references/coordination/coordinator.md#silence-inspection-and-notices)
+for inspection fields and observation limits.
 
 ### Inspect, stop and replace
 
@@ -812,6 +853,7 @@ For each collaborator, you choose on your private owner page what their messages
 | Locks | `lock list [--all]`, `lock status [--all] [--shared] [NAME]`, `lock acquire NAME --check D [--describe T] [--reason T] [--new] [--ttl M] [--notify] [--shared]`, `lock release NAME [--shared] [--force --reason T]`, `lock cancel NAME [--shared]` | [4](#4-shared-resource-locks) |
 | Start or join a project | `coordinate PROJECT [--setup] [--objective T] [--beads-workspace P] [--memory-ticket ID] [--reference P] [--delegate G:B] [--auto-merge] [--owner-decisions] [--decision-defaults M]`, `join PROJECT [--narrow ITEM]` | [5](#5-coordinate-a-project), [6](#6-delegate-approval-gates) |
 | Directions | `send TO --project PROJECT --direction assign\|reprioritize\|clarify\|pause\|cancel\|review`, `report ID --status S [--reason R]` (worker, local direction), `coordination direction-list PROJECT [--open]` | [5](#5-coordinate-a-project) |
+| Silence | `coordination stalls PROJECT [--threshold 30m]`, `coordination stall-config PROJECT --threshold 30m` (current local coordinator) | [5](#5-coordinate-a-project) |
 | Project lifecycle | `coordination show\|leave PROJECT`, `coordination grant PROJECT --recipient A (--until-revoked \| --expires-at T)`, `coordination revoke PROJECT [--recipient A]`, `coordination replace PROJECT --coordinator A --generation UUID`, `coordination target PROJECT --recipient A --grant-id ID` | [5](#5-coordinate-a-project) |
 | Gates | `coordination claim`, `coordination approve`, `coordination amend` | [6](#6-delegate-approval-gates) |
 | Gate records | `coordination gate-record`, `coordination gate-accept [--admin]`, `coordination gate-reject` | [7](#7-merge-gate-records-and-auto-merge) |

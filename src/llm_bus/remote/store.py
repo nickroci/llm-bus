@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from llm_bus.coordination import stalls
 from llm_bus.diagnostics.synchronization import (
     SYNC_ERRORS,
     SYNC_READ_SECONDS,
@@ -134,10 +135,15 @@ class RemoteStore:
         return outbox.statuses(self)
 
     def set_state(self, remote_id: str, state: str) -> None:
-        return outbox.set_state(self, remote_id, state)
+        outbox.set_state(self, remote_id, state)
+        if state == "acknowledged":
+            stalls.schedule_remote(self.store, remote_id)
 
     def admit_message(self, item: Delivery, scope: str) -> tuple[str, int | None, bool] | None:
-        return admission.admit_message(self, item, scope)
+        result = admission.admit_message(self, item, scope)
+        if result is not None and result[1] is not None:
+            stalls.schedule_messages(self.store, [result[1]])
+        return result
 
     @staticmethod
     def monitor_history(

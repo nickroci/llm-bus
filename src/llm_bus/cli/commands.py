@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, cast
 from llm_bus.cli.guidance import guidance
 from llm_bus.cli.output import serialize
 from llm_bus.cli.references import resolve_reference
-from llm_bus.coordination import work_state
+from llm_bus.coordination import stalls, work_state
 from llm_bus.coordination.decisions import run_decision_timer
 from llm_bus.coordination.delivery import outgoing
 from llm_bus.errors import BusError
@@ -91,6 +91,16 @@ def _hidden_timer(store: Store, command: object, args: dict[str, object]) -> boo
     if command == "coordination" and args["action"] == "decision-timer":
         if not detach():
             run_decision_timer(store, cast("str", args["decision_id"]))
+        return True
+    if command == "coordination" and args["action"] == "stall-timer":
+        if not detach():
+            stalls.run_timer(
+                store,
+                str(args["scope"]),
+                str(args["project"]),
+                str(args["generation"]),
+                str(args["token"]),
+            )
         return True
     return False
 
@@ -246,10 +256,17 @@ def send(
 
 def _report(store: Store, args: dict[str, object], agent_address: str) -> object:
     message_id = cast("int", args["message_id"])
+    result: dict[str, object] | None = None
     with store.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
-        if not work_state.imported(db, message_id):
-            return work_state.record(db, message_id, agent_address, args["status"], args["reason"])
+        imported = work_state.imported(db, message_id)
+        if not imported:
+            result = work_state.record(
+                db, message_id, agent_address, args["status"], args["reason"]
+            )
+    if result is not None:
+        stalls.schedule_messages(store, [message_id])
+        return result
     config = require_config()
     return Reports(store, config.connection).enqueue(
         message_id, agent_address, args["status"], args["reason"]

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, cast
 
 from llm_bus.cli.guidance_files import ACTIVE as COORDINATION_ACTIVE
 from llm_bus.cli.guidance_files import RuleContext, select
-from llm_bus.coordination import decisions, delegation, instructions
+from llm_bus.coordination import decisions, delegation, instructions, stalls
 from llm_bus.coordination.authority import authorize
 from llm_bus.coordination.models import OPERATIONS, Direction
 from llm_bus.locks.service import Locks
@@ -39,15 +39,23 @@ REMOTE_GUIDANCE = (
 )
 
 
-GUIDANCE_VERSION = 11
+GUIDANCE_VERSION = 12
 WORKER_DUTIES = (
     "Before returning control, start every accepted direction that is no longer blocked. "
     "When a direction's state changes, record it with `llm-bus report ID --status STATUS` "
-    "(wakes nobody). Message the coordinator only for blockers and outcomes it must act on "
-    "or learn, with evidence, never for presence or routine progress; "
+    "(wakes nobody). When recording BLOCKED or requesting a decision, record the appropriate "
+    "fixed-code report and send one linked blocker message in the same step, before yielding "
+    "or changing tasks. Include task, exact worker/session banner, blocker, needed action and "
+    "evidence; an artifact alone is insufficient. Send concise phase-change messages with "
+    "the new phase and outcome or next dependency, linked to the direction, not heartbeats. "
+    "Immediately relay an observed native-child death/disconnection, affected task and recovery "
+    "choice through its main parent. Preserve failed delivery in task memory; use recovery rules. "
+    "Message other outcomes the coordinator must act on or learn, with evidence; "
     "a cancelled direction needs no report. "
 )
 COORDINATOR_DUTIES = (
+    "Expect same-step linked blocker/decision requests, phase changes and immediate main-parent "
+    "reports of observed native-child failures; fixed-code reports are silent. "
     "Collect worker questions, approval requests and manual-action requests; ask the user "
     "with the worker's session banner and ticket/branch, record the outcome and follow up "
     "with the worker. Route required direct consent or host actions to the exact owning "
@@ -335,6 +343,7 @@ def _enrollment(db: Connection, address: str, folder: str) -> tuple[dict[str, ob
 def _coordination(store: Store, address: str, folder: str, view: _View) -> str:
     """Serialize local references as data; never read task content or execute tools."""
     decisions.apply_for_coordinator(store, address)
+    stalls.apply_for_coordinator(store, address)
     with store.transaction() as db:
         enrolled = _enrollment(db, address, folder)
         if enrolled is None:
