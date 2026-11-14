@@ -229,6 +229,8 @@ def _replies(db: Connection, row: work_state.DirectionRow) -> list[tuple[int, st
             "FROM thread t JOIN messages m ON m.id=t.id "
             "WHERE m.id<>? AND m.sender=? AND m.recipient=? "
             "AND NOT EXISTS(SELECT 1 FROM coordination_messages c WHERE c.message_id=m.id) "
+            "AND NOT EXISTS(SELECT 1 FROM coordination_availability_events a "
+            "WHERE a.message_id=m.id) "
             "ORDER BY m.id",
             (row.message_id, row.message_id, row.message_id, row.recipient, row.sender),
         ).fetchall(),

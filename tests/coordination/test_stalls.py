@@ -30,7 +30,11 @@ from llm_bus.remote.outgoing import enqueue_remote
 from llm_bus.remote.store import RemoteStore
 from llm_bus.reports.store import Reports
 from llm_bus.routing import routing_scope
-from tests.coordination.stall_observation import assert_rejected_observations_isolated, clock_state
+from tests.coordination.stall_observation import (
+    assert_linked_availability_preserves_silence,
+    assert_rejected_observations_isolated,
+    clock_state,
+)
 from tests.coordination.test_work_state import OWNER, WORKER, relay_config, report, send
 
 if TYPE_CHECKING:
@@ -119,10 +123,13 @@ def test_stall_cli_is_read_only_and_configuration_is_local(
         assert stalls.threshold(db, project(db, routing_scope(owner.project), "demo")) == 7200
 
 
+@pytest.mark.parametrize("already_notified", [False, True])
 def test_remote_events_use_local_acceptance_and_reject_replays(
     enrolled: tuple[Store, Direction, SenderContext],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    already_notified: bool,
 ) -> None:
     # pylint: disable=too-many-locals
     store, direction, owner = enrolled
@@ -151,6 +158,9 @@ def test_remote_events_use_local_acceptance_and_reject_replays(
     envelope = remote.outgoing()[0][0]
     remote.set_state(remote_id, "acknowledged")
     assert clock_state(store, message_id)[1] == 1
+    assert_linked_availability_preserves_silence(
+        store, config, envelope, direction, already_notified=already_notified
+    )
     reports = Reports(store, config.connection)
     value = {"message_id": remote_id, "revision": 1, "status": "proceeding", "reason": "started"}
     before = datetime.now(UTC)
