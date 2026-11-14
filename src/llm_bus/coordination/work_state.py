@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 from llm_bus.errors import BusError
@@ -62,6 +63,7 @@ def record(
     db: Connection, message_id: int, recipient: str, status: object, reason: object
 ) -> dict[str, object]:
     """Record state; the caller already holds a write transaction."""
+    # pylint: disable=import-outside-toplevel,cyclic-import,clean-code-commented-out-code
     selected, why = validate_status(status, reason)
     row = cast(
         "tuple[str, str | None] | None",
@@ -92,6 +94,9 @@ def record(
         "reported_at=excluded.reported_at",
         (message_id, revision, selected, why),
     )
+    from llm_bus.coordination.stalls import observe_message  # noqa: PLC0415
+
+    observe_message(db, message_id, now=datetime.now(UTC))
     return cast("dict[str, object]", snapshot(db, message_id))
 
 

@@ -18,6 +18,7 @@ from llm_bus.coordination.models import (
     Direction,
     timestamp,
 )
+from llm_bus.coordination.stalls import observe_message
 from llm_bus.errors import BusError
 from llm_bus.hosts.sessions import is_subagent
 from llm_bus.policy.inbound import receive_mode
@@ -188,6 +189,8 @@ def admit_message(  # noqa: C901, PLR0911 - explicit transport and authority den
             (item["id"], local_id, payload),
         )
         self.store.request_dispatch(db, native)
+        if direction is None and event is None and parent_id is not None:
+            observe_message(db, local_id, now=datetime.now(UTC))
         db.execute("RELEASE availability_admission")
         return "inbox", local_id, True
 

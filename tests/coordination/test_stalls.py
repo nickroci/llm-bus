@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
 import pytest
 
+from llm_bus.cli.parser import build_parser
 from llm_bus.coordination import stalls
+from llm_bus.coordination.cli import run
 from llm_bus.coordination.store import project
 from llm_bus.errors import BusError
+from llm_bus.mailbox.models import SenderContext
 from llm_bus.mailbox.schema import SCHEMA_VERSION
 from llm_bus.mailbox.store import Store
+from llm_bus.remote.models import Delivery
 from llm_bus.remote.outgoing import enqueue_remote
 from llm_bus.remote.store import RemoteStore
+from llm_bus.reports.store import Reports
 from llm_bus.routing import routing_scope
 from tests.coordination.test_work_state import OWNER, WORKER, relay_config, report, send
 
@@ -23,13 +30,180 @@ if TYPE_CHECKING:
     from sqlite3 import Connection
 
     from llm_bus.coordination.models import Direction
-    from llm_bus.mailbox.models import SenderContext
 
 START = datetime(2026, 1, 1, tzinfo=UTC)
 DUE = START + timedelta(minutes=30)
 
 
+def clock_state(store: Store, message_id: int) -> tuple[str, int]:
+    with store.transaction() as db:
+        return cast(
+            "tuple[str, int]",
+            db.execute(
+                "SELECT last_communication_at,epoch FROM coordination_stall_state WHERE message_id=?",
+                (message_id,),
+            ).fetchone(),
+        )
+
+
+def test_admitted_local_events_and_invalid_replies(
+    enrolled: tuple[Store, Direction, SenderContext],
+) -> None:
+    store, _direction, owner = enrolled
+    message_id = send(store, owner, "assign")
+    initial = clock_state(store, message_id)
+    assert initial[1] == 1
+    store.acknowledge(WORKER, [message_id])
+    assert clock_state(store, message_id) == initial
+    report(store, message_id, "proceeding", "started")
+    reported = clock_state(store, message_id)
+    assert reported[1] == 2
+    report(store, message_id, "proceeding", "started")
+    worker = SenderContext("claude", "worker", owner.project)
+    store.send(worker, OWNER, "unlinked")
+    store.send(owner, WORKER, "coordinator reply", reply_to=message_id)
+    assert clock_state(store, message_id) == reported
+    child = store.send(worker, OWNER, "phase changed", reply_to=message_id)
+    assert clock_state(store, message_id)[1] == 3
+    store.send(worker, OWNER, "descendant", reply_to=child["id"])
+    assert clock_state(store, message_id)[1] == 4
+    store.register("codex", "other", owner.project)
+    with pytest.raises(BusError, match="participants"):
+        store.send(worker, "codex:other", "wrong", reply_to=message_id)
+    with store.transaction() as db:
+        db.execute("UPDATE messages SET sender_scope='other' WHERE id=?", (message_id,))
+    with pytest.raises(BusError, match="scope"):
+        store.send(worker, OWNER, "wrong scope", reply_to=message_id)
+    assert clock_state(store, message_id)[1] == 4
+
+
+def test_stall_cli_is_read_only_and_configuration_is_local(
+    enrolled: tuple[Store, Direction, SenderContext],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # pylint: disable=protected-access,clean-code-commented-out-code
+    store, _direction, owner = enrolled
+    send(store, owner, "assign")
+    statements: list[str] = []
+    connect = store._connect  # pyright: ignore[reportPrivateUsage]
+
+    def read_connection() -> Connection:
+        db = connect()
+        db.execute("PRAGMA query_only=ON")
+        db.set_trace_callback(statements.append)
+        return db
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("inspection must not apply decisions, fetch, wake or schedule")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_connect", read_connection)
+        patch.setattr("llm_bus.coordination.decisions.apply_due", forbidden)
+        patch.setattr("llm_bus.remote.bridge.Bridge.sync", forbidden)
+        patch.setattr("llm_bus.locks.notices.deliver", forbidden)
+        patch.setattr("llm_bus.locks.timer.spawn", forbidden)
+        args = vars(
+            build_parser().parse_args(["coordination", "stalls", "demo", "--threshold", "1m"])
+        )
+        result = run(store, args, OWNER, owner.project)
+        assert result["threshold_seconds"] == 60
+        assert result["items"] == []
+    assert not any(sql.startswith(("BEGIN", "INSERT", "UPDATE", "DELETE")) for sql in statements)
+    with store.transaction() as db:
+        before = list(db.execute("SELECT * FROM coordination_grants"))
+    args = vars(
+        build_parser().parse_args(["coordination", "stall-config", "demo", "--threshold", "2h"])
+    )
+    with pytest.raises(BusError, match="coordinator"):
+        run(store, args, WORKER, owner.project)
+    assert run(store, args, OWNER, owner.project)["threshold_seconds"] == 7200
+    with store.transaction() as db:
+        assert list(db.execute("SELECT * FROM coordination_grants")) == before
+        assert stalls.threshold(db, project(db, routing_scope(owner.project), "demo")) == 7200
+
+
+def test_remote_events_use_local_acceptance_and_reject_replays(
+    enrolled: tuple[Store, Direction, SenderContext],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # pylint: disable=too-many-locals
+    store, direction, owner = enrolled
+    config = relay_config(tmp_path)
+    repository = config.repositories[0]
+    peer = replace(repository.peers[0], receive_reports=("proceeding",))
+    config = replace(config, repositories=(replace(repository, peers=(peer,)),))
+    monkeypatch.setattr(stalls, "optional_config", lambda: config)
+    monkeypatch.setattr("llm_bus.policy.inbound.optional_config", lambda: config)
+    recipient = "b/xyz/claude:worker"
+    sent = enqueue_remote(store, config, owner, recipient, "assign", direction=direction)
+    message_id = cast("int", sent["id"])
+    remote_id = cast("str", sent["remote_id"])
+    with store.transaction() as db:
+        db.execute(
+            "INSERT INTO coordination_targets VALUES (?,?,?,?,?)",
+            (
+                repository.scope,
+                direction.project_id,
+                recipient,
+                direction.grant_id,
+                direction.generation,
+            ),
+        )
+    remote = RemoteStore(store, config.connection)
+    envelope = remote.outgoing()[0][0]
+    remote.set_state(remote_id, "acknowledged")
+    assert clock_state(store, message_id)[1] == 1
+    reports = Reports(store, config.connection)
+    value = {"message_id": remote_id, "revision": 1, "status": "proceeding", "reason": "started"}
+    before = datetime.now(UTC)
+    reports.receive(envelope, value, config)
+    observed = clock_state(store, message_id)
+    assert before <= datetime.fromisoformat(observed[0]) <= datetime.now(UTC)
+    assert observed[1] == 2
+    reports.receive(envelope, value, config)
+    with pytest.raises(BusError, match="revision"):
+        reports.receive(envelope, {**value, "revision": 0, "status": None, "reason": None}, config)
+    assert clock_state(store, message_id) == observed
+    reply = Delivery(
+        id=str(uuid4()),
+        sequence=1,
+        sender=recipient,
+        recipient="a/xyz/codex:owner",
+        repo_id="xyz",
+        body="phase changed",
+        sent_at="2099-01-01T00:00:00Z",
+        reply_to=remote_id,
+    )
+    before = datetime.now(UTC)
+    assert remote.admit_message(reply, repository.scope) is not None
+    replied = clock_state(store, message_id)
+    assert replied[1] == 3
+    assert before <= datetime.fromisoformat(replied[0]) <= datetime.now(UTC)
+    assert remote.admit_message(reply, repository.scope) is not None
+    assert clock_state(store, message_id) == replied
+    unlinked = reply.copy()
+    unlinked["id"] = str(uuid4())
+    del unlinked["reply_to"]
+    assert remote.admit_message(unlinked, repository.scope) is not None
+    assert clock_state(store, message_id) == replied
+    denied = replace(
+        config,
+        repositories=(
+            replace(
+                repository, peers=(replace(peer, receive_messages="deny", receive_reports=()),)
+            ),
+        ),
+    )
+    monkeypatch.setattr("llm_bus.policy.inbound.optional_config", lambda: denied)
+    assert remote.admit_message({**reply, "id": str(uuid4())}, repository.scope) is None
+    with pytest.raises(BusError, match="policy"):
+        reports.receive(envelope, {**value, "revision": 2}, denied)
+    assert clock_state(store, message_id) == replied
+
+
 def setup_clock(db: Connection) -> dict[str, object]:
+    db.execute("DELETE FROM coordination_stall_state")
     db.execute(
         "UPDATE messages SET acknowledged_at=? WHERE acknowledged_at IS NOT NULL",
         (START.isoformat(),),
@@ -84,6 +258,9 @@ def test_blocked_report_advances_once_and_notified_epoch_survives_config(
     report(store, message_id, "not_proceeding", "needs_approval")
     with store.transaction() as db:
         db.execute("UPDATE coordination_work_reports SET reported_at=?", (DUE.isoformat(),))
+        db.execute(
+            "UPDATE coordination_stall_state SET last_communication_at=?", (DUE.isoformat(),)
+        )
         stalls.observe(db, record, message_id, now=DUE)
         stalls.observe(db, record, message_id, now=DUE + timedelta(minutes=1))
         assert items(db, record) == []

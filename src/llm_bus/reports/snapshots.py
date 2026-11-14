@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
+from llm_bus.coordination.stalls import observe_message
 from llm_bus.errors import BusError
 from llm_bus.reports.lifecycle import TERMINAL
 from llm_bus.reports.protocol import (
@@ -129,3 +130,11 @@ def receive(self: Reports, envelope: Envelope, value: object, config: Config) ->
             "DO UPDATE SET payload=excluded.payload",
             (envelope["id"], json.dumps(report)),
         )
+        if report != previous:
+            local_id = cast(
+                "tuple[int]",
+                db.execute(
+                    "SELECT local_id FROM remote_outbox WHERE id=?", (envelope["id"],)
+                ).fetchone(),
+            )[0]
+            observe_message(db, local_id, now=datetime.now(UTC))

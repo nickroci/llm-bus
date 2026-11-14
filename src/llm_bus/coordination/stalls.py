@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
-from llm_bus.coordination import work_state
+from llm_bus.coordination import store, work_state
 from llm_bus.coordination.models import timestamp
 from llm_bus.errors import BusError
 from llm_bus.mailbox.agents import SESSION_IDLE_HOURS
@@ -303,10 +303,25 @@ def observe(db: Connection, project: dict[str, object], message_id: int, *, now:
                 row.message_id,
                 Evidence(
                     evidence.identity,
-                    now.isoformat(),
+                    evidence.at or now.isoformat(),
                     evidence.observation,
                 ),
             )
+
+
+def observe_message(db: Connection, message_id: int, *, now: datetime) -> None:
+    """Observe admitted evidence for projects in its local participant scopes."""
+    bindings = cast(
+        "list[tuple[str, str]]",
+        db.execute(
+            "SELECT scope,label FROM coordination_projects WHERE scope IN "
+            "(SELECT sender_scope FROM messages WHERE id=? UNION "
+            "SELECT recipient_scope FROM messages WHERE id=?)",
+            (message_id, message_id),
+        ).fetchall(),
+    )
+    for scope, label in bindings:
+        observe(db, store.project(db, scope, label), message_id, now=now)
 
 
 def projection(  # pylint: disable=too-many-locals

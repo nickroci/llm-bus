@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from llm_bus.coordination.delivery import persist, require_coordinator
+from llm_bus.coordination.stalls import observe_message
 from llm_bus.errors import BusError
 from llm_bus.hosts.sessions import require_main_agent
 from llm_bus.mailbox.models import MAX_MESSAGE_BYTES, address
@@ -283,3 +285,11 @@ def set_state(self: RemoteStore, remote_id: str, state: str) -> None:
                 "WHERE id=(SELECT local_id FROM remote_outbox WHERE id=?)",
                 (remote_id,),
             )
+            if acknowledged is None:
+                local_id = cast(
+                    "tuple[int]",
+                    db.execute(
+                        "SELECT local_id FROM remote_outbox WHERE id=?", (remote_id,)
+                    ).fetchone(),
+                )[0]
+                observe_message(db, local_id, now=datetime.now(UTC))
