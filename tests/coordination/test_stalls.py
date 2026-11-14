@@ -14,6 +14,7 @@ from llm_bus.errors import BusError
 from llm_bus.mailbox.schema import SCHEMA_VERSION
 from llm_bus.mailbox.store import Store
 from llm_bus.remote.outgoing import enqueue_remote
+from llm_bus.remote.store import RemoteStore
 from llm_bus.routing import routing_scope
 from tests.coordination.test_work_state import OWNER, WORKER, relay_config, report, send
 
@@ -144,6 +145,36 @@ def test_eligible_operations_cancel_terminal_and_uncapped(
         assert old not in active
 
 
+@pytest.mark.parametrize("idle_address", [OWNER, WORKER])
+def test_idle_cutoff_is_effective_without_persisting_expiry(
+    enrolled: tuple[Store, Direction, SenderContext], idle_address: str
+) -> None:
+    store, _direction, owner = enrolled
+    send(store, owner, "assign")
+    cutoff = START + timedelta(hours=24)
+    with store.transaction() as db:
+        record = setup_clock(db)
+        db.execute("UPDATE agents SET last_seen=?", (cutoff.isoformat(),))
+        db.execute(
+            "UPDATE agents SET last_seen=? WHERE address=?", (START.isoformat(), idle_address)
+        )
+        grant = cast(
+            "tuple[str]", db.execute("SELECT grant_id FROM coordination_grants").fetchone()
+        )[0]
+        db.execute("INSERT INTO coordination_session_consents VALUES (?,?,NULL)", (grant, WORKER))
+        stalls.reconcile(db, record, now=DUE)
+        before = db.total_changes
+        assert len(items(db, record, cutoff - timedelta(microseconds=1))) == 1
+        for now in (cutoff, cutoff + timedelta(microseconds=1)):
+            assert list(stalls.eligible(db, record, now=now)) == []
+            if idle_address == OWNER:
+                with pytest.raises(BusError, match="coordinator"):
+                    items(db, record, now)
+            else:
+                assert items(db, record, now) == []
+        assert db.total_changes == before
+
+
 def test_exact_grant_cancel_and_consent(enrolled: tuple[Store, Direction, SenderContext]) -> None:
     store, _direction, owner = enrolled
     message_id = send(store, owner, "assign")
@@ -197,6 +228,71 @@ def test_only_bound_worker_replies_reset_clock(
         stalls.observe(db, record, worker_reply, now=DUE)
         assert items(db, record) == []
         assert items(db, record, DUE + timedelta(minutes=30))[0]["epoch"] == 2
+
+
+@pytest.mark.parametrize("snapshot_revision", [None, 0])
+def test_remote_acknowledgment_retains_known_age_without_report(  # pylint: disable=too-many-locals
+    enrolled: tuple[Store, Direction, SenderContext],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    snapshot_revision: int | None,
+) -> None:
+    store, direction, owner = enrolled
+    config = relay_config(tmp_path)
+    recipient = "b/xyz/claude:worker"
+    sent = enqueue_remote(store, config, owner, recipient, "assign", direction=direction)
+    remote = RemoteStore(store, config.connection)
+    remote_id = str(sent["remote_id"])
+    remote.set_state(remote_id, "acknowledged")
+    monkeypatch.setattr(stalls, "optional_config", lambda: config)
+    with store.transaction() as db:
+        record = project(db, routing_scope(owner.project), "demo")
+        db.execute(
+            "INSERT INTO coordination_targets VALUES (?,?,?,?,?)",
+            (
+                record["scope"],
+                direction.project_id,
+                recipient,
+                direction.grant_id,
+                direction.generation,
+            ),
+        )
+        if snapshot_revision is not None:
+            db.execute(
+                "INSERT INTO remote_reports VALUES (?,?)",
+                (
+                    remote_id,
+                    json.dumps(
+                        {"message_id": remote_id, "revision": 0, "status": None, "reason": None}
+                    ),
+                ),
+            )
+        acknowledged = cast(
+            "str",
+            db.execute("SELECT acknowledged_at FROM messages WHERE id=?", (sent["id"],)).fetchone()[
+                0
+            ],
+        )
+        recovered_at = datetime.fromisoformat(acknowledged) + timedelta(hours=2)
+        before = db.total_changes
+        found = items(db, record, recovered_at)
+        assert len(found) == 1
+        item = found[0]
+        assert item["last_communication_at"] == acknowledged
+        assert (
+            item["due_at"]
+            == (datetime.fromisoformat(acknowledged) + timedelta(minutes=30)).isoformat()
+        )
+        assert item["silence_seconds"] == 7200
+        assert item["observation"] == "remote_observed"
+        assert db.total_changes == before
+        stalls.reconcile(db, record, now=recovered_at)
+        assert items(db, record, recovered_at) == found
+    remote.set_state(remote_id, "acknowledged")
+    with store.transaction() as db:
+        stalls.reconcile(db, record, now=recovered_at + timedelta(minutes=5))
+        assert items(db, record, recovered_at)[0]["last_communication_at"] == acknowledged
+        assert items(db, record, recovered_at)[0]["epoch"] == 1
 
 
 def test_remote_pending_recovery_and_snapshot_idempotency(

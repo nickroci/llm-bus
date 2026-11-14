@@ -9,12 +9,13 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from llm_bus.coordination import work_state
 from llm_bus.coordination.models import timestamp
 from llm_bus.errors import BusError
+from llm_bus.mailbox.agents import SESSION_IDLE_HOURS
 from llm_bus.policy.config import optional_config
 
 if TYPE_CHECKING:
@@ -68,20 +69,27 @@ def _binding(project: dict[str, object]) -> tuple[object, object, object]:
     return project["scope"], project["project_id"], project["generation"]
 
 
-def require_coordinator(db: Connection, project: dict[str, object], address: str) -> None:
+def require_coordinator(
+    db: Connection, project: dict[str, object], address: str, *, now: datetime | None = None
+) -> None:
     """Check current local enrollment without lazily expiring or updating sessions."""
-    if (
-        "/" in address
-        or db.execute(
-            "SELECT 1 FROM coordination_projects p JOIN coordination_enrollments e "
+    observed_at = datetime.now(UTC) if now is None else now
+    session = cast(
+        "tuple[str] | None",
+        db.execute(
+            "SELECT a.last_seen FROM coordination_projects p JOIN coordination_enrollments e "
             "ON e.scope=p.scope AND e.project_id=p.project_id AND e.generation=p.generation "
             "JOIN agents a ON a.address=e.address "
             "WHERE p.scope=? AND p.project_id=? AND p.generation=? AND p.revoked_at IS NULL "
             "AND p.coordinator=? AND e.address=? AND e.role='coordinator' "
             "AND a.scope=p.scope AND a.ended_at IS NULL",
             (*_binding(project), address, address),
-        ).fetchone()
-        is None
+        ).fetchone(),
+    )
+    if (
+        "/" in address
+        or session is None
+        or timestamp(session[0]) <= observed_at - timedelta(hours=SESSION_IDLE_HOURS)
     ):
         raise BusError("Stall inspection requires current local coordinator enrollment")
 
@@ -121,9 +129,9 @@ def _local_grant(
     db: Connection, project: dict[str, object], row: work_state.DirectionRow, now: datetime
 ) -> bool:
     grant = cast(
-        "tuple[str, str | None] | None",
+        "tuple[str, str | None, str] | None",
         db.execute(
-            "SELECT g.operations_json,g.expires_at FROM coordination_grants g "
+            "SELECT g.operations_json,g.expires_at,a.last_seen FROM coordination_grants g "
             "JOIN coordination_enrollments e ON e.scope=g.scope AND e.project_id=g.project_id "
             "AND e.address=g.recipient AND e.generation=g.generation "
             "JOIN agents a ON a.address=g.recipient "
@@ -139,11 +147,13 @@ def _local_grant(
     )
     if grant is None:
         return False
-    operations = cast("object", json.loads(grant[0]))
+    operations_json, expires_at, last_seen = grant
+    operations = cast("object", json.loads(operations_json))
     return (
         isinstance(operations, list)
         and row.operation in operations
-        and (grant[1] is None or timestamp(grant[1]) > now)
+        and (expires_at is None or timestamp(expires_at) > now)
+        and timestamp(last_seen) > now - timedelta(hours=SESSION_IDLE_HOURS)
     )
 
 
@@ -175,7 +185,7 @@ def eligible(
     """Uncapped current sender projection; targets never assert remote receiver consent."""
     address = str(project["coordinator"])
     try:
-        require_coordinator(db, project, address)
+        require_coordinator(db, project, address, now=now)
     except BusError:
         return
     for row, report, is_open, _cancelled in work_state.direction_states(
@@ -228,16 +238,16 @@ def _evidence(
     db: Connection, row: work_state.DirectionRow, report: dict[str, object] | None
 ) -> Evidence:
     replies = _replies(db, row)
-    revision = report["revision"] if report else 0
+    revision = cast("int", report["revision"]) if report else 0
     identity = json.dumps([row.acked, revision, replies[-1][0] if replies else None])
-    remote = row.outbox_id is not None or any(reply[2] for reply in replies)
-    if remote:
+    remote = row.outbox_id is not None
+    if (remote and (revision > 0 or bool(replies))) or any(reply[2] for reply in replies):
         return Evidence(identity, None, "remote_observed")
     clocks = [cast("str", row.acked)]
-    if report is not None:
+    if report is not None and not remote:
         clocks.append(cast("str", report["reported_at"]))
     clocks.extend(reply[1] for reply in replies)
-    return Evidence(identity, max(clocks, key=timestamp), "local")
+    return Evidence(identity, max(clocks, key=timestamp), "remote_observed" if remote else "local")
 
 
 def _state(
@@ -308,7 +318,7 @@ def projection(  # pylint: disable=too-many-locals
     threshold_seconds: int | None = None,
 ) -> dict[str, object]:
     """Read all eligible clocks, including future deadlines, without changing state."""
-    require_coordinator(db, project, address)
+    require_coordinator(db, project, address, now=now)
     seconds = threshold(db, project) if threshold_seconds is None else threshold_seconds
     if isinstance(seconds, bool) or not MIN_THRESHOLD_SECONDS <= seconds <= MAX_THRESHOLD_SECONDS:
         raise BusError("Threshold must be from 1m through 24h")
