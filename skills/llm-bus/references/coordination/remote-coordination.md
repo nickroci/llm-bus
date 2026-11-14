@@ -9,6 +9,13 @@ remote addresses get no decision notices and cannot be a `--worker`. Remote gate
 approvals exist (below). The roles the bus enforces on the receiver are in
 `core.md`.
 
+Workers still route questions, approvals and manual-action requests through the
+current coordinator. Local decision records do not become remotely acceptable
+through this route. For unsupported decisions or required local consent, the
+coordinator asks the appropriate machine owner to act in the exact owning
+session or machine. Preserve the blocker until the worker verifies its existing
+requirements; never expand either endpoint's permissions to deliver a request.
+
 Each owner independently configures relay repository admission, matching shared
 repository ID, sender text permission, receiver `inbox` permission and running
 bridges; see [../remote.md](../remote.md). Remote coordination also requires version 1

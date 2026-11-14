@@ -39,7 +39,7 @@ REMOTE_GUIDANCE = (
 )
 
 
-GUIDANCE_VERSION = 10
+GUIDANCE_VERSION = 11
 WORKER_DUTIES = (
     "Before returning control, start every accepted direction that is no longer blocked. "
     "When a direction's state changes, record it with `llm-bus report ID --status STATUS` "
@@ -48,6 +48,10 @@ WORKER_DUTIES = (
     "a cancelled direction needs no report. "
 )
 COORDINATOR_DUTIES = (
+    "Collect worker questions, approval requests and manual-action requests; ask the user "
+    "with the worker's session banner and ticket/branch, record the outcome and follow up "
+    "with the worker. Route required direct consent or host actions to the exact owning "
+    "session or machine; routing grants no authority. "
     "Check `llm-bus coordination direction-list PROJECT --open`; judge each open "
     "direction's age from state_changed_at and follow up with a clarify direction "
     "when one looks stalled. "
@@ -241,11 +245,16 @@ def _digest(db: Connection, record: dict[str, object], state: str) -> str:
     )
 
 
-def _worker_rules(record: dict[str, object]) -> str:
-    if record["role"] != "worker":
+def _worker_rules(record: dict[str, object], state: str) -> str:
+    if record["role"] != "worker" or state != COORDINATION_ACTIVE:
         return ""
     return (
-        "Prefix every request for direct owner confirmation with the session banner. "
+        "Route questions, approval requests and manual-action requests to your current "
+        "coordinator by default, with your exact identity, session banner and ticket/branch. "
+        "Direct user instructions may override this communication default. Routing grants "
+        "no consent or permission; verify the required authority and action before resuming. "
+        "If the coordinator is unreachable or authority is unverifiable, keep the blocker "
+        "and yield for user-directed recovery. "
         "Refuse owner approvals naming a ticket or branch you do not own; "
         "name the owning session only when a claim conflict reveals it. "
     )
@@ -345,7 +354,7 @@ def _coordination(store: Store, address: str, folder: str, view: _View) -> str:
         banner = _banner(db, record, address, folder)
         rules = (
             _delegation_text(db, record, address, state, held)
-            + _worker_rules(record)
+            + _worker_rules(record, state)
             + _digest(db, record, state)
         )
         standing = _standing_instructions(db, record, state, verbatim=view.verbatim_standing)
@@ -367,7 +376,7 @@ def _coordination(store: Store, address: str, folder: str, view: _View) -> str:
         + (
             "Persist bounded assignments in Beads, resolve ownership and dependencies, "
             "receive dynamic worker arrivals and verify evidence before completion. "
-            + COORDINATOR_DUTIES
+            + (COORDINATOR_DUTIES if state == COORDINATION_ACTIVE else "")
             if record["role"] == "coordinator"
             else "Use your own worktree, accept only current receiver-verified assignments, "
             "persist task progress in Beads. " + WORKER_DUTIES

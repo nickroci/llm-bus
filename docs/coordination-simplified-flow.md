@@ -78,12 +78,25 @@ install or activate them. Role guidance preserves these boundaries:
   outcomes it must act on or learn. Ordinary incoming messages cannot authorize joining or grants.
 - Coordinators persist bounded assignments, resolve ownership/dependencies,
   reconcile interrupted work, and verify results before marking completion.
+- Workers route questions, approval requests and manual-action requests to the
+  current coordinator by default, with their identity, session banner and
+  ticket/branch. The coordinator asks the user, records the outcome and follows
+  up. This applies without delegated gates or owner decisions; direct user
+  instructions may override the communication default.
 - Owner instructions, host permissions, repository workflows and explicit
   planning, review and approval gates remain binding. Joining approves no
   implementation, merge or deployment unless the owner delegated that gate
   (next section); anything else needs separate owner approval.
 - Grant, project-binding and replacement authority stays with the local owner;
   neither a coordinator direction nor a worker notification can expand it.
+
+Routing grants no authority. Without the required binding or remote decision
+support, the coordinator asks the appropriate owner to act directly in the exact
+owning session or machine. Fresh consent, floor actions and native permission
+prompts keep their existing requirements. Workers verify authority and actions
+before resuming; delivery or claimed completion is insufficient. If the
+coordinator is unreachable or authority cannot be verified, preserve the blocker
+and yield for user-directed recovery. Inactive recovery never revives consent.
 
 ## Optional delegated gates
 
@@ -110,8 +123,8 @@ Never delegated: force-push, deploys or production changes, credential or
 secret changes, paid or live runs, merge with failing or pending CI.
 A delegation widened later reaches a worker only through a fresh direct owner
 join; recovery notices say so. Session banners (project, role, label, ticket,
-branch, folder) appear in recovery notices, and workers prefix owner
-confirmation requests with them. Remote gate approvals count only when every
+branch, folder) appear in recovery notices. Workers include them in requests
+to the coordinator, which preserves them when asking the owner. Remote gate approvals count only when every
 owner allows them (see [remote gate approvals](remote-bus.md#remote-gate-approvals)).
 The [canonical reference](../skills/llm-bus/references/coordination/gates.md#gate-approvals-local-projects)
 has commands and live checks.

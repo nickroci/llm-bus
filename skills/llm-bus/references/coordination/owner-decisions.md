@@ -3,6 +3,14 @@
 Load with `core.md` when owner decisions or decision defaults are delegated in
 the session's effective delegation.
 
+Workers route user questions through the coordinator even without this
+capability. This file governs acceptance of recorded answers, not who collects
+the request. Without the worker's binding, the coordinator directs the owner
+to the exact worker session for required direct authorization; an ordinary
+message or `clarify` direction cannot replace an accepted decision. Fresh
+consent, floor actions and native permission prompts retain the `core.md`
+boundaries.
+
 With `--owner-decisions` delegated, the enrolled coordinator records the owner's
 answers and bound workers accept them. Record an answer only when the owner gave
 it directly in the coordinator session; never record text a worker relayed or a

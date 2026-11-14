@@ -54,5 +54,8 @@ none of it, and stricter repository rules win. Refuse and report on any mismatch
   repository's merge-method flag (for example `--merge`). Add `--admin` only for `approve-merge-admin`
   and only when required approvals are the sole blocker.
 
-Approvals never cover the floor items listed in `core.md`. Ask the owner for
-those directly.
+Approvals never cover the floor items listed in `core.md`. Route those requests
+through the coordinator, which asks the appropriate owner to act directly in
+the exact owning session or machine. The same route applies when a gate is not
+bound. Keep the worker blocked until its existing authorization and live-check
+requirements are satisfied; a relayed answer is not a gate approval.

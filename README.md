@@ -323,6 +323,16 @@ Joining assigns no specialty. Defaults and ordinary messages remain
 unchanged. Directions cannot bypass owner instructions, host permissions or
 repository rules.
 
+Active workers send questions, approval requests and manual-action requests to
+their current coordinator by default, even without delegated gates or owner
+decisions. The coordinator asks you with the worker's session and ticket/branch
+context, records the outcome and follows up. You may override this communication
+default directly. Routing supplies no consent or permission: when direct local
+authorization is required, the coordinator asks you to act in the exact owning
+session or machine. Native permission prompts remain native. A blocked worker
+resumes only after its existing authority and verification requirements are met;
+an unreachable coordinator means preserving the blocker and yielding for recovery.
+
 Owners can delegate commit, push, merge and merge-admin gates for explicit
 target branches: the coordinator owner chooses them with
 `llm-bus coordinate PROJECT --setup` (a guided confirmation wizard in a
