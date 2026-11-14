@@ -1,11 +1,12 @@
 # Project State
 
-Last activity: 2026-11-14 - 261114-cua final PR #89 review and reviewed-head CI passed; premerge summary prepared; tracking validation, current-head CI and merge remain pending.
+Last activity: 2026-11-14 - Registered coordination blocker reporting and stall detection (stalls-v1); sequential T1–T5 implementation pending.
 
 ## Registered Work
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261114-s7n | Coordination blocker reporting and stall detection | Registered | [261114-s7n-coordination-blocker-reporting-and-stall](./quick/261114-s7n-coordination-blocker-reporting-and-stall/) |
 
 ## Quick Tasks Completed
 
