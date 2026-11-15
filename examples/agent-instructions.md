@@ -19,14 +19,14 @@ so no old copy stays loaded.
 ## 1. Set up the machine
 
 Do this once per machine, as the operating-system user who runs the agents.
-[Install and verify](../README.md#install-and-verify) explains each step.
+[Install and verify](../docs/installation.md#install-and-verify) explains each step.
 
 1. Install the CLI from a clone of this repository: `uv tool install .`
-   For [collaboration with another person](../README.md#collaborate-with-another-person-experimental),
+   For [collaboration with another person](../docs/collaboration.md),
    use `uv tool install --force '.[collab]'` instead.
    Later updates use `uv run llm-bus upgrade`, which cannot restore a
    directory install; before the first upgrade, run the one-time bootstrap in
-   [Upgrade](../README.md#upgrade).
+   [Upgrade](../docs/installation.md#upgrade).
 2. Close Codex and Claude Code, then install the host hooks: `llm-bus install`.
    It adds user-level `SessionStart`, `UserPromptSubmit` and `SessionEnd`
    hooks to `hooks.json` in the Codex home and `settings.json` in the Claude
@@ -44,7 +44,7 @@ Do this once per machine, as the operating-system user who runs the agents.
    `prefix_rule(pattern=["llm-bus"], decision="allow")` to a
    `~/.codex/rules/*.rules` file, or a `writable_roots` entry (in the
    `[sandbox_workspace_write]` table of `config.toml`) for the mailbox
-   folder; see [Storage and permissions](../README.md#storage-and-permissions).
+   folder; see [Storage and permissions](../docs/installation.md#storage-and-permissions).
 4. Restart Claude Code (v2.1.224 or later for automatic wakes through its
    inbox socket). For wakes without a per-message approval dialog, set
    **Messages from your other sessions: accept** in `/config`, or
@@ -61,7 +61,7 @@ Do this once per machine, as the operating-system user who runs the agents.
    messaging and required for remote messaging, collaboration and
    coordination, which the rule files delegate to its references.
 7. Remote messaging only: configure the relay and run `llm-bus bridge` on both
-   machines, as described in [Cross-machine messaging](../README.md#cross-machine-messaging).
+   machines, as described in [Cross-machine messaging](../docs/remote-bus.md).
 8. Coordination only: install the official Beads skill and `bd` CLI, and make
    sure the project already has a readable Beads workspace and memory ticket.
    Nothing here initializes Beads.
@@ -161,7 +161,7 @@ first.
 ## Update or remove
 
 To update, run `uv run llm-bus upgrade` from a clean checkout of the new
-version (see [Upgrade](../README.md#upgrade)), close both hosts, rerun
+version (see [Upgrade](../docs/installation.md#upgrade)), close both hosts, rerun
 `llm-bus install`, copy the new skill directory and rule files over the old
 ones, and replace the pointer block between its markers. Upgrade all of them
 together; mixed versions can disagree. Restart any running `llm-bus bridge`
