@@ -2,7 +2,10 @@
 
 This tutorial walks you, the person who runs Claude Code and Codex agents, through every way you can configure and use `llm-bus`. It starts with one machine and two agents, then adds shared-resource locks, coordinated projects, delegated approvals, owner decisions and finally other machines. Each chapter states its goal, gives the exact commands, shows the shape of the output and tells you what to check.
 
-The [README](../README.md) remains the reference for local installation and behaviour, and the [remote guide](remote-bus.md) remains the operator guide for the relay. This tutorial links to them for detail instead of repeating it.
+The [README](../README.md) introduces the project and its quick start. The
+[installation guide](installation.md) and [local messaging guide](local-messaging.md)
+hold the detailed local reference; the [remote guide](remote-bus.md) covers relay
+operations. This tutorial links to those guides for detail.
 
 - [1. Concepts](#1-concepts)
 - [2. Install, upgrade and verify](#2-install-upgrade-and-verify)
@@ -73,7 +76,7 @@ The first command installs the `llm-bus` tool. The second adds user-level `Sessi
 {"address": "claude:11111111-aaaa", "label": null}
 ```
 
-If your shell cannot find `llm-bus`, run `uv tool update-shell` and open a new shell. Custom host homes (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`), hook exit code 127 and the Claude inbound-message setting are covered in [Install and verify](../README.md#install-and-verify) and [Wake behavior](../README.md#wake-behavior).
+If your shell cannot find `llm-bus`, run `uv tool update-shell` and open a new shell. Custom host homes (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`), hook exit code 127 and the Claude inbound-message setting are covered in [Install and verify](installation.md#install-and-verify) and [Wake behavior](local-messaging.md#wake-behavior).
 
 ### Upgrade
 
@@ -90,7 +93,7 @@ The command builds a wheel from `HEAD`, reinstalls the tool, verifies it and onl
 3. Restart the agents.
 4. Restart any running `llm-bus bridge` and check its log.
 
-A first install or a directory install (`uv tool install .`) needs a one-time bootstrap before `upgrade` can work; see [Upgrade](../README.md#upgrade).
+A first install or a directory install (`uv tool install .`) needs a one-time bootstrap before `upgrade` can work; see [Upgrade](installation.md#upgrade).
 
 > **Upgrade every installation together.** Database access by a current client migrates the mailbox to schema version 16, and binaries supporting earlier schemas then refuse that mailbox. Upgrade every `llm-bus` installation that shares a mailbox before any session uses it. Upgrade the copied skill and rule files at the same time, or agents follow stale rules. There is no supported in-place schema downgrade; an older binary requires an owner-approved restoration of a pre-upgrade backup.
 
@@ -158,7 +161,7 @@ llm-bus ack 1
 | `unknown` | The request timed out; the host may still have received it. |
 | `unsupported` | No automatic wake; the recipient's hook reports the message on its next turn. |
 
-In every case the message is stored, so do not resend it. The scratch run reports `unsupported` because fake sessions have no Claude inbox socket; a real Claude Code session with a registered inbox socket can report `requested`. Codex wakes through `codex queue --resume`. [Wake behavior](../README.md#wake-behavior) explains the host requirements.
+In every case the message is stored, so do not resend it. The scratch run reports `unsupported` because fake sessions have no Claude inbox socket; a real Claude Code session with a registered inbox socket can report `requested`. Codex wakes through `codex queue --resume`. [Wake behavior](local-messaging.md#wake-behavior) explains the host requirements.
 
 ### Reply in a thread and read history
 
@@ -178,7 +181,7 @@ llm-bus history --conversation 1 --peer claude:22222222-bbbb
 llm-bus status 1
 ```
 
-`history` returns at most 100 messages per call, newest first; use `--after ID` to poll for newer ones. `status MESSAGE_ID` prints body-free diagnostics for one message: transport state, wake result, acknowledgement time and synchronization data. See [Browse message history](../README.md#browse-message-history) for all filters and the Herdr viewer.
+`history` returns at most 100 messages per call, newest first; use `--after ID` to poll for newer ones. `status MESSAGE_ID` prints body-free diagnostics for one message: transport state, wake result, acknowledgement time and synchronization data. See [Browse message history](local-messaging.md#browse-message-history) for all filters and the Herdr viewer.
 
 ### Recover guidance after compaction
 
@@ -816,7 +819,7 @@ llm-bus collab send COLLABORATOR_GITHUB_USER
 llm-bus collab status
 ```
 
-For each collaborator, you choose on your private owner page what their messages may cause on your machine: `monitor`, `isolated`, `readonly`, `readwrite` or `full`. Below `full`, unsolicited text from them never reaches your main agent automatically. If you enable agent answers for a peer, the first reply to each question your agent sent is delivered to it, labeled untrusted. The setup steps, modes and threat model are in [Collaborate with another person](../README.md#collaborate-with-another-person-experimental), the [collaboration plan](collab-plan.md) and the [collab skill reference](../skills/llm-bus/references/collab.md).
+For each collaborator, you choose on your private owner page what their messages may cause on your machine: `monitor`, `isolated`, `readonly`, `readwrite` or `full`. Below `full`, unsolicited text from them never reaches your main agent automatically. If you enable agent answers for a peer, the first reply to each question your agent sent is delivered to it, labeled untrusted. The setup steps, modes and threat model are in [Collaborate with another person](collaboration.md), the [collaboration plan](collab-plan.md) and the [collab skill reference](../skills/llm-bus/references/collab.md).
 
 ## 12. Configuration reference
 
@@ -884,7 +887,7 @@ Run `llm-bus COMMAND --help` for the exact syntax installed on your machine.
 | `accept_delegated_gates needs receive_messages = "inbox"` | Gates were accepted from a peer whose text is denied or monitored. |
 | `This mailbox is bound to another relay/machine; use another LLM_BUS_DB` | The relay URL or machine ID changed. Use a separate mailbox for the new identity. |
 | Remote message stuck in `queued_local` with `unsupported_reply_link`, `unsupported_coordination`, `unsupported_availability` or `unsupported_approvals` | The relay or a client is too old. Upgrade it; do not resend without the metadata. |
-| Hook exits with code 127 | The hook cannot find `llm-bus`. See [Install and verify](../README.md#install-and-verify). |
+| Hook exits with code 127 | The hook cannot find `llm-bus`. See [Install and verify](installation.md#install-and-verify). |
 
 ### Safety rules worth repeating
 
@@ -916,4 +919,4 @@ These limits come from the current implementation:
 - **Gate records do not compare the recipient with the submitter.** Today only `gate-accept` creates record-bound approvals, and it always addresses the submitter.
 - **Locks are advisory and local.** A session that never calls `acquire` is not stopped, and locks do not cross machines.
 
-To remove the bus, revoke coordination grants first, then follow [Uninstall](../README.md#uninstall).
+To remove the bus, revoke coordination grants first, then follow [Uninstall](installation.md#uninstall).
