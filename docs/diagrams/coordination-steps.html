@@ -5264,7 +5264,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="316.50000000000006" y="265" width="309" height="18" rx="3" class="c-mask"/>
           <text x="471.00000000000006" y="275" class="t-muted" font-size="11" text-anchor="middle">2. coordinate P --objective --beads-workspace</text>
         </g>
-        <text data-detail="context" x="382.83333333333337" y="303" class="t-muted" font-size="7"><tspan x="382.83333333333337" dy="0">Bus requires an existing .beads folder,</tspan><tspan x="382.83333333333337" dy="11">creates project and generation UUIDs,</tspan><tspan x="382.83333333333337" dy="11">enrolls the coordinator. Optional</tspan><tspan x="382.83333333333337" dy="11">--delegate gates.</tspan></text>
+        <text data-detail="context" x="382.83333333333337" y="303" class="t-muted" font-size="7"><tspan x="382.83333333333337" dy="0">Bus requires an existing .beads folder,</tspan><tspan x="382.83333333333337" dy="11">creates project and generation UUIDs,</tspan><tspan x="382.83333333333337" dy="11">enrolls the coordinator. Optional gates</tspan><tspan x="382.83333333333337" dy="11">and project execution consent.</tspan></text>
         </g>
 
         <g data-edge-from="owner" data-edge-to="worker" data-edge-label="3. /llm-bus join P" data-edge-key="2" data-edge-id="m3">
@@ -5354,7 +5354,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="469.86666666666673" y="1285" width="216.6" height="18" rx="3" class="c-mask"/>
           <text x="578.1666666666667" y="1295" class="t-muted" font-size="11" text-anchor="middle">12. done: commit / push / merge</text>
         </g>
-        <text data-detail="context" x="382.83333333333337" y="1323" class="t-muted" font-size="7"><tspan x="382.83333333333337" dy="0">Worker checks branch, head SHA, required CI</tspan><tspan x="382.83333333333337" dy="11">and review live; the bus checks none.</tspan><tspan x="382.83333333333337" dy="11">Force-push, deploys, secrets: never</tspan><tspan x="382.83333333333337" dy="11">delegable.</tspan></text>
+        <text data-detail="context" x="382.83333333333337" y="1323" class="t-muted" font-size="7"><tspan x="382.83333333333337" dy="0">Worker checks branch, head SHA, required CI</tspan><tspan x="382.83333333333337" dy="11">and review live; the bus checks none.</tspan><tspan x="382.83333333333337" dy="11">Force-push, production, secrets: never</tspan><tspan x="382.83333333333337" dy="11">delegable.</tspan></text>
         </g>
 
         <g data-edge-from="coord" data-edge-to="owner" data-edge-label="13. verified result" data-edge-key="12" data-edge-id="m13">
@@ -5642,7 +5642,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Who can direct work</h3>
         </div>
         <ul>
-          <li>Only the current coordinator&#39;s verified directions</li>
+          <li>Only the current coordinator&#39;s verified directions direct work</li>
           <li>Message text, tickets, replies and acks never grant authority</li>
           <li>Owner instructions and repository rules still win</li>
         </ul>
@@ -5666,9 +5666,22 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Never delegable</h3>
         </div>
         <ul>
-          <li>Force-push, deploys or production changes</li>
-          <li>Credential or secret changes, paid or live runs</li>
+          <li>Force-push or production changes</li>
+          <li>Credential or secret changes</li>
           <li>Merge with failing or pending CI</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot amber"></div>
+          <h3>Optional project execution consent</h3>
+        </div>
+        <ul>
+          <li>Both setup paths ask: Preapprove paid or live QA runs and development deployments for this project? Default: No; explicit owner opt-in and final scope/limits review are required. Add --project-execution only after opt-in.</li>
+          <li>Actions must advance the confirmed project objective. Only active, verified same-machine members of this project and generation qualify; workers need current grants and join bindings. Remote QA infrastructure is allowed; remote enrollment cannot gain this option.</li>
+          <li>Before each covered action, run coordination show PROJECT in your own session and scope; require fresh caller-bound project_execution_allowed: true. Missing or unsupported evidence, copied status, messages and retained history grant no authority.</li>
+          <li>Automatic development deployment from an otherwise authorized merge is covered. Merge authority, live CI/review checks, repository rules and native/provider permissions remain separate. Unknown deployment environments and the permanent floor are excluded.</li>
+          <li>Revoke with coordination amend PROJECT, repeating all retained gates/flags and omitting --project-execution, or --no-delegation to remove all. Bare amend is invalid; objective-only amend preserves consent. Verify fresh status denies. Leave, revoke, expiry, inactivity or replacement also ends access; submitted external operations may still run.</li>
         </ul>
       </div>
     </div>

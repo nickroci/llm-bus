@@ -104,8 +104,9 @@ def test_project_without_delegation_unchanged(
         assert direction["reason"] == "verified"
 
     shown = cast("dict[str, object]", run(owner, "coordination", "show", "demo"))
-    # The unacknowledged directions sent above are the only addition to the legacy keys.
-    assert set(shown) == SHOW_KEYS | {"directions"}
+    # Revision 2 adds caller-bound execution status alongside unacknowledged directions.
+    assert set(shown) == SHOW_KEYS | {"directions", "project_execution_allowed"}
+    assert shown["project_execution_allowed"] is False
 
     run(worker, "join", "demo")
     assert grants() == [grant]

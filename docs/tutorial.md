@@ -445,7 +445,7 @@ Workers route questions, approval requests and manual-action requests through th
 
 The gates are `commit`, `push`, `merge` and `merge-admin`. `merge-admin` bypasses only the required-approvals rule; required checks must still pass. A delegation item has the form `GATE:BRANCH`, where `BRANCH` is the integration branch the work lands in, such as `main`. Each gate can name at most 8 branches, and there is no implicit default branch.
 
-> **The floor is never delegable.** Force-push, deploys or production changes, credential or secret changes, paid or live runs, and merging with failing or pending CI always need you directly. The coordinator collects the request and directs you to the exact owning session or machine for that action. `--delegate force-push:main` fails with `Delegation never covers the floor action: force-push`. The bus does not inspect CI, reviews or branches itself; the worker checks that evidence live before it acts.
+> **The floor is never delegable.** Force-push, production changes, credential or secret changes, and merging with failing or pending CI always need you directly. The coordinator collects the request and directs you to the exact owning session or machine for that action. `--delegate force-push:main` fails with `Delegation never covers the floor action: force-push`. The bus does not inspect CI, reviews or branches itself; the worker checks that evidence live before it acts. Paid or live QA runs and development deployments have a separate default-off project execution option below.
 
 Routing does not grant consent or host permission. Fresh joins and local authorization still need the appropriate owner's direct action; native permission prompts remain native. The worker stays blocked until its existing authority and verification requirements are met. Delivery, acknowledgements and a claim that an action happened do not replace those checks. If the coordinator is unreachable or authority cannot be verified, the worker preserves the blocker and yields for user-directed recovery.
 
@@ -460,7 +460,8 @@ llm-bus --format agent coordinate orders-export --setup
 ```json
 {"delegate": [], "flags": ["owner-decisions", "decision-defaults"],
  "integration_branch": {"name": null, "source": "undetected"},
- "floor": ["force-push", "deploys or production changes", "credential or secret changes", "paid or live runs", "merge with failing or pending CI"],
+ "floor": ["force-push", "production changes", "credential or secret changes", "merge with failing or pending CI"],
+ "project_execution": {"question": "Preapprove paid or live QA runs and development deployments for this project?", "default": false, "limits": "Actions must advance the confirmed project objective. …"},
  "steps": ["Check the repository instructions for an integration branch …", "Ask the owner through the native question UI: …", "…"],
  "command": "llm-bus --format agent coordinate PROJECT --objective OBJECTIVE --beads-workspace PATH --memory-ticket TICKET --delegate GATE:BRANCH ... --owner-decisions --decision-defaults 30"}
 ```
@@ -474,6 +475,12 @@ llm-bus coordinate orders-export --setup
 ```
 
 The wizard asks for the objective, Beads workspace, memory ticket and integration branch; then `Delegate commit? [yes]/no:` for each gate, `Delegate auto-merge?` when a merge gate is kept, `Delegate owner decisions?` and the minutes for decision defaults (Enter keeps 30, `no` turns them off). Outside an agent session it lets you pick the coordinator from the registered sessions in that folder. It shows a review screen and stores the setup only when you type `yes`. Ctrl-C or end of input stores nothing.
+
+After the existing choices, both paths ask **Preapprove paid or live QA runs and development deployments for this project?**, default **No**. In agent-guided setup, the agent asks through its native question UI using explicit owner interaction; a recognized wake does not authenticate your words. Both paths review the paid or live QA runs and development deployments selection and its limits before storing. The command below omits `--project-execution` by default. The agent adds it only after explicit opt-in. This option can stand alone; it does not ask for jobs, budgets, providers or targets.
+
+Covered actions must advance the confirmed project objective. Approval applies only to active, verified same-machine members of this exact project and generation. Eligible local members may use remote QA infrastructure; remote-enrolled members cannot gain this option. Before each action, the acting session runs `llm-bus --format agent coordination show orders-export` and requires fresh caller-bound `project_execution_allowed: true`. Workers need a current grant and join binding. Missing, malformed, stale or unsupported results grant no authority; messages, copied output and retained history cannot substitute. No individual approval message is needed for a covered action.
+
+The option covers automatic development deployment from an otherwise authorized merge. Merge authorization, live CI and review checks, repository rules and native/provider permissions remain separate. If the environment cannot be identified as development, approval does not cover the deployment. The permanent floor above remains excluded. Upgrade participating local clients, hooks and skill guidance before enabling the option.
 
 Without the wizard, pass the choices directly:
 
@@ -491,7 +498,7 @@ The result gains a `delegation` object:
 
 ### Accept, or narrow, on the worker side
 
-A plain `join` accepts the full current delegation. To give one worker less, name the items it may accept with `--narrow`, once per item. An item is a `GATE:BRANCH` or one of the flags `auto-merge`, `owner-decisions` or `decision-defaults`, and it must already be delegated by the project. Items you leave out are dropped:
+A plain `join` accepts the full current delegation. To give one worker less, name the items it may accept with `--narrow`, once per item. An item is a `GATE:BRANCH` or one of the flags `auto-merge`, `owner-decisions`, `decision-defaults` or `project-execution`, and it must already be delegated by the project. Items you leave out are dropped:
 
 ```sh
 llm-bus --format agent join orders-export --narrow commit:main --narrow push:main
@@ -551,7 +558,9 @@ llm-bus --format agent coordination amend orders-export --delegate commit:main -
 llm-bus --format agent coordination amend orders-export --no-delegation
 ```
 
-Repeat every flag you want to keep: an amend without `--auto-merge`, `--owner-decisions` or `--decision-defaults` removes it. Narrowing applies at once and trims worker bindings. Widening reaches a worker only when you join it again; the result's `rejoin_required` field lists those workers. A resume with `coordinate … --delegate` may only repeat the stored delegation.
+Repeat every flag you want to keep: an amend without `--auto-merge`, `--owner-decisions`, `--decision-defaults` or `--project-execution` removes it. Narrowing applies at once and trims worker bindings. Widening reaches a worker only when you join it again; the result's `rejoin_required` field lists those workers. A resume with `coordinate … --delegate` may only repeat the stored delegation.
+
+To revoke only project execution consent, repeat every other gate and flag you want to retain and omit `--project-execution`. The first command above retains commit and push only. Use `coordination amend orders-export --no-delegation` if nothing should remain; bare `amend orders-export` is invalid. An objective-only amendment preserves consent. Check fresh caller-bound `coordination show orders-export` returns `project_execution_allowed: false` before another covered action. Leave, revoke, inactivity, expiry and replacement also end access. Already submitted external operations may still run. Before downgrading, revoke using upgraded code and verify denial while preserving history.
 
 After `replace`, the new generation starts with no delegation and no bindings, so the new coordinator runs `amend --delegate …` and every worker joins again.
 
@@ -854,7 +863,7 @@ For each collaborator, you choose on your private owner page what their messages
 | Messages | `send TO [--body TEXT] [--reply-to ID] [--cross-folder]`, `inbox [--limit N]`, `ack ID…` | [3](#3-messages-between-local-sessions) |
 | History and diagnostics | `history [--folder P \| --repository P \| --all] [--before ID \| --after ID] [--limit N] [--conversation ID] [--peer ADDR]`, `status ID` | [3](#3-messages-between-local-sessions) |
 | Locks | `lock list [--all]`, `lock status [--all] [--shared] [NAME]`, `lock acquire NAME --check D [--describe T] [--reason T] [--new] [--ttl M] [--notify] [--shared]`, `lock release NAME [--shared] [--force --reason T]`, `lock cancel NAME [--shared]` | [4](#4-shared-resource-locks) |
-| Start or join a project | `coordinate PROJECT [--setup] [--objective T] [--beads-workspace P] [--memory-ticket ID] [--reference P] [--delegate G:B] [--auto-merge] [--owner-decisions] [--decision-defaults M]`, `join PROJECT [--narrow ITEM]` | [5](#5-coordinate-a-project), [6](#6-delegate-approval-gates) |
+| Start or join a project | `coordinate PROJECT [--setup] [--objective T] [--beads-workspace P] [--memory-ticket ID] [--reference P] [--delegate G:B] [--auto-merge] [--owner-decisions] [--decision-defaults M] [--project-execution]`, `join PROJECT [--narrow ITEM]` | [5](#5-coordinate-a-project), [6](#6-delegate-approval-gates) |
 | Directions | `send TO --project PROJECT --direction assign\|reprioritize\|clarify\|pause\|cancel\|review`, `report ID --status S [--reason R]` (worker, local direction), `coordination direction-list PROJECT [--open]` | [5](#5-coordinate-a-project) |
 | Silence | `coordination stalls PROJECT [--threshold 30m]`, `coordination stall-config PROJECT --threshold 30m` (current local coordinator) | [5](#5-coordinate-a-project) |
 | Project lifecycle | `coordination show\|leave PROJECT`, `coordination grant PROJECT --recipient A (--until-revoked \| --expires-at T)`, `coordination revoke PROJECT [--recipient A]`, `coordination replace PROJECT --coordinator A --generation UUID`, `coordination target PROJECT --recipient A --grant-id ID` | [5](#5-coordinate-a-project) |

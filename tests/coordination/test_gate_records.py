@@ -513,7 +513,9 @@ def test_wizard_stores_auto_merge_without_flag_words_in_specs(
         return real(specs, **flags)
 
     monkeypatch.setattr(Delegation, "from_specs", staticmethod(spy))
-    replies = iter(["Ship", str(tmp_path), "bus-2", "develop", "", "", "", "", "", "no", "", "yes"])
+    replies = iter(
+        ["Ship", str(tmp_path), "bus-2", "develop", "", "", "", "", "", "no", "", "", "yes"]
+    )
     said: list[str] = []
     result = setup.run_wizard(
         store,

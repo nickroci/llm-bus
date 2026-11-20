@@ -82,9 +82,24 @@ worker joins as above (the owner may narrow a worker with
 `llm-bus coordination claim search-feature --ticket TICKET --branch BRANCH`, and
 waits for `llm-bus coordination approve` directions. Workers verify branch,
 head SHA, required checks and review findings live before each action. Force-push,
-deploys or production changes, credential or secret changes, paid or live runs
-and merge with failing or pending CI stay with the owner. In this example "Do not merge until I approve"
+production changes, credential or secret changes and merge with failing or
+pending CI stay with the owner. In this example "Do not merge until I approve"
 simply means the owner does not delegate the merge gate.
+
+Both setup paths also offer paid or live QA runs and development deployments,
+default No. After explicit owner opt-in and review of the scope and limits,
+Claude adds `--project-execution`. Covered actions must advance the confirmed
+project objective. Each acting session checks its own fresh `coordination show
+search-feature` for `project_execution_allowed: true` before each action. Active,
+verified same-machine membership and a current worker binding are required;
+copied status and messages confer no approval. Eligible members may use remote
+QA infrastructure, but remote enrollment cannot gain this option. Merge approval,
+live CI/review checks, repository rules and native/provider permissions still
+apply. Automatic development deploys from authorized merges are covered only
+when the environment is identifiable as development. To revoke, Claude repeats
+the retained gates and flags in `coordination amend search-feature`, omitting
+`--project-execution`, or uses `--no-delegation` to remove all delegation. Fresh
+status must deny; submitted external operations may still run.
 
 ## Stop, recover or use remote workers
 

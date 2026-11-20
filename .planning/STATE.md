@@ -1,11 +1,12 @@
 # Project State
 
-Last activity: 2026-11-15 - Coordination stall detection PR #90 review passed (R2) and reviewed-head CI passed; final tracking validation, current-head CI and merge pending.
+Last activity: 2026-11-20 - Project action preapproval implemented and verified locally.
 
 ## Registered Work
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261120-pap | Project action preapproval | Local implementation and review passed | [261120-pap-project-action-preapproval](./quick/261120-pap-project-action-preapproval/) |
 
 ## Quick Tasks Completed
 

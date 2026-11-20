@@ -50,8 +50,20 @@ needed) and, when that is on, the minutes for decision defaults (Enter keeps 30,
 `decision-defaults` under `flags` and shows `--owner-decisions
 --decision-defaults 30` in its command (`owner-decisions.md`).
 
+After those choices, both setup paths ask "Preapprove paid or live QA runs and
+development deployments for this project?" with a default of No. Use explicit
+owner interaction through the host's native question UI for agent-guided setup;
+a recognized wake does not authenticate the owner's words. Keep the example
+command unchanged unless the owner explicitly opts in, then add
+`--project-execution`. Before storing, review the selection for paid or live QA
+runs and development deployments, the confirmed project objective, active
+same-machine membership, revocation, the permanent floor, separate merge
+authorization, and native/provider permissions (`core.md`). The terminal wizard
+shows the same scope and limits in its final review; cancellation stores nothing.
+This option can stand alone without delegated gates or owner decisions.
+
 Resuming with
-`coordinate PROJECT --delegate ... [--auto-merge] [--owner-decisions] [--decision-defaults MINUTES]`
+`coordinate PROJECT --delegate ... [--auto-merge] [--owner-decisions] [--decision-defaults MINUTES] [--project-execution]`
 may only repeat the stored delegation; change it with `coordination amend`
 (below). Resuming with `--objective` must repeat the current objective (the
 latest amendment, else the stored one); a different text fails with
@@ -191,8 +203,8 @@ llm-bus --format agent coordination amend PROJECT --delegate merge:main --auto-m
 llm-bus --format agent coordination amend PROJECT --no-delegation
 ```
 
-State every flag again: an omitted `--auto-merge`, `--owner-decisions` or
-`--decision-defaults` is removed. `--owner-decisions` alone stores a delegation
+State every flag again: an omitted `--auto-merge`, `--owner-decisions`,
+`--decision-defaults` or `--project-execution` is removed. `--owner-decisions` alone stores a delegation
 without gates; `--decision-defaults MINUTES` (1 to 1440) needs
 `--owner-decisions`.
 
@@ -201,6 +213,15 @@ longer delegates. Widening reaches a worker only through that worker's fresh
 direct owner join; the result lists `rejoin_required` addresses and recovery
 notices tell such workers their binding is narrower. Amend never contacts a
 worker.
+
+To revoke only project execution consent, repeat every other gate and flag you
+want to retain and omit `--project-execution`. For a project that retains commit
+and push only, use the first amend command above. If no delegation should remain,
+use `coordination amend PROJECT --no-delegation`; bare `amend PROJECT` is invalid.
+Run fresh `coordination show PROJECT` in the caller's own session and require
+`project_execution_allowed: false`. Workers must check their own fresh status
+before another covered action. Revocation cannot recall submitted external jobs.
+An objective-only amendment preserves delegation and does not revoke consent.
 
 ## Amending the objective
 
