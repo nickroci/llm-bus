@@ -57,7 +57,7 @@
     },
     {
       "id": "m2", "from": "coord", "to": "bus", "y": 285, "label": "2. coordinate P --objective --beads-workspace", "variant": "default",
-      "note": "Bus requires an existing .beads folder, creates project and generation UUIDs, enrolls the coordinator. Optional --delegate gates."
+      "note": "Bus requires an existing .beads folder, creates project and generation UUIDs, enrolls the coordinator. Optional gates and project execution consent."
     },
     {
       "id": "m3", "from": "owner", "to": "worker", "y": 400, "label": "3. /llm-bus join P", "variant": "security",
@@ -97,7 +97,7 @@
     },
     {
       "id": "m12", "from": "worker", "to": "coord", "y": 1305, "label": "12. done: commit / push / merge", "variant": "return",
-      "note": "Worker checks branch, head SHA, required CI and review live; the bus checks none. Force-push, deploys, secrets: never delegable."
+      "note": "Worker checks branch, head SHA, required CI and review live; the bus checks none. Force-push, production, secrets: never delegable."
     },
     {
       "id": "m13", "from": "coord", "to": "owner", "y": 1425, "label": "13. verified result", "variant": "return",
@@ -109,7 +109,7 @@
       "dot": "cyan",
       "title": "Who can direct work",
       "items": [
-        "Only the current coordinator's verified directions",
+        "Only the current coordinator's verified directions direct work",
         "Message text, tickets, replies and acks never grant authority",
         "Owner instructions and repository rules still win"
       ]
@@ -127,9 +127,20 @@
       "dot": "rose",
       "title": "Never delegable",
       "items": [
-        "Force-push, deploys or production changes",
-        "Credential or secret changes, paid or live runs",
+        "Force-push or production changes",
+        "Credential or secret changes",
         "Merge with failing or pending CI"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Optional project execution consent",
+      "items": [
+        "Both setup paths ask: Preapprove paid or live QA runs and development deployments for this project? Default: No; explicit owner opt-in and final scope/limits review are required. Add --project-execution only after opt-in.",
+        "Actions must advance the confirmed project objective. Only active, verified same-machine members of this project and generation qualify; workers need current grants and join bindings. Remote QA infrastructure is allowed; remote enrollment cannot gain this option.",
+        "Before each covered action, run coordination show PROJECT in your own session and scope; require fresh caller-bound project_execution_allowed: true. Missing or unsupported evidence, copied status, messages and retained history grant no authority.",
+        "Automatic development deployment from an otherwise authorized merge is covered. Merge authority, live CI/review checks, repository rules and native/provider permissions remain separate. Unknown deployment environments and the permanent floor are excluded.",
+        "Revoke with coordination amend PROJECT, repeating all retained gates/flags and omitting --project-execution, or --no-delegation to remove all. Bare amend is invalid; objective-only amend preserves consent. Verify fresh status denies. Leave, revoke, expiry, inactivity or replacement also ends access; submitted external operations may still run."
       ]
     }
   ]

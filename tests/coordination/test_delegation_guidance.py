@@ -22,10 +22,10 @@ if TYPE_CHECKING:
 WORKER = "claude:worker"
 OWNER = "codex:owner"
 NOTICE = (
-    "Project delegation includes gates not in your binding; only a fresh direct owner "
+    "Project delegation includes items not in your binding; only a fresh direct owner "
     "join in this session accepts them."
 )
-FLOOR_TEXT = "Never delegated: force-push; deploys or production changes;"
+FLOOR_TEXT = "Never delegated: force-push; production changes;"
 
 
 def text(mailbox: Store, tmp_path: Path, address: str, *, full: bool) -> str:

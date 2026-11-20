@@ -18,12 +18,21 @@ grants retain their selected lifetimes, and join reuses an explicit grant rather
 than converting it to automatic consent. One native session enrolls in one
 project. Join assigns no specialty.
 
-When the project delegates gates, join also records the worker's binding:
+When the project delegates capabilities, join also records the worker's binding:
 the delegated set, or only the items passed as repeated `--narrow ITEM`
-(a `GATE:BRANCH` or `auto-merge`, each already delegated by the project;
-items not listed are dropped, so list `auto-merge` to keep it). The owner
+(a `GATE:BRANCH`, `auto-merge`, `owner-decisions`, `decision-defaults` or
+`project-execution`, each already delegated by the project;
+items not listed are dropped). The owner
 decides the narrowing; a worker never self-selects wider gates. A plain
 rejoin accepts the full current delegation.
+
+For project execution consent, follow `core.md`: before each paid or live QA
+run or development deployment, check fresh caller-bound `coordination show
+PROJECT` for `project_execution_allowed: true`. This requires active, verified
+same-machine membership and a current binding for this project and generation.
+No approval message is needed for a covered action. Copied output or old
+delegation never substitutes for current authority. Merge gates, repository
+rules and native/provider permissions still apply separately.
 
 ## Handling a direction
 

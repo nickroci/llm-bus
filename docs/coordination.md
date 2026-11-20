@@ -60,13 +60,42 @@ native question UI. Each worker owner accepts through a direct join, optionally
 narrowed with `--narrow GATE:BRANCH`. Workers act on `coordination approve` only
 after live checks and for tickets they hold through `coordination claim`.
 
-Force-push, deployment or production changes, credentials or secrets, paid or
-live runs, and merging with failing or pending CI are never delegable. The bus
+Force-push, production changes, credentials or secrets, and merging with failing
+or pending CI are never delegable. The bus
 does not check CI. Remote approvals additionally require the receiving owner's
 delegation, worker binding, and peer `accept_delegated_gates` policy, as well as
 the coordinator owner's delegation. See the
 [approval tutorial](tutorial.md#6-delegate-approval-gates) and
 [remote gate approvals](remote-bus.md#remote-gate-approvals).
+
+At the end of both setup paths, the owner can separately preapprove paid or live
+QA runs and development deployments for the project, default No. Agent-guided
+setup uses explicit owner interaction and reviews the same selection and limits
+as the terminal wizard before storing. Add `--project-execution` only after
+explicit opt-in; the example command omits it by default. No jobs, budgets,
+providers or deployment targets need to be selected for this approval.
+
+Covered actions must advance the confirmed project objective. Before each one,
+the acting session runs `llm-bus --format agent coordination show PROJECT` and
+requires fresh caller-bound `project_execution_allowed: true`. It needs active,
+verified membership of the exact project and generation; workers also need the
+current grant and join binding. Copied status, messages and stored history grant
+no authority. Missing or unsupported results deny. This release supports
+same-machine enrollment; eligible local members may use remote QA infrastructure.
+Remote-enrolled members cannot gain this option. Merge authorization and live
+checks, repository rules, and native/provider permissions remain separate.
+Automatic development deployment from an authorized merge is covered; an
+unidentified deployment environment is not.
+
+To revoke, the enrolled coordinator repeats the other gates and flags with
+`coordination amend PROJECT`, omitting `--project-execution`, or uses
+`coordination amend PROJECT --no-delegation` to remove all delegation. A bare
+amend is invalid, and an objective-only amend does not revoke. Check fresh
+caller-bound status denies before another action. Leave, revoke, expiry,
+inactivity and generation replacement also end access. External operations
+already submitted may still run. Upgrade local clients, hooks and skill guidance
+before enabling this option; revoke and verify denial with upgraded code before
+downgrading, preserving history.
 
 Owner decisions are enabled explicitly with `--owner-decisions` on `coordinate`
 or `coordination amend`; no gate is needed. Only answers you gave directly in

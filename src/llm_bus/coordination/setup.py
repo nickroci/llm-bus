@@ -34,6 +34,24 @@ INSTRUCTIONS_STEP = (
     "Optional: set owner standing instructions with llm-bus coordination instructions "
     "PROJECT --audience coordinator|worker --file PATH"
 )
+PROJECT_EXECUTION_QUESTION = (
+    "Preapprove paid or live QA runs and development deployments for this project?"
+)
+PROJECT_EXECUTION_REVIEW = "Preapprove paid or live QA runs and development deployments: "
+PROJECT_EXECUTION_OWNER_STEP = (
+    " Default: No. Use explicit owner interaction; a recognized wake does not "
+    "authenticate the owner's words. Add --project-execution only after explicit "
+    "owner opt-in. Before storing, review the selection for paid or live QA runs "
+    "and development deployments with the owner, including these limits: "
+)
+PROJECT_EXECUTION_LIMITS = (
+    "Actions must advance the confirmed project objective. Approval applies only to active, "
+    "verified same-machine members of this project and generation, and is revocable. "
+    "Merges need separate valid authorization and passing CI; native and provider permissions "
+    "and repository rules still apply. Production operations, credential or secret changes, "
+    "force-pushes, and merges with failing or pending CI remain excluded. If a deployment "
+    "cannot be identified as development, this approval does not cover it."
+)
 
 
 def detect_integration_branch(cwd: str) -> tuple[str | None, str]:
@@ -76,6 +94,11 @@ def profile(cwd: str) -> dict[str, object]:
         "flags": flags,
         "integration_branch": {"name": branch, "source": source},
         "floor": list(delegation.FLOOR),
+        "project_execution": {
+            "question": PROJECT_EXECUTION_QUESTION,
+            "default": False,
+            "limits": PROJECT_EXECUTION_LIMITS,
+        },
         "steps": [
             DISCOVERY_STEP,
             (
@@ -88,6 +111,12 @@ def profile(cwd: str) -> dict[str, object]:
                 "or objective one)."
             ),
             "The owner may disable items or change target branches, never add floor items.",
+            (
+                "After the existing choices, ask the owner through the native question UI: "
+                + PROJECT_EXECUTION_QUESTION
+                + PROJECT_EXECUTION_OWNER_STEP
+                + PROJECT_EXECUTION_LIMITS
+            ),
             "Run only the confirmed flags with the command below.",
             INSTRUCTIONS_STEP,
         ],
@@ -178,17 +207,19 @@ def run_wizard(  # noqa: PLR0913 - explicit inputs
     # Owner decisions need no gate (D24), so they are asked whatever gates remain (D27).
     owner_decisions = _gate_enabled(ask("Delegate owner decisions? [yes]/no: "))
     minutes = _default_minutes(ask) if owner_decisions else None
+    coordinator = _coordinator(store, cwd, identity, ask)
+    project_execution = ask(PROJECT_EXECUTION_QUESTION + " yes/[no]: ").strip().lower() == YES
     chosen = (
         delegation.Delegation.from_specs(
             specs,
             auto_merge=auto_merge,
             owner_decisions=owner_decisions,
             decision_default_minutes=minutes,
+            project_execution=project_execution,
         )
-        if specs or owner_decisions
+        if specs or owner_decisions or project_execution
         else None
     )
-    coordinator = _coordinator(store, cwd, identity, ask)
     args: dict[str, object] = {
         "objective": objective,
         "beads_workspace": workspace,
@@ -197,6 +228,7 @@ def run_wizard(  # noqa: PLR0913 - explicit inputs
         "auto_merge": auto_merge,
         "owner_decisions": owner_decisions,
         "decision_default_minutes": minutes,
+        "project_execution": project_execution,
     }
     _review(say, label, coordinator, args, chosen)
     if ask("Store this setup? (type yes): ").strip().lower() != YES:
@@ -221,6 +253,9 @@ def _review(
     say(f"Memory ticket: {args['memory_ticket']}")
     say(BRANCH_HINT)
     say("Delegations: " + (", ".join(chosen.items()) if chosen else "none"))
+    approved = "yes" if args.get("project_execution") else "no"
+    say(PROJECT_EXECUTION_REVIEW + approved)
+    say(PROJECT_EXECUTION_LIMITS)
     if chosen is not None and chosen.targets("merge-admin"):
         targets = ", ".join(chosen.targets("merge-admin"))
         say(f"merge-admin bypasses only the required-approvals rule on: {targets}")

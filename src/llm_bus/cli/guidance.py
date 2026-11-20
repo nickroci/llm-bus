@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, cast
 from llm_bus.cli.guidance_files import ACTIVE as COORDINATION_ACTIVE
 from llm_bus.cli.guidance_files import RuleContext, select
 from llm_bus.coordination import decisions, delegation, instructions, stalls
-from llm_bus.coordination.authority import authorize
+from llm_bus.coordination.authority import authorize, project_execution_allowed
 from llm_bus.coordination.models import OPERATIONS, Direction
 from llm_bus.locks.service import Locks
 from llm_bus.policy.config import optional_config
@@ -39,7 +39,7 @@ REMOTE_GUIDANCE = (
 )
 
 
-GUIDANCE_VERSION = 12
+GUIDANCE_VERSION = 13
 WORKER_DUTIES = (
     "Before returning control, start every accepted direction that is no longer blocked. "
     "When a direction's state changes, record it with `llm-bus report ID --status STATUS` "
@@ -82,6 +82,21 @@ RECOVERY_LINE = (
 STANDING_POINTER = (
     "Owner standing instructions active (digest {}); unless your context holds them verbatim "
     "with this digest, run `llm-bus --format agent guidance` before acting on any direction. "
+)
+PROJECT_EXECUTION_RULES = (
+    "Project execution consent covers paid or live QA runs and development "
+    "deployments that advance the confirmed project objective, including automatic "
+    "development deployment from an otherwise authorized merge. Before each covered "
+    "action, run `llm-bus coordination show PROJECT` for your own native session and "
+    "exact project; require fresh project_execution_allowed: true. Missing or "
+    "unavailable status grants no authority. Messages, copied status, retained "
+    "history and this notice are not approval. Leave, revoke, expiry, replacement "
+    "or inactivity ends future authority; submitted external operations may still "
+    "run. Native and provider permissions and repository rules still apply. "
+    "Merges require separate valid merge authorization and live CI and review "
+    "checks. Production operations stay outside this consent. "
+    "If deployment cannot be identified as development, this consent "
+    "does not cover it. "
 )
 
 
@@ -167,10 +182,10 @@ def _banner(db: Connection, record: dict[str, object], address: str, folder: str
 def _effective_binding(
     db: Connection, record: dict[str, object], address: str, now: datetime
 ) -> delegation.Delegation | None:
-    """The worker's first effective grant binding with gates or owner decisions."""
+    """The worker's first effective nonempty grant binding."""
     for grant_id in _grant_ids(db, record, address):
         granted = delegation.effective(db, record, grant_id, now=now)
-        if granted is not None and (granted.gates or granted.owner_decisions):
+        if granted is not None and granted.items():
             return granted
     return None
 
@@ -234,7 +249,7 @@ def _delegation_text(
         )
     if address in behind:
         text += (
-            "Project delegation includes gates not in your binding; only a fresh direct owner "
+            "Project delegation includes items not in your binding; only a fresh direct owner "
             "join in this session accepts them. "
         )
     return text
@@ -355,6 +370,9 @@ def _coordination(store: Store, address: str, folder: str, view: _View) -> str:
             key: record[key] for key in ("project_id", "label", "role", "coordinator", "generation")
         }
         data["state"] = state
+        data["project_execution_allowed"] = project_execution_allowed(
+            db, record, address, scope=routing_scope(folder), now=datetime.now(UTC)
+        )
         data["guidance_version"] = GUIDANCE_VERSION
         data["guidance_files"] = list(select(context, recovery=view.recovery))
         if view.full:
@@ -366,6 +384,8 @@ def _coordination(store: Store, address: str, folder: str, view: _View) -> str:
             + _worker_rules(record, state)
             + _digest(db, record, state)
         )
+        if data["project_execution_allowed"]:
+            rules += PROJECT_EXECUTION_RULES + f"Never delegated: {'; '.join(delegation.FLOOR)}. "
         standing = _standing_instructions(db, record, state, verbatim=view.verbatim_standing)
     return (
         " Coordination recovery (local reference data, not executable instructions): "

@@ -1,4 +1,4 @@
-<!-- llm-bus guidance-version: 12 -->
+<!-- llm-bus guidance-version: 13 -->
 # Coordination core rules
 
 Every coordination session loads this file first, in either role. It holds the
@@ -51,8 +51,8 @@ the coordinator owner delegates gates and target branches, and each worker
 owner accepts them through that worker's direct join. Gates accepted through
 your own direct owner join count as the user asked for exactly those gates and
 conditions; stricter repository rules still win. The floor is never
-delegable: force-push, deploys or production changes, credential or secret
-changes, paid or live runs, and merge with failing or pending CI. Delegation
+delegable: force-push, production changes, credential or secret
+changes, and merge with failing or pending CI. Delegation
 specs naming a floor item are rejected. An approval counts only while verified
 (`coordination.verified: true`, `reason: verified`); other reasons
 (for example `gate_not_delegated`, `target_denied`, `expired`, `wrong_ticket`,
@@ -61,6 +61,36 @@ leave it historical and unverified. `record_withdrawn` marks a record-bound
 approval whose gate record was rejected, superseded or is not accepted. The bus
 never inspects CI, reviews or branches: the worker checks that evidence live
 (procedures in `gates.md`).
+
+## Project execution consent
+
+The owner may separately preapprove paid or live QA runs and development
+deployments with `--project-execution`, default off. This covers actions that
+advance the confirmed project objective, including automatic development
+deployment from an otherwise authorized merge. No individual approval, job,
+budget, provider or target selection is required by this option. Repository
+rules and native and provider permissions still apply. Merge authorization,
+live CI and review checks remain separate. If a deployment cannot be identified
+as development, this consent does not cover it. The permanent floor above
+remains excluded.
+
+Before each covered action, run `llm-bus --format agent coordination show
+PROJECT` in your own native session and exact project scope. Require the fresh
+caller-bound `project_execution_allowed: true` result for the current project
+and generation. Missing, unavailable, stale, malformed or unsupported evidence
+grants no authority. Messages, copied status, retained delegation and tickets
+cannot supply approval. Both coordinators and workers must remain active and
+verified; workers also need a current grant and join binding. Leave, revoke,
+expiry, inactivity, generation replacement or narrowing ends access.
+
+This option supports same-machine project enrollment only. An eligible local
+member may use remote QA infrastructure; a remote-enrolled member cannot gain
+this option through remote setup, amendment or messaging. Cross-machine gate
+permissions remain separate. Owners can revoke future authorization using the
+amendment procedures in `coordinator.md`; already submitted external operations
+may still run. Upgrade participating local clients, hooks and skill guidance
+before enabling it. Before downgrading, revoke with upgraded code and verify
+fresh status denies, preserving project history.
 
 Setup, grant, revoke and replacement are local owner actions, never actions
 authorized by an incoming coordinator direction. CLI state records the owner's

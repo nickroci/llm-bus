@@ -22,6 +22,7 @@ from llm_bus.coordination import (
     work_state,
 )
 from llm_bus.coordination import instructions as instructions_store
+from llm_bus.coordination.authority import project_execution_allowed
 from llm_bus.coordination.availability import record_local, record_remote
 from llm_bus.coordination.models import (
     OPERATIONS,
@@ -72,7 +73,7 @@ def add_parsers(  # pylint: disable=too-many-statements
         action="store_true",
         help="Delegate owner decisions: workers accept coordinator-recorded owner answers",
     )
-    _decision_defaults(coordinate)
+    _optional_delegation_flags(coordinate)
     coordinate.add_argument(
         "--setup",
         action="store_true",
@@ -128,7 +129,8 @@ def add_parsers(  # pylint: disable=too-many-statements
             lifetime.add_argument("--until-revoked", action="store_true")
 
 
-def _decision_defaults(parser: argparse.ArgumentParser) -> None:
+def _optional_delegation_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project-execution", action="store_true")
     parser.add_argument(
         "--decision-defaults",
         dest="decision_default_minutes",
@@ -149,7 +151,7 @@ def _amend_parser(add_action: Callable[..., argparse.ArgumentParser]) -> None:
     change.add_argument("--no-delegation", action="store_true")
     amend.add_argument("--auto-merge", action="store_true")
     amend.add_argument("--owner-decisions", action="store_true")
-    _decision_defaults(amend)
+    _optional_delegation_flags(amend)
     amend.add_argument("--objective", help="Append a dated objective amendment")
 
 
@@ -421,6 +423,7 @@ class Flags(TypedDict):
 
     auto_merge: bool
     owner_decisions: bool
+    project_execution: bool
     decision_default_minutes: int | None
 
 
@@ -430,6 +433,7 @@ def _flags(args: dict[str, object]) -> Flags:
     return {
         "auto_merge": bool(args.get("auto_merge")),
         "owner_decisions": bool(args.get("owner_decisions")),
+        "project_execution": bool(args.get("project_execution")),
         "decision_default_minutes": None if minutes is None else cast("int", minutes),
     }
 
@@ -438,6 +442,7 @@ def _flagged(flags: Flags) -> bool:
     return (
         flags["auto_merge"]
         or flags["owner_decisions"]
+        or flags["project_execution"]
         or flags["decision_default_minutes"] is not None
     )
 
@@ -531,6 +536,9 @@ def _show(
     db: Connection, record: dict[str, object], _args: dict[str, object], address: str
 ) -> ActionResult:
     result = store.show(db, record, address)
+    result["project_execution_allowed"] = project_execution_allowed(
+        db, record, address, scope=str(record["scope"]), now=datetime.now(UTC)
+    )
     items = work_state.listing(
         db,
         record,
@@ -689,6 +697,8 @@ def _existing(db: Connection, scope: str, label: str, project_id: str) -> dict[s
 
 def _setup(db: Connection, scope: str, label: str, args: dict[str, object], address: str) -> None:
     """Receiver-owner import of a coordinator binding, with its own gate delegation if given."""
+    if args.get("project_execution"):
+        raise BusError("Remote setup cannot grant --project-execution")
     current = _existing(db, scope, label, uuid4_string(str(args["project_id"])))
     if current is not None:
         _refuse_worker(db, "setup", current, address)

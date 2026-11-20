@@ -11,7 +11,7 @@ from uuid import uuid4
 
 import pytest
 
-from llm_bus.coordination import delegation
+from llm_bus.coordination import cli, delegation
 from llm_bus.coordination.delegation import Delegation
 from llm_bus.errors import BusError
 from llm_bus.mailbox.store import Store
@@ -310,6 +310,79 @@ def test_resume_with_different_delegation_errors_and_same_is_idempotent(tmp_path
 def test_floor_actions_are_rejected(spec: str) -> None:
     with pytest.raises(BusError, match="floor action"):
         Delegation.from_specs([spec])
+
+
+def test_project_execution_round_trip_narrow_and_remote_cap() -> None:
+    approved = Delegation.from_specs([], project_execution=True)
+    assert approved.items() == ("project-execution",)
+    assert approved.wire() == {"version": 1, "gates": {}, "project_execution": True}
+    assert Delegation.parse(approved.wire()) == approved
+    assert approved.narrow(["project-execution"]) == approved
+    legacy = Delegation.from_specs(["commit:main"])
+    assert not legacy.project_execution
+    assert "project_execution" not in legacy.wire()
+    assert not legacy.covers(approved)
+    assert approved.only_gates(delegation.GATES).items() == ()
+
+
+@pytest.mark.parametrize("bad", [None, 0, 1, "true", [], {}])
+def test_project_execution_wire_rejects_non_boolean(bad: object) -> None:
+    with pytest.raises(BusError, match="Invalid delegation flag"):
+        Delegation.parse({"version": 1, "gates": {}, "project_execution": bad})
+
+
+def test_project_execution_revoke_preserves_gates_and_reenable_requires_rejoin(
+    tmp_path: Path,
+) -> None:
+    mailbox = start(tmp_path, *TWO_GATES, "--project-execution")
+    join(mailbox, tmp_path)
+    effective = state(mailbox)[1]
+    assert effective is not None
+    assert effective.project_execution
+    invoke(mailbox, tmp_path, "coordination", "amend", "demo", *TWO_GATES)
+    project, effective, _ = state(mailbox)
+    assert project == effective == Delegation.from_specs(["commit:develop", "push:develop"])
+    invoke(mailbox, tmp_path, "coordination", "amend", "demo", *TWO_GATES, "--project-execution")
+    project, effective, rejoin = state(mailbox)
+    assert project is not None
+    assert project.project_execution
+    assert effective is not None
+    assert not effective.project_execution
+    assert rejoin == ["claude:worker"]
+    join(mailbox, tmp_path, "--narrow", "project-execution")
+    assert state(mailbox)[1] == Delegation.from_specs([], project_execution=True)
+
+
+def test_project_execution_only_can_be_revoked(tmp_path: Path) -> None:
+    mailbox = start(tmp_path, "--project-execution")
+    join(mailbox, tmp_path)
+    invoke(mailbox, tmp_path, "coordination", "amend", "demo", "--no-delegation")
+    assert state(mailbox) == (None, None, [])
+
+
+def test_remote_setup_and_amend_refuse_project_execution(tmp_path: Path) -> None:
+    mailbox = start(tmp_path)
+    with mailbox.transaction() as db:
+        db.execute("UPDATE coordination_projects SET coordinator='remote/peer/codex:owner'")
+    with pytest.raises(BusError, match="Remote-coordinated"):
+        invoke(mailbox, tmp_path, "coordination", "amend", "demo", "--project-execution")
+    with pytest.raises(BusError, match="Remote setup"):
+        cli.run(
+            mailbox,
+            {
+                "command": "coordination",
+                "action": "setup",
+                "project": "other",
+                "project_id": str(uuid4()),
+                "generation": str(uuid4()),
+                "coordinator": "remote/peer/codex:owner",
+                "project_execution": True,
+            },
+            "codex:owner",
+            str(tmp_path),
+        )
+    with mailbox.transaction() as db:
+        assert db.execute("SELECT COUNT(*) FROM coordination_projects").fetchone() == (1,)
 
 
 @pytest.mark.parametrize(

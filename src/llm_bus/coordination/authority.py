@@ -16,9 +16,80 @@ from llm_bus.coordination.models import (
 )
 from llm_bus.errors import BusError
 from llm_bus.mailbox.agents import expire_idle_agents
+from llm_bus.mailbox.models import address as native_address
 from llm_bus.policy.config import optional_config
 
 REMOTE_PARTS = 3
+
+
+def project_execution_allowed(  # noqa: PLR0911 - fail-closed authority checks
+    db: Connection, record: dict[str, object], address: str, *, scope: str, now: datetime
+) -> bool:
+    """Fresh caller-bound local consent; stored history and remote identities grant none."""
+    # pylint: disable=clean-code-commented-out-code,too-many-return-statements
+    expire_idle_agents(db)
+    kind, separator, session = address.partition(":")
+    try:
+        if not separator or native_address(kind, session) != address:
+            return False
+    except BusError:
+        return False
+    row = cast(
+        "tuple[str] | None",
+        db.execute(
+            "SELECT e.role FROM coordination_enrollments e "
+            "JOIN coordination_projects p ON p.scope=e.scope AND p.project_id=e.project_id "
+            "JOIN agents a ON a.address=e.address "
+            "WHERE e.address=? AND e.scope=? AND e.project_id=? AND e.generation=? "
+            "AND p.generation=e.generation AND p.coordinator=? AND p.revoked_at IS NULL "
+            "AND a.scope=e.scope AND a.kind=? AND a.ended_at IS NULL",
+            (
+                address,
+                scope,
+                record["project_id"],
+                record["generation"],
+                record["coordinator"],
+                kind,
+            ),
+        ).fetchone(),
+    )
+    if row is None or scope != record["scope"] or "/" in str(record["coordinator"]):
+        return False
+    try:
+        if row[0] == "coordinator":
+            project = delegation.project_delegation(db, record)
+            return address == record["coordinator"] and bool(project and project.project_execution)
+        if row[0] != "worker":
+            return False
+        grants = cast(
+            "list[tuple[str]]",
+            db.execute(
+                "SELECT grant_id FROM coordination_grants WHERE scope=? AND project_id=? "
+                "AND recipient=? AND generation=? AND coordinator=?",
+                (scope, record["project_id"], address, record["generation"], record["coordinator"]),
+            ).fetchall(),
+        )
+        for (grant_id,) in grants:
+            held = delegation.effective(db, record, grant_id, now=now)
+            if held is None or not held.project_execution:
+                continue
+            if any(
+                authorize(
+                    db,
+                    sender=str(record["coordinator"]),
+                    recipient=address,
+                    scope=scope,
+                    direction=Direction(
+                        1, str(record["project_id"]), str(record["generation"]), grant_id, operation
+                    ),
+                    now=now,
+                ).verified
+                for operation in OPERATIONS
+            ):
+                return True
+    except (BusError, ValueError, TypeError):
+        return False
+    return False
 
 
 def authorize(  # noqa: PLR0913, C901, PLR0911, PLR0912 - explicit denial precedence

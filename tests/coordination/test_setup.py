@@ -77,21 +77,23 @@ def counts(store: Store) -> tuple[int, int, int]:
         )
 
 
-def answers(
+def answers(  # noqa: PLR0913 - explicit wizard choices
     repo: Path,
     *,
     gates: tuple[str, ...] = ("yes",) * 4,
     auto_merge: str | None = "yes",
     decide: tuple[str, ...] = ("no",),
     confirm: str = "yes",
+    execution: str = "",
 ) -> list[str]:
     """None skips an answer the wizard asks only conditionally.
 
     Auto-merge is asked only when a merge gate remains. ``decide`` holds the owner-decisions
     answer, always asked, then the default-minutes answer, asked only when decisions are on.
     """
+    # pylint: disable=too-many-arguments
     merge = [] if auto_merge is None else [auto_merge]
-    return ["Ship it", str(repo), "bus-1", "", *gates, *merge, *decide, "", confirm]
+    return ["Ship it", str(repo), "bus-1", "", *gates, *merge, *decide, "", execution, confirm]
 
 
 def test_detects_origin_head_without_network(repo: Path, tmp_path: Path) -> None:
@@ -230,7 +232,7 @@ def test_wizard_other_coordinator_is_not_enrolled(repo: Path, tmp_path: Path) ->
     store.register("codex", "owner", str(repo))
     store.register("claude", "lead", str(repo))
     script = answers(repo)
-    script[-2] = "claude:lead"
+    script[-3] = "claude:lead"
     ask, _ = scripted(script)
     result = run_wizard(store, "demo", str(repo), "codex:owner", ask=ask, say=lambda _line: None)
     assert result is not None
@@ -244,7 +246,7 @@ def test_wizard_without_identity_picks_from_agents(repo: Path, tmp_path: Path) -
     store = Store(tmp_path / "bus.sqlite3")
     store.register("claude", "lead", str(repo))
     script = answers(repo)
-    script[-2] = "1"
+    script[-3] = "1"
     ask, prompts = scripted(script)
     result = run_wizard(store, "demo", str(repo), None, ask=ask, say=lambda _line: None)
     assert result is not None
@@ -294,6 +296,47 @@ def _stored_delegation(store: Store) -> dict[str, object]:
             db.execute("SELECT delegation_json FROM coordination_delegations").fetchone(),
         )
     return cast("dict[str, object]", json.loads(text))
+
+
+@pytest.mark.parametrize("answer", ["", "no", "yes"])
+def test_project_execution_requires_explicit_opt_in(
+    repo: Path, tmp_path: Path, answer: str
+) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    store.register("codex", "owner", str(repo))
+    ask, prompts = scripted(answers(repo, execution=answer))
+    said: list[str] = []
+    assert run_wizard(store, "demo", str(repo), "codex:owner", ask=ask, say=said.append)
+    expected = True if answer == "yes" else None
+    assert _stored_delegation(store).get("project_execution") is expected
+    assert "paid or live QA runs and development deployments" in prompts[-2]
+    screen = "\n".join(said)
+    assert "Preapprove paid or live QA runs and development deployments: " in screen
+    assert "native and provider permissions" in screen
+    assert "Production operations" in screen
+    setup_profile = profile(str(repo))
+    choice = cast("dict[str, object]", setup_profile["project_execution"])
+    assert choice["default"] is False
+    assert "--project-execution" not in str(setup_profile["command"])
+
+
+def test_cancelled_project_execution_opt_in_stores_nothing(repo: Path, tmp_path: Path) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    store.register("codex", "owner", str(repo))
+    before = counts(store)
+    ask, _ = scripted(answers(repo, execution="yes", confirm="no"))
+    assert run_wizard(store, "demo", str(repo), "codex:owner", ask=ask, say=lambda _: None) is None
+    assert counts(store) == before
+
+
+def test_wizard_project_execution_needs_no_gate_or_owner_decisions(
+    repo: Path, tmp_path: Path
+) -> None:
+    store = Store(tmp_path / "bus.sqlite3")
+    store.register("codex", "owner", str(repo))
+    ask, _ = scripted(answers(repo, gates=("no",) * 4, auto_merge=None, execution="yes"))
+    assert run_wizard(store, "demo", str(repo), "codex:owner", ask=ask, say=lambda _: None)
+    assert _stored_delegation(store) == {"version": 1, "gates": {}, "project_execution": True}
 
 
 @pytest.mark.parametrize(

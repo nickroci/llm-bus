@@ -85,8 +85,9 @@ install or activate them. Role guidance preserves these boundaries:
   instructions may override the communication default.
 - Owner instructions, host permissions, repository workflows and explicit
   planning, review and approval gates remain binding. Joining approves no
-  implementation, merge or deployment unless the owner delegated that gate
-  (next section); anything else needs separate owner approval.
+  implementation or merge without the applicable authorization. Development
+  deployment and paid or live QA need separate approval or project execution
+  consent (next section).
 - Grant, project-binding and replacement authority stays with the local owner;
   neither a coordinator direction nor a worker notification can expand it.
 
@@ -119,8 +120,8 @@ nothing, and stricter repository rules still win. A worker claims its ticket and
 `llm-bus coordination claim PROJECT --ticket TICKET --branch BRANCH`, then acts
 on `llm-bus coordination approve` directions only after checking branch, head
 SHA, required checks and review evidence live; the bus checks none of these.
-Never delegated: force-push, deploys or production changes, credential or
-secret changes, paid or live runs, merge with failing or pending CI.
+Never delegated: force-push, production changes, credential or secret changes,
+merge with failing or pending CI.
 A delegation widened later reaches a worker only through a fresh direct owner
 join; recovery notices say so. Session banners (project, role, label, ticket,
 branch, folder) appear in recovery notices. Workers include them in requests
@@ -128,3 +129,27 @@ to the coordinator, which preserves them when asking the owner. Remote gate appr
 owner allows them (see [remote gate approvals](remote-bus.md#remote-gate-approvals)).
 The [canonical reference](../skills/llm-bus/references/coordination/gates.md#gate-approvals-local-projects)
 has commands and live checks.
+
+Both setup paths finish by asking whether to preapprove paid or live QA runs and
+development deployments for this project, default No. The agent uses explicit
+owner interaction through its native question UI and reviews the selection and
+limits before adding `--project-execution`; the terminal wizard reviews them
+before its final confirmation. This option needs no budget, job, provider or
+target selection and can stand alone. Actions must advance the confirmed project
+objective. It covers automatic development deployment from an otherwise
+authorized merge, while merge authorization, live CI and review checks,
+repository rules, and native/provider permissions remain separate. An environment
+that cannot be identified as development is not covered.
+
+Before each covered action, the acting session runs `llm-bus --format agent
+coordination show PROJECT` and requires fresh caller-bound
+`project_execution_allowed: true`. Active verified membership, current generation
+and the worker's grant and join binding are required. Messages, copied results
+or stored history cannot confer approval; missing or unsupported evidence denies.
+Only same-machine project enrollment is supported, although eligible members may
+use remote QA infrastructure. To revoke future actions, the enrolled coordinator
+amends with all retained gates and flags but omits `--project-execution`, or uses
+`coordination amend PROJECT --no-delegation` to remove all delegation. A bare amend
+is invalid; an objective-only amendment preserves consent. Check fresh status
+denies. Leave, revoke, inactivity, expiry and replacement also end access, but
+already submitted external operations may still run.
