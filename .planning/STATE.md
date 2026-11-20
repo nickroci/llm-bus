@@ -1,17 +1,17 @@
 # Project State
 
-Last activity: 2026-11-20 - Project action preapproval implemented and verified locally.
+Last activity: 2026-11-20 - Project action preapproval PR #92 passed review and CI on the implementation commit. Final tracking validation and merge pending.
 
 ## Registered Work
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
-| 261120-pap | Project action preapproval | Local implementation and review passed | [261120-pap-project-action-preapproval](./quick/261120-pap-project-action-preapproval/) |
 
 ## Quick Tasks Completed
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261120-pap | Project action preapproval — PR #92 | Implementation review and CI passed. Merge pending final tracking validation. | [261120-pap-project-action-preapproval](./quick/261120-pap-project-action-preapproval/) |
 | 261114-s7n | Coordination blocker reporting and stall detection — PR #90 | PR #90 review passed (R2) and CI passed on 1166e361; final tracking validation, current-head CI and merge pending; no installed rollout | [261114-s7n-coordination-blocker-reporting-and-stall](./quick/261114-s7n-coordination-blocker-reporting-and-stall/) |
 | 261114-cua | Coordinator as user contact — PR #89 | PR #89 review passed (R1) and reviewed-head CI passed; tracking validation, current-head CI and merge pending; rollout requires separate authorization | [261114-cua-coordinator-user-actions](./quick/261114-cua-coordinator-user-actions/) |
 | 261113-ymx | Skill-driven coordination guidance — PR #86 | PR #86 review passed (R1); merge pending; owner reinstalls the skill copy and CLI together after merge | [261113-ymx-cli-driven-coordination-guidance](./quick/261113-ymx-cli-driven-coordination-guidance/) |
