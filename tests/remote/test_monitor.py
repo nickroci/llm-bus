@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 import pytest
@@ -13,7 +14,7 @@ from llm_bus.mailbox.store import Store
 from llm_bus.remote.bridge import Bridge
 from llm_bus.remote.store import RemoteStore
 
-from .support import FakeClock, admit_delivery, delivery, setup_machine
+from .support import FakeClock, admit_delivery, delivery, monitor_only, setup_machine
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -90,19 +91,17 @@ def test_monitor_is_durable_isolated_and_never_promoted(
 def test_monitor_rejects_invalid_age_and_keeps_original_relay_age(tmp_path: Path) -> None:
     store, config = setup_machine(tmp_path, "b")
     store.register("claude", "recipient", str(tmp_path / "repo"))
-    path = tmp_path / "config.toml"
-    path.write_text(
-        path.read_text().replace('receive_messages = "inbox"', 'receive_messages = "monitor"')
-    )
+    monitor_only()
     item = delivery()
     with pytest.raises(BusError, match="Invalid message retention timestamp"):
         admit_delivery(store, config, {**item, "sent_at": "private invalid timestamp"})
     assert RemoteStore.monitor_history(store, repository=None) == []
-    item["sent_at"] = "2026-10-15T02:00:00+02:00"
+    now = datetime.now(UTC).replace(microsecond=0)
+    item["sent_at"] = now.astimezone(timezone(timedelta(hours=2))).isoformat()
     assert admit_delivery(store, config, item) == ("monitor", None, True)
     with store.transaction() as db:
         assert db.execute("SELECT retention_at FROM remote_monitor").fetchone() == (
-            "2026-10-15T00:00:00.000Z",
+            now.isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         )
     assert RemoteStore.monitor_history(store, repository=None)[0][3] == item
 

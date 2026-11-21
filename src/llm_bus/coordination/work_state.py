@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 from llm_bus.errors import BusError
+from llm_bus.mailbox.eligibility import cutoff
 from llm_bus.reports.lifecycle import TERMINAL, TRANSITION_CONFLICT, transition_conflicts
 from llm_bus.reports.protocol import MAX_REVISION, parse_report, validate_status
 
@@ -70,9 +71,10 @@ def record(
         db.execute(
             "SELECT m.recipient,m.acknowledged_at FROM coordination_messages c "
             "JOIN messages m ON m.id=c.message_id WHERE c.message_id=? "
+            "AND m.retention_at>? "
             "AND NOT EXISTS (SELECT 1 FROM remote_imports WHERE local_id=m.id) "
             "AND NOT EXISTS (SELECT 1 FROM remote_outbox WHERE local_id=m.id)",
-            (message_id,),
+            (message_id, cutoff()),
         ).fetchone(),
     )
     if row is None or row[0] != recipient:
@@ -106,6 +108,8 @@ def work_report(
     """Read-only work state; tolerates tables missing from older schemas."""
     # pylint: disable=redefined-outer-name  # `imported` parameter shadows the module function
     if remote_id is not None and not imported:
+        if not _report_visible(db, tables, remote_id):
+            return None
         row = (
             cast(
                 "tuple[str] | None",
@@ -120,6 +124,29 @@ def work_report(
     if imported or TABLE not in tables:
         return None
     return snapshot(db, message_id)
+
+
+def _report_visible(db: Connection, tables: set[str], remote_id: str) -> bool:
+    """Legacy diagnostics stay read-only before the separate bound column exists."""
+    if "remote_report_windows" not in tables:
+        return True
+    columns = {
+        row[1]
+        for row in cast(
+            "list[tuple[int, str]]",
+            db.execute("PRAGMA table_info(remote_report_windows)").fetchall(),
+        )
+    }
+    bound = "retention_expires_at" if "retention_expires_at" in columns else "NULL"
+    return (
+        db.execute(
+            "SELECT 1 FROM remote_report_windows WHERE id=? AND "  # noqa: S608
+            "(julianday(expires_at)<=julianday('now') OR "
+            f"julianday({bound})<=julianday('now'))",
+            (remote_id,),
+        ).fetchone()
+        is None
+    )
 
 
 class DirectionRow(NamedTuple):
@@ -159,8 +186,9 @@ def _direction_rows(
             "LEFT JOIN remote_imports i ON i.local_id=m.id "
             "WHERE json_extract(c.metadata_json,'$.project_id')=? "
             "AND json_extract(c.metadata_json,'$.generation')=? "
+            "AND m.retention_at>? "
             "AND ((? AND m.sender=?) OR m.recipient=?) ORDER BY m.id DESC",
-            (record["project_id"], record["generation"], coordinator, viewer, viewer),
+            (record["project_id"], record["generation"], cutoff(), coordinator, viewer, viewer),
         ).fetchall(),
     )
     return [DirectionRow(*row) for row in found]

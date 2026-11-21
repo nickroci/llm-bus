@@ -61,7 +61,11 @@ def test_legacy_ages_and_durable_reference_seed(tmp_path: Path) -> None:
         assert any("messages_retention" in row[3] for row in plan)
         assert allocate_id(db, "message") == 901
         assert allocate_id(db, "monitor") == 2
-    assert reopened.history(folder=None)[0]["body"] == sent["body"]
+    assert reopened.history(folder=None) == []
+    with reopened.transaction() as db:
+        assert db.execute("SELECT body FROM messages WHERE id=?", (sent["id"],)).fetchone() == (
+            sent["body"],
+        )
 
 
 @pytest.mark.parametrize("age", ["invalid secret body", "2026-02-30T00:00:00Z", "2026-01-01"])

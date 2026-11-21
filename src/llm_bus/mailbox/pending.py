@@ -11,6 +11,7 @@ import llm_bus.policy.inbound
 from llm_bus.coordination.delivery import exposure_allowed, verification
 from llm_bus.errors import BusError
 from llm_bus.hosts.sessions import is_subagent
+from llm_bus.mailbox.eligibility import cutoff
 from llm_bus.mailbox.models import (
     MAX_BATCH,
     PENDING_COUNT_ERROR,
@@ -104,6 +105,7 @@ def _pending_pages(
     if is_subagent(recipient):
         return
     after = 0
+    retained_after = cutoff()
     while True:
         rows = [
             PendingRow(*row)
@@ -111,8 +113,8 @@ def _pending_pages(
                 "list[PendingTuple]",
                 db.execute(
                     _pending_query(content) + "WHERE m.recipient=? AND m.acknowledged_at IS NULL "
-                    "AND m.id>? ORDER BY m.id LIMIT ?",
-                    (recipient, after, page_size),
+                    "AND m.retention_at>? AND m.id>? ORDER BY m.id LIMIT ?",
+                    (recipient, retained_after, after, page_size),
                 ).fetchall(),
             )
         ]
@@ -127,8 +129,8 @@ def pending_allowed(db: sqlite3.Connection, message_id: int) -> bool:
     result = cast(
         "PendingTuple | None",
         db.execute(
-            _pending_query("NULL,NULL,NULL,NULL") + "WHERE m.id=?",
-            (message_id,),
+            _pending_query("NULL,NULL,NULL,NULL") + "WHERE m.id=? AND m.retention_at>?",
+            (message_id, cutoff()),
         ).fetchone(),
     )
     return (

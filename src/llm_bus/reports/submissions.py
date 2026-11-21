@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 from llm_bus.errors import BusError
 from llm_bus.hosts.sessions import is_subagent
+from llm_bus.mailbox.eligibility import cutoff, report_open
 from llm_bus.policy.config import load_config
 from llm_bus.reports.lifecycle import TRANSITION_CONFLICT, transition_conflicts
 from llm_bus.reports.protocol import MAX_REVISION, parse_report, validate_status
@@ -28,8 +29,8 @@ def imported(self: Reports, local_id: int, native: str | None = None) -> Deliver
             db.execute(
                 "SELECT r.envelope,m.recipient,m.recipient_scope FROM remote_imports r "
                 "JOIN messages m ON m.id=r.local_id JOIN agents a ON a.address=m.recipient "
-                "WHERE r.local_id=? AND a.scope=m.recipient_scope",
-                (local_id,),
+                "WHERE r.local_id=? AND a.scope=m.recipient_scope AND m.retention_at>?",
+                (local_id, cutoff()),
             ).fetchone(),
         )
     if row is None or (native is not None and native != row[1]):
@@ -60,6 +61,8 @@ def permitted(self: Reports, item: Delivery, status: str) -> bool:
     peer = config.peer(item["repo_id"], item["sender"].split("/", 1)[0])
     repo = next((r for r in config.repositories if r.repo_id == item["repo_id"]), None)
     with self.remote.store.transaction() as db:
+        if not report_open(db, item["id"]):
+            return False
         row = cast(
             "tuple[str, str] | None",
             db.execute(
@@ -88,6 +91,8 @@ def enqueue(
         raise BusError("Local capability policy: report sending is disabled")
     with self.remote.store.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
+        if not report_open(db, item["id"]):
+            raise BusError("Work report message is unavailable")
         row = cast(
             "tuple[str, int] | None",
             db.execute(
@@ -123,11 +128,12 @@ def pending(self: Reports, *, after: int = 0) -> list[tuple[int, dict[str, objec
             "list[tuple[int, str]]",
             db.execute(
                 "SELECT i.local_id,s.payload FROM remote_report_submissions s "
-                "JOIN remote_imports i ON i.id=s.id WHERE s.synced=0 AND i.local_id>? "
+                "JOIN remote_imports i ON i.id=s.id JOIN messages m ON m.id=i.local_id "
+                "WHERE s.synced=0 AND i.local_id>? AND m.retention_at>? "
                 "AND s.expected_revision="
                 "(SELECT MIN(p.expected_revision) FROM remote_report_submissions p "
                 "WHERE p.id=s.id AND p.synced=0) ORDER BY i.local_id LIMIT 100",
-                (after,),
+                (after, cutoff()),
             ).fetchall(),
         )
     return [

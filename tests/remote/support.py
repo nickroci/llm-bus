@@ -64,7 +64,7 @@ def assert_config_scope(folder: Path) -> None:
 @final
 class FakeClock:
     def __init__(self) -> None:
-        self.now = datetime(2026, 10, 23, tzinfo=UTC)
+        self.now = datetime.now(UTC)
 
     def __call__(self) -> datetime:
         return self.now
@@ -81,7 +81,7 @@ def delivery(remote_id: str | None = None) -> Delivery:
         recipient="b/xyz/claude:recipient",
         repo_id="xyz",
         body="review migration",
-        sent_at="2026-10-15T00:00:00.000Z",
+        sent_at=datetime.now(UTC).isoformat(timespec="milliseconds"),
     )
 
 
@@ -102,6 +102,16 @@ def deny_inbox() -> None:
     path.write_text(
         path.read_text(encoding="utf-8").replace(
             'receive_messages = "inbox"', 'receive_messages = "deny"'
+        ),
+        encoding="utf-8",
+    )
+
+
+def monitor_only() -> None:
+    path = Path(os.environ["LLM_BUS_CONFIG"])
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            'receive_messages = "inbox"', 'receive_messages = "monitor"'
         ),
         encoding="utf-8",
     )

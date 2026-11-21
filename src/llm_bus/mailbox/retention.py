@@ -60,6 +60,12 @@ def _messages(db: Connection, ids: list[int]) -> None:
         f"SELECT id FROM remote_outbox WHERE local_id IN ({marks})"
     )
     db.execute(f"DELETE FROM remote_sync_work WHERE key IN ({remote_ids})", ids + ids)
+    db.execute(
+        "DELETE FROM remote_sync_work WHERE kind='report_submit' AND key IN "
+        "(SELECT s.id||':'||s.expected_revision FROM remote_report_submissions s "
+        f"WHERE s.id IN ({remote_ids}))",
+        ids + ids,
+    )
     for table in ("remote_report_submissions", "remote_reports", "remote_report_windows"):
         db.execute(f"DELETE FROM {table} WHERE id IN ({remote_ids})", ids + ids)
     db.execute(f"UPDATE messages SET reply_to=NULL WHERE reply_to IN ({marks})", ids)

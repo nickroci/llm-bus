@@ -12,7 +12,7 @@ from llm_bus.mailbox import migrations, retention_schema
 if TYPE_CHECKING:
     from collections.abc import Callable
     from sqlite3 import Connection
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 SYNC_SCHEMA_VERSION = 2
 WAKE_SCHEMA_VERSION = 3
 LOCK_SCHEMA_VERSION = 5
@@ -30,6 +30,7 @@ RUN_SCHEMA_VERSION = 17
 DECISION_RUN_SCHEMA_VERSION = 18
 RETENTION_SCHEMA_VERSION = 19
 AVAILABILITY_RETENTION_SCHEMA_VERSION = 20
+REPORT_RETENTION_SCHEMA_VERSION = 21
 SYNC_WORK_TABLE = (
     "CREATE TABLE IF NOT EXISTS remote_sync_work (kind TEXT NOT NULL, key TEXT NOT NULL, "
     "attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, last_attempt_at TEXT, "
@@ -243,6 +244,8 @@ def ensure_schema(  # noqa: C901, PLR0912
             retention_schema.migrate(db)
         if version < AVAILABILITY_RETENTION_SCHEMA_VERSION:
             coordination_retention.migrate(db)
+        if version < REPORT_RETENTION_SCHEMA_VERSION:
+            retention_schema.migrate_report_windows(db)
         if version < SCHEMA_VERSION:
             db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         db.commit()

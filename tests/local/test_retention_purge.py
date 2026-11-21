@@ -77,7 +77,10 @@ def test_atomic_dependencies_reply_replay_and_provider_state(tmp_path: Path) -> 
         db.execute("UPDATE messages SET acknowledged_at=sent_at WHERE id=?", (imported,))
         db.execute("INSERT INTO remote_report_submissions VALUES (?,1,'private',0)", (incoming_id,))
         db.execute("INSERT INTO remote_reports VALUES (?,'private')", (outgoing_id,))
-        db.execute("INSERT INTO remote_report_windows VALUES (?,'2030-02-01')", (outgoing_id,))
+        db.execute(
+            "INSERT INTO remote_report_windows(id,expires_at) VALUES (?,'2030-02-01')",
+            (outgoing_id,),
+        )
         for kind in ("upload", "status", "report_read", "report_submit"):
             db.execute("INSERT INTO remote_sync_work(kind,key) VALUES (?,?)", (kind, outgoing_id))
         db.execute("INSERT INTO remote_sync_work(kind,key) VALUES ('ack',?)", (incoming_id,))

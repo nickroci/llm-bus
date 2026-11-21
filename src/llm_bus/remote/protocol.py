@@ -122,4 +122,6 @@ def validate_status(key: str, value: object, *, require_id: bool = False) -> dic
         raise BusError("Remote status message ID conflicts")
     if "report_expires_at" in data:
         report_deadline(data["report_expires_at"])
+    if "retention_expires_at" in data:
+        report_deadline(data["retention_expires_at"])
     return data

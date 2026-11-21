@@ -24,21 +24,28 @@ def test_retry_schedule_survives_reopen(tmp_path: Path) -> None:
     store, config = setup_machine(tmp_path, "a")
     remote = RemoteStore(store, config.connection)
     now = datetime(2026, 10, 20, tzinfo=UTC)
-    remote.record_sync_result("upload", "one", now, error_code="unavailable")
+    first = remote.enqueue(
+        SenderContext("codex", "s", str(tmp_path / "repo")), "b/xyz/claude:r", "xyz", "first"
+    )
+    second = remote.enqueue(
+        SenderContext("codex", "s", str(tmp_path / "repo")), "b/xyz/claude:r", "xyz", "second"
+    )
+    one, two = str(first["remote_id"]), str(second["remote_id"])
+    remote.record_sync_result("upload", one, now, error_code="unavailable")
     reopened = RemoteStore(Store(store.path), config.connection)
-    assert not reopened.work_due("upload", "one", now + timedelta(seconds=4))
-    assert reopened.work_due("upload", "one", now + timedelta(seconds=5))
+    assert not reopened.work_due("upload", one, now + timedelta(seconds=4))
+    assert reopened.work_due("upload", one, now + timedelta(seconds=5))
     for seconds in (5, 10, 20, 40, 80, 160, 300, 300):
-        reopened.record_sync_result("status", "two", now, error_code="unavailable")
-        assert not reopened.work_due("status", "two", now + timedelta(seconds=seconds - 1))
-        assert reopened.work_due("status", "two", now + timedelta(seconds=seconds))
+        reopened.record_sync_result("status", two, now, error_code="unavailable")
+        assert not reopened.work_due("status", two, now + timedelta(seconds=seconds - 1))
+        assert reopened.work_due("status", two, now + timedelta(seconds=seconds))
         now += timedelta(seconds=seconds)
-    reopened.record_sync_result("status", "two", now, error_code=None)
-    assert reopened.sync_snapshot("status", "two")["attempts"] == 0
-    assert not reopened.work_due("status", "two", now + timedelta(seconds=29))
-    assert reopened.work_due("status", "two", now + timedelta(seconds=30))
-    reopened.record_sync_result("upload", "one", now + timedelta(seconds=5), error_code=None)
-    assert reopened.work_due("upload", "one", now + timedelta(seconds=5))
+    reopened.record_sync_result("status", two, now, error_code=None)
+    assert reopened.sync_snapshot("status", two)["attempts"] == 0
+    assert not reopened.work_due("status", two, now + timedelta(seconds=29))
+    assert reopened.work_due("status", two, now + timedelta(seconds=30))
+    reopened.record_sync_result("upload", one, now + timedelta(seconds=5), error_code=None)
+    assert reopened.work_due("upload", one, now + timedelta(seconds=5))
 
 
 def test_retry_schema_migration_preserves_version_one_history(tmp_path: Path) -> None:

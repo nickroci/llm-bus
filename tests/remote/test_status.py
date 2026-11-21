@@ -49,7 +49,6 @@ def test_message_status_import_is_local_admission_not_queued_report(tmp_path: Pa
     store, config = setup_machine(tmp_path, "b")
     store.register("claude", "recipient", str(tmp_path / "repo"))
     envelope = delivery()
-    envelope["sent_at"] = "2020-01-01T00:00:00.000Z"
     imported = RemoteStore(store, config.connection).admit_message(
         envelope, config.repositories[0].scope
     )

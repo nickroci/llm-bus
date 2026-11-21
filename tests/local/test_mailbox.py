@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import subprocess
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -124,8 +125,8 @@ def test_linked_worktrees_share_routing_scope_but_keep_their_folders(
         )
         db.execute(
             "INSERT INTO messages VALUES (1, 'codex:old-sender', 'codex:old-recipient', "
-            "'old worktree message', ?, ?, '2026-11-01T00:00:00.000Z', NULL)",
-            (str(nested), str(nested)),
+            "'old worktree message', ?, ?, ?, NULL)",
+            (str(nested), str(nested), datetime.now(UTC).isoformat()),
         )
     migrated = Store(legacy_path)
     subprocess.run(

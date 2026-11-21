@@ -263,7 +263,7 @@ def apply_status(self: Bridge, envelope: Envelope, value: object) -> None:
     data = protocol.validate_status(envelope["id"], value)
     if "report_expires_at" in data:
         Reports(self.store, self.config.connection).deadline(
-            envelope["id"], data["report_expires_at"]
+            envelope["id"], data["report_expires_at"], data.get("retention_expires_at")
         )
     self.remote.set_state(envelope["id"], cast("str", data["status"]))
     self.remote.observe_acceptance(envelope["id"], self.clock())

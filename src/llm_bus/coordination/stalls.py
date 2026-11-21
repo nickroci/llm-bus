@@ -21,6 +21,8 @@ from llm_bus.hosts.sessions import is_subagent
 from llm_bus.locks import notices
 from llm_bus.locks.timer import TIMER_POLL_SECONDS, TIMER_START_SECONDS, spawn_checked
 from llm_bus.mailbox.agents import SESSION_IDLE_HOURS
+from llm_bus.mailbox.eligibility import cutoff
+from llm_bus.mailbox.retention_schema import normalize_age
 from llm_bus.policy.config import optional_config
 
 if TYPE_CHECKING:
@@ -200,7 +202,12 @@ def eligible(
     for row, report, is_open, _cancelled in work_state.direction_states(
         db, project, address, coordinator=True
     ):
-        if not is_open or row.operation not in OPERATIONS or row.sender != address:
+        if (
+            not is_open
+            or row.operation not in OPERATIONS
+            or row.sender != address
+            or normalize_age(row.sent_at) <= cutoff(now)
+        ):
             continue
         permitted = (
             _remote_target(db, project, row)

@@ -37,6 +37,14 @@ def allocate_id(db: Connection, kind: Literal["message", "monitor"]) -> int:
     return row[0]
 
 
+def migrate_report_windows(db: Connection) -> None:
+    columns = cast(
+        "list[tuple[int, str]]", db.execute("PRAGMA table_info(remote_report_windows)").fetchall()
+    )
+    if "retention_expires_at" not in {row[1] for row in columns}:
+        db.execute("ALTER TABLE remote_report_windows ADD COLUMN retention_expires_at TEXT")
+
+
 def _seed_ids(db: Connection) -> None:
     db.execute(
         "CREATE TABLE IF NOT EXISTS mailbox_id_high_water "

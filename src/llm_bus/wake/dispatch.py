@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, NamedTuple, cast
 
 from llm_bus.diagnostics.messages import safe_wake_reason
+from llm_bus.mailbox.eligibility import cutoff
 from llm_bus.wake.adapters import WakeResult, wake
 
 if TYPE_CHECKING:
@@ -49,7 +50,8 @@ class Batch(NamedTuple):
 
 
 def _claim(store: Store, recipient: str, *, trigger_id: int | None) -> Claim | None:
-    now = _now().isoformat()
+    instant = _now()
+    now = instant.isoformat()
     capability = _capability(store, recipient)
     with store.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -75,9 +77,9 @@ def _claim(store: Store, recipient: str, *, trigger_id: int | None) -> Claim | N
         if (
             db.execute(
                 "SELECT 1 FROM messages m WHERE m.recipient=? AND m.acknowledged_at IS NULL "
-                "AND NOT EXISTS (SELECT 1 FROM wake_coverage c "
+                "AND m.retention_at>? AND NOT EXISTS (SELECT 1 FROM wake_coverage c "
                 "WHERE c.message_id=m.id AND c.status='requested') LIMIT 1",
-                (recipient,),
+                (recipient, cutoff(instant)),
             ).fetchone()
             is None
         ):
@@ -159,6 +161,7 @@ def _finish(
     result: WakeResult,
 ) -> bool | None:
     now = _now()
+    retained_after = cutoff(now)
     status = result["status"]
     attempts = 0 if status in {"requested", "coalesced"} else claim.attempts + 1
     next_attempt = (
@@ -186,20 +189,23 @@ def _finish(
         for key, _ in batch.members:
             db.execute(
                 "INSERT INTO wake_coverage(message_id,attempt_token,status,checked_at) "
-                "VALUES (?,?,?,?) "
+                "SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM messages WHERE id=? "
+                "AND recipient=? AND retention_at>?) "
                 "ON CONFLICT(message_id) DO UPDATE SET attempt_token=excluded.attempt_token,"
                 "status=excluded.status,checked_at=excluded.checked_at",
-                (key, claim.token, status, now.isoformat()),
+                (key, claim.token, status, now.isoformat(), key, recipient, retained_after),
             )
             db.execute(
                 "UPDATE messages SET wake_status=?,wake_via=?,wake_reason=?,wake_checked_at=? "
-                "WHERE id=?",
+                "WHERE id=? AND recipient=? AND retention_at>?",
                 (
                     status,
                     result["via"],
                     safe_wake_reason(status, result["via"], result.get("reason")),
                     now.isoformat(),
                     key,
+                    recipient,
+                    retained_after,
                 ),
             )
         arrived = row[0] != batch.generation
@@ -261,7 +267,8 @@ def dispatch_due(store: Store) -> None:
                 "SELECT d.recipient FROM wake_dispatch d "
                 "WHERE d.recipient NOT IN (SELECT address FROM remote_proxies) "
                 "AND EXISTS (SELECT 1 FROM messages m WHERE m.recipient=d.recipient "
-                "AND m.acknowledged_at IS NULL)"
+                "AND m.acknowledged_at IS NULL AND m.retention_at>?)",
+                (cutoff(),),
             ).fetchall(),
         )
     for (recipient,) in recipients:

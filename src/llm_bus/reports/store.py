@@ -26,8 +26,8 @@ class Reports:
     def __init__(self, store: Store, connection: str) -> None:
         self.remote = RemoteStore(store, connection)
 
-    def deadline(self, remote_id: str, value: object) -> None:
-        return snapshots.deadline(self, remote_id, value)
+    def deadline(self, remote_id: str, value: object, retention: object = None) -> None:
+        return snapshots.deadline(self, remote_id, value, retention)
 
     def pollable_pages(self, *, now: datetime | None = None) -> Iterator[list[Envelope]]:
         return snapshots.pollable_pages(self, now=now)

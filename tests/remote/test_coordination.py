@@ -1,7 +1,7 @@
 """Remote transport never converts typed directions into ordinary messages."""
 
 from dataclasses import asdict, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from os import environ
 from pathlib import Path
 from sqlite3 import IntegrityError
@@ -395,7 +395,8 @@ def test_availability_dedup_ordering_and_no_authority(tmp_path: Path) -> None:
     store, config = setup_machine(tmp_path, "b")
     item = delivery()
     item["availability"] = availability_fixture(store, config)
-    item["sent_at"] = "2026-01-02T00:00:00Z"
+    now = datetime.now(UTC)
+    item["sent_at"] = (now - timedelta(hours=2)).isoformat()
     assert_inbox_admission(admit_delivery(store, config, item))
     duplicate = item.copy()
     duplicate["id"] = str(uuid4())
@@ -403,12 +404,12 @@ def test_availability_dedup_ordering_and_no_authority(tmp_path: Path) -> None:
     older = item.copy()
     older.update(
         id=str(uuid4()),
-        sent_at="2026-01-01T00:00:00Z",
+        sent_at=(now - timedelta(hours=3)).isoformat(),
         availability={**item["availability"], "grant_id": str(uuid4())},
     )
     assert admit_delivery(store, config, older) is None
     newer = older.copy()
-    newer.update(id=str(uuid4()), sent_at="2026-01-03T00:00:00Z")
+    newer.update(id=str(uuid4()), sent_at=(now - timedelta(hours=1)).isoformat())
     assert_inbox_admission(admit_delivery(store, config, newer))
     with store.transaction() as db:
         assert (

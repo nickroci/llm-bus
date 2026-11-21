@@ -15,7 +15,7 @@ import pytest
 
 from llm_bus.cli.commands import human_command
 from llm_bus.cli.parser import build_parser
-from llm_bus.coordination import stalls
+from llm_bus.coordination import stalls, work_state
 from llm_bus.coordination.cli import run
 from llm_bus.coordination.store import project
 from llm_bus.errors import BusError
@@ -76,6 +76,23 @@ def test_admitted_local_events_and_invalid_replies(
     with pytest.raises(BusError, match="scope"):
         store.send(worker, OWNER, "wrong scope", reply_to=message_id)
     assert clock_state(store, message_id)[1] == 4
+
+
+def test_expired_direction_cannot_report_or_emit_notice_before_purge(
+    enrolled: tuple[Store, Direction, SenderContext],
+) -> None:
+    store, _direction, owner = enrolled
+    message_id = send(store, owner, "assign")
+    now = datetime.now(UTC)
+    with store.transaction() as db:
+        record = project(db, routing_scope(owner.project), "demo")
+        db.execute(
+            "UPDATE messages SET sent_at=? WHERE id=?",
+            ((now - timedelta(days=14)).isoformat(), message_id),
+        )
+        assert stalls.apply_due(store, db, record, now=now) == []
+        with pytest.raises(BusError, match="Report requires"):
+            work_state.record(db, message_id, WORKER, "received", None)
 
 
 def test_stall_cli_is_read_only_and_configuration_is_local(

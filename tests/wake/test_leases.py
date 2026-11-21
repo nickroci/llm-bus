@@ -56,7 +56,7 @@ def test_wake_concurrent_sender_rechecks_active_lease(
 def test_wake_lease_crash_recovers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # pylint: disable=protected-access,clean-code-commented-out-code
     store, recipient, _sender = _mailbox(tmp_path)
-    clock = datetime(2030, 1, 1, tzinfo=UTC)
+    clock = datetime.now(UTC)
     monkeypatch.setattr(llm_bus.wake.dispatch, "_now", lambda: clock)
     claim = llm_bus.wake.dispatch._claim(store, recipient, trigger_id=None)  # pyright: ignore[reportPrivateUsage]
     assert claim is not None
@@ -90,7 +90,7 @@ def test_wake_expired_leader_cannot_enter_adapter(
 ) -> None:
     # pylint: disable=protected-access,clean-code-commented-out-code
     store, recipient, _sender = _mailbox(tmp_path)
-    clock = datetime(2030, 1, 1, tzinfo=UTC)
+    clock = datetime.now(UTC)
     snapshot = llm_bus.wake.dispatch._snapshot  # pyright: ignore[reportPrivateUsage]
 
     def expire(

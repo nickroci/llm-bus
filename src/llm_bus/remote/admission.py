@@ -21,6 +21,8 @@ from llm_bus.coordination.models import (
 from llm_bus.coordination.stalls import observe_message
 from llm_bus.errors import BusError
 from llm_bus.hosts.sessions import is_subagent
+from llm_bus.mailbox import writes
+from llm_bus.mailbox.eligibility import DELIVERY_HOURS, cutoff
 from llm_bus.mailbox.retention_schema import allocate_id, normalize_age
 from llm_bus.policy.inbound import receive_mode
 from llm_bus.remote import outbox
@@ -37,41 +39,52 @@ if TYPE_CHECKING:
     from llm_bus.remote.store import RemoteStore
 
 
-def incoming_parent(self: RemoteStore, db: Connection, item: Delivery, scope: str) -> int | None:
+def incoming_parent(
+    self: RemoteStore, db: Connection, item: Delivery, scope: str, now: datetime
+) -> int | None:
     parent_uuid = item.get("reply_to")
     if parent_uuid is None:
         return None
     validate_reply_uuid(parent_uuid)
     parent = cast(
-        "tuple[int, str] | None",
+        "tuple[int, str, str] | None",
         db.execute(
-            "SELECT local_id,envelope FROM remote_imports WHERE id=? UNION ALL "
-            "SELECT local_id,envelope FROM remote_outbox WHERE id=?",
+            "SELECT r.local_id,r.envelope,m.retention_at FROM remote_imports r "
+            "JOIN messages m ON m.id=r.local_id WHERE r.id=? UNION ALL "
+            "SELECT o.local_id,o.envelope,m.retention_at FROM remote_outbox o "
+            "JOIN messages m ON m.id=o.local_id WHERE o.id=?",
             (parent_uuid, parent_uuid),
         ).fetchone(),
     )
     if parent is None:
         return None
+    local_id, payload, age = parent
     native = item["recipient"].split("/", 2)[2]
-    outbox.validate_parent_envelope(self, parent[1], item["sender"], native, item["repo_id"])
-    self.store.validate_reply(
-        db, parent[0], (item["sender"], f"remote:{item['repo_id']}"), (native, scope)
+    outbox.validate_parent_envelope(self, payload, item["sender"], native, item["repo_id"])
+    writes.validate_reply(
+        db,
+        local_id,
+        (item["sender"], f"remote:{item['repo_id']}"),
+        (native, scope),
+        accepted_remote=True,
     )
-    return parent[0]
+    return local_id if age > cutoff(now) else None
 
 
-def _screen(
+def _screen(  # noqa: PLR0913 - captured instant belongs to the admission operation
     db: Connection,
     item: Delivery,
     recipient: tuple[str, str],
     direction: Direction | None,
     *,
     inbox: bool,
+    now: datetime,
 ) -> tuple[bool, Approval | None]:
     """Parse the approval and, for inbox delivery, apply the lifetime cap and receiver authority.
 
     An approval rides only with a gate direction; a missing one is left to ``authorize``.
     """
+    # pylint: disable=too-many-arguments
     approval = None
     if "approval" in item:
         if direction is None or direction.operation not in GATE_OPERATIONS:
@@ -82,7 +95,6 @@ def _screen(
             return False, None
     if direction is None or not inbox:
         return True, approval
-    now = datetime.now(UTC)
     # A peer cannot widen the local approval lifetime cap.
     if approval is not None and timestamp(approval.expires_at) > now + MAX_LIFETIME:
         return False, None
@@ -98,15 +110,19 @@ def _screen(
     return decision.verified, approval
 
 
-def admit_message(  # noqa: C901, PLR0911 - explicit transport and authority denials
+def admit_message(  # noqa: C901, PLR0911, PLR0912 - explicit transport and authority denials
     self: RemoteStore, item: Delivery, scope: str
 ) -> tuple[str, int | None, bool] | None:
     """Commit exactly one delivery class under the current machine policy."""
-    # pylint: disable=too-many-locals,too-many-return-statements
+    # pylint: disable=too-many-locals,too-many-return-statements,too-many-branches
     native = item["recipient"].split("/", 2)[2]
     payload = json.dumps(item, sort_keys=True)
     with self.store.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
+        now = datetime.now(UTC)
+        age = normalize_age(item["sent_at"])
+        if age <= cutoff(now):
+            return None
         recipient = cast(
             "tuple[str, str] | None",
             db.execute(
@@ -124,7 +140,9 @@ def admit_message(  # noqa: C901, PLR0911 - explicit transport and authority den
             raise BusError("Conflicting remote message classes")
         event = Availability.parse(item["availability"]) if "availability" in item else None
         direction = Direction.parse(item["coordination"]) if "coordination" in item else None
-        admit, approval = _screen(db, item, (native, scope), direction, inbox=mode == "inbox")
+        admit, approval = _screen(
+            db, item, (native, scope), direction, inbox=mode == "inbox", now=now
+        )
         if not admit:
             return None
         prior = cast(
@@ -143,9 +161,20 @@ def admit_message(  # noqa: C901, PLR0911 - explicit transport and authority den
             return prior_mode, prior_id, False
         if db.execute("SELECT 1 FROM remote_replay_guard WHERE id=?", (item["id"],)).fetchone():
             return None
-        age = normalize_age(item["sent_at"])
-        parent_id = incoming_parent(self, db, item, scope)
-        if "reply_to" in item and parent_id is None:
+        if age <= cutoff(now, hours=DELIVERY_HOURS):
+            return None
+        parent_id = incoming_parent(self, db, item, scope, now)
+        # UUID knowledge grants no authority: policy and typed authority were checked above.
+        if (
+            "reply_to" in item
+            and parent_id is None
+            and not db.execute(
+                "SELECT 1 FROM remote_replay_guard WHERE id=? UNION ALL "
+                "SELECT 1 FROM remote_imports WHERE id=? UNION ALL "
+                "SELECT 1 FROM remote_outbox WHERE id=?",
+                (item["reply_to"], item["reply_to"], item["reply_to"]),
+            ).fetchone()
+        ):
             return None
         if mode == "monitor":
             db.execute(
@@ -195,7 +224,7 @@ def admit_message(  # noqa: C901, PLR0911 - explicit transport and authority den
         )
         self.store.request_dispatch(db, native)
         if direction is None and event is None and parent_id is not None:
-            observe_message(db, local_id, now=datetime.now(UTC))
+            observe_message(db, local_id, now=now)
         db.execute("RELEASE availability_admission")
         return "inbox", local_id, True
 
@@ -207,7 +236,8 @@ def acknowledgements(self: RemoteStore) -> list[tuple[str, str]]:
             db.execute(
                 "SELECT r.id,r.envelope FROM remote_imports r "
                 "JOIN messages m ON m.id=r.local_id "
-                "WHERE r.ack_synced=0 AND m.acknowledged_at IS NOT NULL"
+                "WHERE r.ack_synced=0 AND m.acknowledged_at IS NOT NULL AND m.retention_at>?",
+                (cutoff(),),
             ).fetchall(),
         )
     return [
