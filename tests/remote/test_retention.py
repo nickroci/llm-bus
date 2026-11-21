@@ -301,13 +301,15 @@ def test_buffered_transport_response_and_cached_upload_cannot_restore_old_conten
     sent = remote.enqueue(
         SenderContext("codex", "sender", str(tmp_path / "repo")), "b/xyz/claude:r", "xyz", "old"
     )
+    with store.transaction() as db:
+        db.execute("UPDATE messages SET sent_at=? WHERE id=?", (clock.isoformat(), sent["id"]))
     envelope = remote.outgoing()[0][0]
     bridge = Bridge(store, config, clock=lambda: Clock.instant)
-    Clock.instant = clock + timedelta(days=14, seconds=1)
+    Clock.instant = clock + timedelta(days=14)
     if purged:
         with store.transaction() as db:
             db.execute("BEGIN IMMEDIATE")
-            retention.purge(db, now=Clock.instant)
+            assert retention.purge(db, now=Clock.instant) == {"messages": 1, "monitors": 0}
     outgoing.apply_status(
         bridge,
         envelope,
@@ -322,6 +324,7 @@ def test_buffered_transport_response_and_cached_upload_cannot_restore_old_conten
     assert remote.outgoing() == []
     assert remote.statuses() == []
     with store.transaction() as db:
+        assert db.execute("SELECT COUNT(*) FROM messages").fetchone() == (0 if purged else 1,)
         assert db.execute("SELECT COUNT(*) FROM remote_report_windows").fetchone() == (0,)
         assert db.execute("SELECT COUNT(*) FROM remote_sync_work").fetchone() == (0,)
         if not purged:
@@ -381,11 +384,13 @@ def test_buffered_report_snapshot_after_retention_cannot_persist(
         ),
     )
     remote = RemoteStore(store, config.connection)
-    remote.enqueue(
+    sent = remote.enqueue(
         SenderContext("codex", "sender", str(tmp_path / "repo")), "b/xyz/claude:r", "xyz", "message"
     )
+    with store.transaction() as db:
+        db.execute("UPDATE messages SET sent_at=? WHERE id=?", (clock.isoformat(), sent["id"]))
     envelope = remote.outgoing()[0][0]
-    Clock.instant = clock + timedelta(days=14, seconds=1)
+    Clock.instant = clock + timedelta(days=14)
     reports = Reports(store, config.connection)
     reports.receive(
         envelope,
@@ -398,6 +403,7 @@ def test_buffered_report_snapshot_after_retention_cannot_persist(
         config,
     )
     with store.transaction() as db:
+        assert db.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
         assert db.execute("SELECT COUNT(*) FROM remote_reports").fetchone() == (0,)
 
 
