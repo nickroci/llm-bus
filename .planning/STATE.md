@@ -1,17 +1,17 @@
 # Project State
 
-Last activity: 2026-11-21 - Unattended coordination passed task reviews and integrated local verification. PR review and CI are pending.
+Last activity: 2026-11-21 - Unattended coordination PR #93 passed review and CI on 2319b238. Final tracking validation, final-head CI, and merge are pending.
 
 ## Registered Work
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
-| 261121-unc | Unattended coordination | Implementation verified. PR review and CI pending. | [261121-unc-unattended-coordination](./quick/261121-unc-unattended-coordination/) |
 
 ## Quick Tasks Completed
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261121-unc | Unattended coordination — PR #93 | Review and CI passed on 2319b238. Merge pending final tracking validation and final-head CI. | [261121-unc-unattended-coordination](./quick/261121-unc-unattended-coordination/) |
 | 261120-pap | Project action preapproval — PR #92 | Implementation review and CI passed. Merge pending final tracking validation. | [261120-pap-project-action-preapproval](./quick/261120-pap-project-action-preapproval/) |
 | 261114-s7n | Coordination blocker reporting and stall detection — PR #90 | PR #90 review passed (R2) and CI passed on 1166e361; final tracking validation, current-head CI and merge pending; no installed rollout | [261114-s7n-coordination-blocker-reporting-and-stall](./quick/261114-s7n-coordination-blocker-reporting-and-stall/) |
 | 261114-cua | Coordinator as user contact — PR #89 | PR #89 review passed (R1) and reviewed-head CI passed; tracking validation, current-head CI and merge pending; rollout requires separate authorization | [261114-cua-coordinator-user-actions](./quick/261114-cua-coordinator-user-actions/) |
