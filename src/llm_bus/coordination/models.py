@@ -1,7 +1,7 @@
 """Strict direction wire data and bounded local references."""
 
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import cast
 from uuid import UUID
@@ -21,7 +21,10 @@ BRANCH = re.compile(r"(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}")
 SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 MAX_TICKET = 128
 RECORD_ID = re.compile(r"[0-9a-f]{32}")
-APPROVAL_KEYS = frozenset({"ticket", "branch", "base", "expires_at", "pr", "head_sha", "record_id"})
+REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+APPROVAL_KEYS = frozenset(
+    {"ticket", "branch", "base", "expires_at", "pr", "head_sha", "record_id", "repository"}
+)
 REQUIRED_APPROVAL_KEYS = frozenset({"ticket", "branch", "base", "expires_at"})
 
 
@@ -66,7 +69,7 @@ def timestamp(value: str) -> datetime:
 
 
 @dataclass(frozen=True)
-class Direction:
+class Direction:  # pylint: disable=too-many-instance-attributes
     """Immutable metadata; presence alone never establishes authority."""
 
     version: int
@@ -74,6 +77,15 @@ class Direction:
     generation: str
     grant_id: str
     operation: str
+    run_id: str | None = None
+    ticket: str | None = None
+    branch: str | None = None
+    claimed_at: str | None = None
+
+    def wire(self) -> dict[str, object]:
+        """Keep legacy metadata unchanged when no unattended binding is present."""
+        fields = cast("dict[str, object]", asdict(self))
+        return {key: value for key, value in fields.items() if value is not None}
 
     def validate(self) -> None:
         # bool subclasses int but is not a valid protocol version.
@@ -86,6 +98,14 @@ class Direction:
             raise BusError("Invalid direction")
         for value in (self.project_id, self.generation, self.grant_id):
             uuid4_string(value)
+        binding = (self.run_id, self.ticket, self.branch, self.claimed_at)
+        if any(value is not None for value in binding):
+            if not all(isinstance(value, str) for value in binding):
+                raise BusError("Incomplete unattended direction binding")
+            uuid4_string(cast("str", self.run_id))
+            ticket_text(self.ticket)
+            branch_name(self.branch)
+            timestamp(cast("str", self.claimed_at))
 
     @classmethod
     def parse(cls, value: object) -> "Direction":
@@ -93,14 +113,20 @@ class Direction:
         if not isinstance(value, dict):
             raise BusError("Invalid direction fields")
         fields = cast("dict[str, object]", value)
-        if set(fields) != {
+        required = {
             "version",
             "project_id",
             "generation",
             "grant_id",
             "operation",
-        }:
+        }
+        optional = {"run_id", "ticket", "branch", "claimed_at"}
+        if not required <= set(fields) <= required | optional:
             raise BusError("Invalid direction fields")
+        if set(fields) & optional and not optional <= set(fields):
+            raise BusError("Incomplete unattended direction binding")
+        if optional <= set(fields) and not all(isinstance(fields[key], str) for key in optional):
+            raise BusError("Invalid unattended direction types")
         if type(fields["version"]) is not int or not all(
             isinstance(fields[key], str)
             for key in ("project_id", "generation", "grant_id", "operation")
@@ -112,13 +138,17 @@ class Direction:
             cast("str", fields["generation"]),
             cast("str", fields["grant_id"]),
             cast("str", fields["operation"]),
+            *(
+                cast("str | None", fields.get(key))
+                for key in ("run_id", "ticket", "branch", "claimed_at")
+            ),
         )
         result.validate()
         return result
 
 
 @dataclass(frozen=True)
-class Approval:
+class Approval:  # pylint: disable=too-many-instance-attributes
     """Exact gate evidence a coordinator approves; never authority by itself."""
 
     ticket: str
@@ -128,6 +158,7 @@ class Approval:
     pr: int | None = None
     head_sha: str | None = None
     record_id: str | None = None
+    repository: str | None = None
 
     def validate(self, operation: str) -> None:
         # bool subclasses int but is not a valid pull request number.
@@ -150,6 +181,10 @@ class Approval:
             raise BusError("Invalid approval head_sha")
         if self.record_id is not None and (not merge or not RECORD_ID.fullmatch(self.record_id)):
             raise BusError("Invalid approval record_id")
+        if self.repository is not None and (
+            not merge or REPOSITORY.fullmatch(self.repository) is None
+        ):
+            raise BusError("Invalid approval repository")
 
     def wire(self) -> dict[str, object]:
         fields: dict[str, object] = {
@@ -164,6 +199,8 @@ class Approval:
             fields["head_sha"] = self.head_sha
         if self.record_id is not None:
             fields["record_id"] = self.record_id
+        if self.repository is not None:
+            fields["repository"] = self.repository
         return fields
 
     @classmethod
@@ -178,9 +215,12 @@ class Approval:
             raise BusError("Invalid approval types")
         head_sha = fields.get("head_sha")
         record_id = fields.get("record_id")
+        repository = fields.get("repository")
         if (head_sha is not None and not isinstance(head_sha, str)) or (
             record_id is not None and not isinstance(record_id, str)
         ):
+            raise BusError("Invalid approval types")
+        if repository is not None and not isinstance(repository, str):
             raise BusError("Invalid approval types")
         result = cls(
             cast("str", texts["ticket"]),
@@ -190,6 +230,7 @@ class Approval:
             cast("int | None", fields.get("pr")),
             head_sha,
             record_id,
+            repository,
         )
         result.validate(operation)
         return result

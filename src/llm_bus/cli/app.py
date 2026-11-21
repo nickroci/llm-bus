@@ -20,7 +20,7 @@ from llm_bus.cli.parser import build_parser
 from llm_bus.cli.upgrade import upgrade
 from llm_bus.collab.models import CollabError
 from llm_bus.coordination import approvals
-from llm_bus.coordination.setup import profile, run_wizard
+from llm_bus.coordination.setup import profile, run_activation_wizard, run_wizard
 from llm_bus.errors import BusError
 from llm_bus.hosts.processes import host_process
 from llm_bus.hosts.sessions import require_main_agent
@@ -89,6 +89,10 @@ def _sessionless(store: Store, command: object, args: dict[str, object]) -> obje
 def _setup(store: Store, args: dict[str, object]) -> dict[str, object] | None:
     """Setup registers no session: terminal owners get the wizard, agents get the profile."""
     cwd = str(Path.cwd().resolve())
+    if args.get("action") == "unattended":
+        if not (sys.stdin.isatty() and sys.stdout.isatty()) or args["format"] == "agent":
+            raise BusError("Owner terminal activation requires an interactive terminal")
+        return run_activation_wizard(store, str(args["project"]), cwd, _optional_address())
     if sys.stdin.isatty() and sys.stdout.isatty() and args["format"] != "agent":
         return run_wizard(store, str(args["project"]), cwd, _optional_address())
     return profile(cwd)
@@ -97,6 +101,12 @@ def _setup(store: Store, args: dict[str, object]) -> dict[str, object] | None:
 def _skills_dir(args: dict[str, object]) -> Path | None:
     value = args.get("skills_dir")
     return value.expanduser() if isinstance(value, Path) else None
+
+
+def _unattended_setup(command: object, args: dict[str, object]) -> bool:
+    return (
+        command == "coordination" and args.get("action") == "unattended" and bool(args.get("setup"))
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901, PLR0912 - command dispatch
@@ -132,6 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901, PLR0912 - com
         if (
             command == "collab"
             or (command == "coordinate" and args.get("setup"))
+            or _unattended_setup(command, args)
             or _owner_force(command, args)
         ):
             result = _sessionless(store, command, args)

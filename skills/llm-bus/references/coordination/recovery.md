@@ -86,6 +86,114 @@ If a host wake fails or is unsupported, resume the coordinator manually and
 read its durable inbox. Do not resend a stored notice or treat it as permission
 to retry work. Revoked or ended authority stops new detection; history remains.
 
+### Unattended checkpoints and outcomes
+
+On activation, each supported wake, and resume, read `coordination show PROJECT`
+and the latest `unattended` summary. Guidance carries its run ID, ready tickets,
+blockers and end reason. Reconcile those references with Beads history, current
+directions and reports, the actual worktree and provider evidence before acting.
+The bus does not execute Beads, launch workers or schedule parallel tasks. Continue
+independent ready tickets while a blocked ticket waits; a blocker does not grant
+permission to expand the confirmed scope.
+
+The coordinator records a bounded checkpoint after checking a worker's current
+claim and worktree. Ready checkpoints require a clean worktree; running, failed
+and blocked checkpoints may preserve unfinished changes:
+
+```sh
+llm-bus coordination run-checkpoint PROJECT --run-id RUN_UUID --ticket TICKET --worker claude:WORKER_ID --worktree /absolute/worktree --revision 0 --state ready
+```
+
+Use the returned revision for the next update. A duplicate or reordered update
+with an old revision fails rather than replacing newer progress. States are
+`ready`, `running`, `blocked` and `failed`. Add repeated `--depends-on TICKET`
+for dependencies within the approved run, and a fixed `--reason` of `dependency`,
+`owner`, `provider`, `host` or `recoverable` when needed. Keep detailed evidence
+in the existing ticket history. Checkpoints supplement that history and retain
+the worker, claim, branch, head, dependencies and retry count.
+
+After a recoverable read-only failure, compare the current worktree with the
+checkpoint, inspect previous directions, reports and provider effects, then run:
+
+```sh
+llm-bus coordination run-retry PROJECT --run-id RUN_UUID --ticket TICKET --worktree /absolute/worktree --revision REVISION --read-only
+```
+
+The bus permits at most two read-only retries with an unchanged claim and clean
+worktree. This command marks work ready; it does not send a direction or repeat
+a provider operation. Changed evidence or a prior merge submission denies retry.
+Mutations, including secret operations, require their existing action-time gates
+and reconciliation; this retry flag never authorizes them.
+
+### Verified worker handoff
+
+Silence, roster expiry and a host disconnect do not prove that a process stopped.
+This path requires the prior worker's explicit cancellation acceptance. That
+worker first stops work, reconciles outstanding provider operations, preserves
+its work, and then records:
+
+```sh
+llm-bus coordination handoff-ready PROJECT --run-id RUN_UUID --ticket TICKET --worktree /absolute/worktree --no-pending-effects
+```
+
+The worker must make no further changes or submissions after accepting
+cancellation. Unknown merge or secret outcomes block handoff. Where a gate
+record names a PR, also pass `--pr NUMBER --repository OWNER/REPO` to both
+handoff commands; the bus reads its current open state, branch, base and head.
+Reconcile any other provider operation directly before asserting no pending
+effects. This assertion is a procedural same-user control, not proof that an
+arbitrary external process cannot act.
+
+An enrolled replacement must already have its own live grant and owner consent,
+and must not own another claim. The coordinator repeats the live worktree and PR
+checks and transfers the exact current claim atomically:
+
+```sh
+llm-bus coordination run-handoff PROJECT --handoff-id HANDOFF_UUID --worker claude:REPLACEMENT_ID --worktree /absolute/worktree
+```
+
+Only still-applicable routine ticket decisions carry forward. Each copy keeps
+the original answer source, session and turn, plus decision and handoff lineage.
+The replacement must use `decision-show` on the returned IDs. The old worker
+cannot use either the retired decision or the copied decision. Approvals and
+development-secret receipts never transfer; obtain fresh gates and receipts.
+Concurrent or stale transfers fail without changing ownership. If the prior
+worker cannot accept cancellation, retain a host blocker and obtain operator
+evidence and recovery assistance; do not infer authority from silence.
+
+### Completion proof
+
+The owner confirms `--completion-proof reviewed-pr` (the default) or `merged-pr`
+alongside the human-readable completion condition. `merged-pr` requires a
+selected merge permission. For `reviewed-pr`, record a current worker gate
+record after independent review and required CI are green on the exact PR head.
+When merge was declined, the worker includes `--run-id RUN_UUID` on the existing
+`gate-record` command to submit an observation without merge delegation. This
+record carries the exact claim and run, and grants no merge authority:
+
+```sh
+llm-bus coordination run-result PROJECT --run-id RUN_UUID --record-id RECORD_ID --repository OWNER/REPO
+```
+
+This verifies live provider evidence without merging or granting merge authority.
+Completion refreshes still-open PR proof. A run that requires merged PRs uses
+the existing authorized `gate-merge` command, which commits an unknown outcome
+before submission. After submission or interruption, confirm the result without
+replaying it:
+
+```sh
+llm-bus coordination run-merge-reconcile PROJECT --message-id APPROVAL_MESSAGE_ID
+llm-bus coordination unattended-complete PROJECT --run-id RUN_UUID
+```
+
+Every approved ticket needs the confirmed proof before completion. Arbitrary
+prose and non-PR completion conditions are not machine-verified by this path;
+preserve their blocker for owner-directed reconciliation. Status and resume
+retain results, PRs, heads, required checks, decisions, handoffs, checkpoints,
+blockers and the end reason. Expiry or a coordinator generation change stops
+new authority and requires fresh owner activation. A sleeping machine or
+unsupported wake delays work until a supported entry point runs.
+
 ### Recovery brief
 
 Give the reading to one read-only native subagent (`core.md`, "Delegated

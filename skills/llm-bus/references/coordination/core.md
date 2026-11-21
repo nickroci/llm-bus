@@ -53,7 +53,11 @@ your own direct owner join count as the user asked for exactly those gates and
 conditions; stricter repository rules still win. The floor is never
 delegable: force-push, production changes, credential or secret
 changes, and merge with failing or pending CI. Delegation
-specs naming a floor item are rejected. An approval counts only while verified
+specs naming a floor item are rejected. The sole secret exception is one exact
+owner-signed development operation under protected host policy; follow
+[exact development secret consent](https://github.com/wnz99/llm-bus/blob/main/docs/coordination.md#exact-development-secret-consent).
+Unattended mode, project execution, decisions, timed defaults and ordinary
+directions never grant that consent. An approval counts only while verified
 (`coordination.verified: true`, `reason: verified`); other reasons
 (for example `gate_not_delegated`, `target_denied`, `expired`, `wrong_ticket`,
 `invalid_direction`, `revoked`, `wrong_scope`, `stale_generation`)

@@ -61,7 +61,9 @@ narrowed with `--narrow GATE:BRANCH`. Workers act on `coordination approve` only
 after live checks and for tickets they hold through `coordination claim`.
 
 Force-push, production changes, credentials or secrets, and merging with failing
-or pending CI are never delegable. The bus
+or pending CI are never delegable. One exact development secret operation has a
+separate owner-signed receipt path below; delegation and project execution
+cannot issue that consent. The bus
 does not check CI. Remote approvals additionally require the receiving owner's
 delegation, worker binding, and peer `accept_delegated_gates` policy, as well as
 the coordinator owner's delegation. See the
@@ -115,6 +117,101 @@ and `join` return the applicable role's text; `coordination show` filters by rol
 Hooks carry a digest pointer instead of the text. Run `llm-bus guidance` before
 acting unless the current context already holds that digest's instructions.
 See [Objective amendments and standing instructions](tutorial.md#8-objective-amendments-and-standing-instructions).
+
+## Exact development secret consent
+
+The owner can separately preapprove one create, replace or delete operation for
+one named development secret. This is available only to a current local worker
+with project execution consent, a current ticket claim, and an active unattended
+run whose selected permissions include `project-execution`. Existing projects
+receive no receipts. Setup, decisions, timed defaults and messages grant none.
+
+The machine owner must first provision `/etc/llm-bus/development-secrets.json`
+through an independently controlled privileged account. The file and its resolved
+ancestor directories must be root-owned and not writable by the agent, including
+through ACLs. On macOS `/etc` resolves through `/private/etc`. Root-agent execution,
+missing policy, writable anchors and unavailable verification deny consent. There
+is no environment, project or CLI override. Do not give the worker privileged
+policy-edit access or access to the owner's private signing key or signing socket.
+This implementation accepts Ed25519 owner keys and uses `/usr/bin/ssh-keygen`.
+
+The policy has exactly these fields; the example contains only public metadata:
+
+```json
+{"version":1,"machine":"owner-machine","owners":{"owner":"ssh-ed25519 PUBLIC_KEY_BASE64"},"targets":[{"provider":"PROVIDER","account":"ACCOUNT","provider_project":"PROJECT","target":"DEV_TARGET","environment":"development"}],"revoked":[]}
+```
+
+Each target tuple is the owner's verified development allowlist. Production and
+unknown targets are not eligible. Removing a signer or target, or adding a receipt
+UUID to `revoked`, stops future checks. Host policy is local to this machine and
+does not grant relay admission or modify peer trust.
+
+Prepare a metadata-only plan describing intended effects and resource
+preconditions. It must contain no secret values or hashes of secret values. The
+receipt is a JSON object with exactly the string fields below. Use version `"1"`,
+canonical UUIDv4 IDs, operation `create`, `replace` or `delete`, an exact local
+actor address, and RFC3339 claim and expiry timestamps. The repository is the
+canonical local repository scope returned by the bus. Use current project, run,
+generation, grant, ticket and claim facts, not copied historical authority.
+
+```text
+version receipt_id owner repository project run generation ticket
+actor_machine actor_session grant_id branch claimed_at provider account
+provider_project target secret operation source_ref plan_sha256 expires_at
+```
+
+`secret` names the resource, never its value. For create or replace, `source_ref`
+names an immutable protected provider source with a `#VERSION` suffix; delete
+requires the empty string. The worker must verify the provider reference really
+is immutable. `plan_sha256` hashes only the exact metadata plan bytes. Expiry
+must be in the future and no later than run expiry. Unknown fields, wildcards,
+missing bindings, changed plans and replacement actors fail closed.
+
+The owner reviews every field and the plan, then signs the canonical receipt
+using the independent key. Canonical bytes are UTF-8 JSON, sorted keys, ASCII
+escaping, separators `,` and `:`, no whitespace and no trailing newline. Sign
+those bytes in the dedicated namespace on the owner-controlled machine:
+
+```sh
+ssh-keygen -Y sign -f OWNER_PRIVATE_KEY -n llm-bus-dev-secret-v1 receipt.canonical.json
+```
+
+Import the detached signature and metadata files in the exact worker session:
+
+```sh
+llm-bus --format agent coordination dev-secret-reserve PROJECT --receipt-file receipt.canonical.json --signature-file receipt.canonical.json.sig --plan-file plan.json
+llm-bus --format agent coordination dev-secret-check PROJECT --receipt-id RECEIPT_UUID --plan-file plan.json
+```
+
+Reservation commits before an action is issued. Immediately before calling the
+existing separately authorized provider tool, run `dev-secret-check` once and
+require `status: ready` with the exact expected action. It rereads policy, signature,
+plan, current run, permission, consent, grant and claim. Use the provider's
+protected input or immutable source mechanism; never pass a value through bus
+commands, prompts, Beads, messages, summaries or logs. A provider or host denial
+still stops execution. The bus neither reads values nor executes provider calls.
+
+The check durably marks the outcome unknown before returning. After the provider
+call, record only a bounded outcome:
+
+```sh
+llm-bus --format agent coordination dev-secret-outcome PROJECT --receipt-id RECEIPT_UUID --status succeeded
+```
+
+Allowed statuses are `succeeded`, `denied`, `not_submitted`, `unknown` and
+`fresh_approval_required`. They are untrusted observations and never grant retry
+authority. Replays and concurrent duplicate reservations are denied. After an
+interruption, reconcile against provider evidence; do not repeat automatically.
+This conservative path always requires a fresh receipt for another attempt,
+including when evidence proves no submission. A changed plan or worker also
+requires fresh consent. Preserve unknown outcomes for reconciliation. Revocation
+stops future actions but cannot recall a submitted provider operation.
+
+Independent signing establishes owner consent. Local identity checks and the
+mailbox reservation provide procedural controls under the same-OS-user trust
+model. Host and provider permissions remain the execution boundary if an agent
+can change the verifier or call the provider directly. Before rollback, revoke
+active runs and unconsumed receipts, verify denial, and preserve history.
 
 ## Work state and recovery
 

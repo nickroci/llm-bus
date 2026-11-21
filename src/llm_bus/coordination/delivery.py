@@ -1,11 +1,11 @@
 """Typed direction intent and current receiver authority at every exposure."""
 
 import json
-from dataclasses import asdict
 from datetime import UTC, datetime
 from sqlite3 import Connection
 from typing import cast
 
+from llm_bus.coordination import run_actions
 from llm_bus.coordination.authority import authorize, sender_gate_reason
 from llm_bus.coordination.models import GATE_OPERATIONS, Approval, Direction
 from llm_bus.coordination.store import project
@@ -29,7 +29,7 @@ def require_coordinator(db: Connection, sender: str, scope: str, direction: Dire
         raise BusError("Direction requires current coordinator enrollment")
 
 
-def outgoing(  # noqa: PLR0913 - exact routing identity fields
+def outgoing(  # noqa: PLR0913, C901 - exact routing identity and binding checks
     db: Connection,
     *,
     sender: str,
@@ -38,6 +38,8 @@ def outgoing(  # noqa: PLR0913 - exact routing identity fields
     recipient: str,
     operation: str,
     approval: Approval | None = None,
+    run_id: str | None = None,
+    ticket: str | None = None,
 ) -> Direction:
     """Resolve recipient-issued routing reference without treating it as a grant."""
     # pylint: disable=too-many-arguments
@@ -62,6 +64,26 @@ def outgoing(  # noqa: PLR0913 - exact routing identity fields
         1, str(record["project_id"]), str(record["generation"]), target[0], operation
     )
     require_coordinator(db, sender, scope, direction)
+    if run_id is not None:
+        bound_ticket = approval.ticket if approval is not None else ticket
+        if bound_ticket is None or "/" in recipient:
+            raise BusError("Unattended directions require a local worker and explicit ticket")
+        direction = run_actions.bind(
+            db, record, recipient, direction, run_id=run_id, ticket=bound_ticket
+        )
+        decision = authorize(
+            db,
+            sender=sender,
+            recipient=recipient,
+            scope=scope,
+            direction=direction,
+            approval=approval,
+            now=datetime.now(UTC),
+        )
+        if not decision.verified:
+            raise BusError(f"Direction denied: {decision.reason}")
+    elif ticket is not None:
+        raise BusError("Direction ticket requires --run-id")
     if approval is not None and "/" in recipient:
         # Sender and receiver must both allow: this machine's owner delegation is checked first.
         reason = sender_gate_reason(
@@ -79,7 +101,7 @@ def persist(
     direction.validate()
     db.execute(
         "INSERT INTO coordination_messages VALUES (?,?)",
-        (message_id, json.dumps(asdict(direction))),
+        (message_id, json.dumps(direction.wire())),
     )
     if approval is not None:
         db.execute(
@@ -122,7 +144,7 @@ def verification(db: Connection, message_id: int) -> dict[str, object] | None:
     except (BusError, ValueError, TypeError):
         return {"verified": False, "reason": "invalid_direction"}
     if current_scope is None or stored_scope != current_scope:
-        return {**asdict(direction), "verified": False, "reason": "wrong_scope"}
+        return {**direction.wire(), "verified": False, "reason": "wrong_scope"}
     gate = direction.operation in GATE_OPERATIONS
     approval = _stored_approval(db, message_id, direction.operation) if gate else None
     decision = authorize(
@@ -135,7 +157,7 @@ def verification(db: Connection, message_id: int) -> dict[str, object] | None:
         approval=approval,
     )
     result: dict[str, object] = {
-        **asdict(direction),
+        **direction.wire(),
         "verified": decision.verified,
         "reason": decision.reason,
     }

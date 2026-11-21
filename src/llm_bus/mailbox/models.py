@@ -80,6 +80,15 @@ def address(kind: str, session_id: str) -> str:
     return f"{kind}:{session_id}"
 
 
+def is_local_address(value: str) -> bool:
+    """Validate a complete local identity using the registration address contract."""
+    kind, _, session_id = value.partition(":")
+    try:
+        return address(kind, session_id) == value
+    except BusError:
+        return False
+
+
 type PendingTuple = tuple[
     int,
     str,

@@ -38,10 +38,11 @@ Before removing recovery tooling, revoke relevant grants/projects on each
 machine. `llm-bus uninstall` removes bus hooks, Claude allow rule and uv tool;
 mailbox, grants and native-home bindings remain. Remove copied skills, rule files
 and pointer blocks separately only on owner request. Stop bridges and back up before client rollback:
-schema 16 mailboxes reject clients that support only earlier schemas, and old
+schema 18 mailboxes reject clients that support only earlier schemas, and old
 transports cannot carry directions. This version upgrades the mailbox to
-schema version 16 on database access, adding local silence settings, clocks
-and timer claims without launching helpers during migration. No relay upgrade
+schema version 18 on database access. Schema 17 added local unattended run
+history; schema 18 adds decision-to-run bindings and decision handoff lineage.
+Migration does not enable unattended authority or launch helpers. No relay upgrade
 is required for this feature. Older binaries then refuse the mailbox, so
 upgrade every llm-bus installation that shares the mailbox (`uv run llm-bus
 upgrade` from a checkout) before any session uses it.

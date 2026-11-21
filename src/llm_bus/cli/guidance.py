@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, cast
 
 from llm_bus.cli.guidance_files import ACTIVE as COORDINATION_ACTIVE
 from llm_bus.cli.guidance_files import RuleContext, select
-from llm_bus.coordination import decisions, delegation, instructions, stalls
+from llm_bus.coordination import decisions, delegation, instructions, runs, stalls
 from llm_bus.coordination.authority import authorize, project_execution_allowed
 from llm_bus.coordination.models import OPERATIONS, Direction
 from llm_bus.locks.service import Locks
@@ -54,6 +54,9 @@ WORKER_DUTIES = (
     "a cancelled direction needs no report. "
 )
 COORDINATOR_DUTIES = (
+    "Within a current unattended run, resolve eligible routine scope choices through "
+    "decision-resolve and reconcile ready tickets and blockers through coordination show; "
+    "continue independent ready work and preserve required owner-only decisions. "
     "Expect same-step linked blocker/decision requests, phase changes and immediate main-parent "
     "reports of observed native-child failures; fixed-code reports are silent. "
     "Collect worker questions, approval requests and manual-action requests; ask the user "
@@ -355,6 +358,25 @@ def _enrollment(db: Connection, address: str, folder: str) -> tuple[dict[str, ob
     return record, state
 
 
+def _run_notice(
+    db: Connection, record: dict[str, object], address: str
+) -> dict[str, object] | None:
+    if record["role"] != "coordinator":
+        return None
+    unattended = runs.status(db, record, address)
+    if not unattended.get("history"):
+        return None
+    latest = cast("list[dict[str, object]]", unattended["history"])[-1]
+    progress = cast("dict[str, object]", latest["summary"])
+    return {
+        "run_id": latest["run_id"],
+        runs.ACTIVE: unattended[runs.ACTIVE],
+        "ready": progress["ready"],
+        "blockers": progress["blockers"],
+        "end_reason": latest["end_reason"],
+    }
+
+
 def _coordination(store: Store, address: str, folder: str, view: _View) -> str:
     """Serialize local references as data; never read task content or execute tools."""
     decisions.apply_for_coordinator(store, address)
@@ -370,6 +392,8 @@ def _coordination(store: Store, address: str, folder: str, view: _View) -> str:
             key: record[key] for key in ("project_id", "label", "role", "coordinator", "generation")
         }
         data["state"] = state
+        if notice := _run_notice(db, record, address):
+            data["unattended"] = notice
         data["project_execution_allowed"] = project_execution_allowed(
             db, record, address, scope=routing_scope(folder), now=datetime.now(UTC)
         )

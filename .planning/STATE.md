@@ -1,11 +1,12 @@
 # Project State
 
-Last activity: 2026-11-20 - Project action preapproval PR #92 passed review and CI on the implementation commit. Final tracking validation and merge pending.
+Last activity: 2026-11-21 - Unattended coordination passed task reviews and integrated local verification. PR review and CI are pending.
 
 ## Registered Work
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261121-unc | Unattended coordination | Implementation verified. PR review and CI pending. | [261121-unc-unattended-coordination](./quick/261121-unc-unattended-coordination/) |
 
 ## Quick Tasks Completed
 

@@ -64,3 +64,37 @@ auto-merge (an amend without `--auto-merge` or a narrowed rejoin) only blocks
 new acceptances: it does not withdraw an already accepted record-bound
 approval, which stays valid until it expires or is rejected. Run `gate-reject`
 to withdraw it.
+
+## Unattended GitHub merges
+
+For a run-bound approval, the coordinator adds `--run-id RUN_UUID` to
+`gate-accept`, together with `--repository OWNER/REPO` for the exact GitHub
+repository. The active run must include `auto-merge` and the exact merge
+target, and the worker must retain both in its current binding. The approval
+captures the exact ticket, worker claim and run. Dropping either permission,
+ending the run or changing the claim invalidates that approval at admission and
+every later exposure. Unattended acceptance refuses `--admin`.
+
+The approved worker submits the merge through:
+
+```sh
+llm-bus --format agent coordination gate-merge PROJECT --message-id APPROVAL_MESSAGE_ID
+```
+
+This path supports GitHub through the existing authenticated `gh` executable.
+It requires an open, non-draft PR with the exact approved base, branch and head;
+an approved review by someone other than the PR author on that head; and green
+required checks confirmed against that exact commit. Missing, pending, failed,
+unknown or stale evidence denies submission. After querying checks, it rereads
+the full PR state and independent review in the bound repository, then checks
+local authority again. It uses `gh pr merge --merge --match-head-commit SHA`
+without an administrative bypass. Head matching pins only the head; the base,
+review or checks can still change between the final queries and submission.
+Provider access and repository rules can still deny the merge. Local procedural
+checks cannot stop an actor with independent provider access from bypassing the
+bus. A submitted operation may finish after
+revocation; an unknown outcome requires provider reconciliation before retry.
+
+Other providers have no unattended merge execution path. Preserve a blocker
+instead of treating unsupported evidence as approval. Manual approvals retain
+their existing procedure and authority.

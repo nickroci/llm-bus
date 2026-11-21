@@ -98,7 +98,7 @@ def _typed_classes(result: Delivery, data: dict[str, object]) -> None:
     if "availability" in data:
         result["availability"] = asdict(Availability.parse(data["availability"]))
     if "coordination" in data:
-        result["coordination"] = asdict(Direction.parse(data["coordination"]))
+        result["coordination"] = Direction.parse(data["coordination"]).wire()
     if "approval" in data:
         result["approval"] = parse_approval(
             data["approval"], Direction.parse(data.get("coordination")).operation

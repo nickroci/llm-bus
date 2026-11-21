@@ -151,8 +151,9 @@ Native imports/outbox bindings resolve reply parents; monitor-only ancestry neve
 becomes a native parent. Unresolved children remain unreceipted until a valid parent
 is available or relay delivery expiry. Follow the remote guide for operator upgrades.
 
-Current mailboxes use schema 16. Local silence observation needs no additional
-relay migration. Directions require relay migration `0004_coordination.sql`, with
+Current mailboxes use schema 18. Local silence observation, unattended run history,
+and decision-to-run bindings need no additional relay migration. Directions
+require relay migration `0004_coordination.sql`, with
 separate version 1 `/v2/coordination` capability/message/inbox routes. Legacy
 inboxes omit directions. Unknown metadata fails closed; an unsupported relay
 leaves directions queued with `unsupported_coordination`. Upgrade the client or

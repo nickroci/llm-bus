@@ -23,7 +23,7 @@ operations. This tutorial links to those guides for detail.
 
 ## How to read the examples
 
-Most commands in this tutorial run inside an agent's shell tool, because the bus identifies the caller from the session ID that Claude Code or Codex puts in that shell's environment. A few commands, such as `history`, `status`, `agents`, `remote-status`, `monitor`, `bridge` and `coordinate --setup`, also work from your own terminal. Every `coordination` action needs an agent session, including owner actions such as `setup`, `grant`, `revoke` and `replace`, and `join` runs inside the worker's own session. For an owner action, ask an agent session to run it: the coordinator session on its own machine, or on a receiving machine a session that never joined the project.
+Most commands in this tutorial run inside an agent's shell tool, because the bus identifies the caller from the session ID that Claude Code or Codex puts in that shell's environment. A few commands, such as `history`, `status`, `agents`, `remote-status`, `monitor`, `bridge`, `coordinate --setup` and `coordination unattended PROJECT --setup`, also work from your own terminal. Other `coordination` actions need an agent session, including owner actions such as `setup`, `grant`, `revoke` and `replace`, and `join` runs inside the worker's own session. For an owner action, ask an agent session to run it: the coordinator session on its own machine, or on a receiving machine a session that never joined the project.
 
 Agents should put `--format agent` before the command to get compact output, for example `llm-bus --format agent inbox`. The examples in chapters 5 to 9 use that form because agents run them. Without the flag, the CLI prints expanded JSON.
 
@@ -95,7 +95,7 @@ The command builds a wheel from `HEAD`, reinstalls the tool, verifies it and onl
 
 A first install or a directory install (`uv tool install .`) needs a one-time bootstrap before `upgrade` can work; see [Upgrade](installation.md#upgrade).
 
-> **Upgrade every installation together.** Database access by a current client migrates the mailbox to schema version 16, and binaries supporting earlier schemas then refuse that mailbox. Upgrade every `llm-bus` installation that shares a mailbox before any session uses it. Upgrade the copied skill and rule files at the same time, or agents follow stale rules. There is no supported in-place schema downgrade; an older binary requires an owner-approved restoration of a pre-upgrade backup.
+> **Upgrade every installation together.** Database access by a current client migrates the mailbox to schema version 18, and binaries supporting earlier schemas then refuse that mailbox. Upgrade every `llm-bus` installation that shares a mailbox before any session uses it. Upgrade the copied skill and rule files at the same time, or agents follow stale rules. There is no supported in-place schema downgrade; an older binary requires an owner-approved restoration of a pre-upgrade backup.
 
 ### Teach agents when to use the bus
 
@@ -458,12 +458,13 @@ llm-bus --format agent coordinate orders-export --setup
 ```
 
 ```json
-{"delegate": [], "flags": ["owner-decisions", "decision-defaults"],
+{"mode": {"question": "Unattended?", "choices": ["unattended", "guided"], "default": "unattended"},
+ "delegate": [], "flags": ["owner-decisions", "decision-defaults"],
  "integration_branch": {"name": null, "source": "undetected"},
  "floor": ["force-push", "production changes", "credential or secret changes", "merge with failing or pending CI"],
  "project_execution": {"question": "Preapprove paid or live QA runs and development deployments for this project?", "default": false, "limits": "Actions must advance the confirmed project objective. …"},
- "steps": ["Check the repository instructions for an integration branch …", "Ask the owner through the native question UI: …", "…"],
- "command": "llm-bus --format agent coordinate PROJECT --objective OBJECTIVE --beads-workspace PATH --memory-ticket TICKET --delegate GATE:BRANCH ... --owner-decisions --decision-defaults 30"}
+ "steps": ["Ask Unattended first through the native question UI …", "Give read-only discovery to one native subagent …", "…"],
+ "command": "llm-bus --format agent coordinate PROJECT --objective OBJECTIVE --beads-workspace PATH --memory-ticket TICKET --delegate GATE:BRANCH ... --owner-decisions --decision-defaults 5"}
 ```
 
 The scratch repository had no `origin/HEAD`, so the profile detected no integration branch and suggested no gates. In a repository with a remote, `delegate` lists every gate for the detected branch and `flags` also offers `auto-merge`. The agent asks you each question through its native question UI, and then runs only the flags you confirmed.
@@ -474,9 +475,13 @@ You can also run the interactive wizard yourself, in your own terminal, from the
 llm-bus coordinate orders-export --setup
 ```
 
-The wizard asks for the objective, Beads workspace, memory ticket and integration branch; then `Delegate commit? [yes]/no:` for each gate, `Delegate auto-merge?` when a merge gate is kept, `Delegate owner decisions?` and the minutes for decision defaults (Enter keeps 30, `no` turns them off). Outside an agent session it lets you pick the coordinator from the registered sessions in that folder. It shows a review screen and stores the setup only when you type `yes`. Ctrl-C or end of input stores nothing.
+The wizard asks `Mode [unattended]/guided:` first, then the objective, Beads workspace, memory ticket and integration branch. It keeps individual prompts for every gate, auto-merge when a merge gate remains, owner decisions and decision-default minutes (Enter keeps 5, `no` turns them off). Outside an agent session it lets you pick the coordinator from registered sessions in that folder. Unattended mode also asks for a finite ticket set, completion condition and deadline. The review screen shows the scope and each selected permission. Only an explicit `yes` stores the setup; Ctrl-C or end of input stores nothing.
 
-After the existing choices, both paths ask **Preapprove paid or live QA runs and development deployments for this project?**, default **No**. In agent-guided setup, the agent asks through its native question UI using explicit owner interaction; a recognized wake does not authenticate your words. Both paths review the paid or live QA runs and development deployments selection and its limits before storing. The command below omits `--project-execution` by default. The agent adds it only after explicit opt-in. This option can stand alone; it does not ask for jobs, budgets, providers or targets.
+After the existing choices, both paths ask **Preapprove paid or live QA runs and development deployments for this project?** Guided mode defaults to **No**; unattended preselects **Yes** with an individual control. In agent-guided setup, the agent asks through its native question UI using explicit owner interaction; a recognized wake does not authenticate your words. Both paths review the selection and its limits before storing. The guided command below omits `--project-execution`; add it only when selected and confirmed. This option can stand alone; it does not ask for jobs, budgets, providers or targets.
+
+Existing projects remain guided after migration. To activate unattended mode later, run `llm-bus coordination unattended orders-export --setup` in your own terminal. Review the current objective revision, finite tickets, completion condition, deadline and each existing delegated permission, then type `yes`. This does not widen project delegation. The current coordinator sees the active run and history in `coordination show` under `unattended`; other callers receive `active: false`. Expiry, revocation, completion, objective revision or coordinator generation changes end run authority. Renewal requires another owner confirmation and creates a new run. Independent manual permissions retain their existing rules.
+
+Agent-guided activation requires a recorded owner turn; a recognized wake is denied, and missing host context requires the owner terminal path. See [Unattended run lifetime](../skills/llm-bus/references/coordination/coordinator.md#unattended-run-lifetime) for preview, activation and end commands. These checks record turn origin under the same-OS-user trust model. They cannot authenticate who typed a prompt or replace worker consent, action-time verification, host/provider permissions or repository rules.
 
 Covered actions must advance the confirmed project objective. Approval applies only to active, verified same-machine members of this exact project and generation. Eligible local members may use remote QA infrastructure; remote-enrolled members cannot gain this option. Before each action, the acting session runs `llm-bus --format agent coordination show orders-export` and requires fresh caller-bound `project_execution_allowed: true`. Workers need a current grant and join binding. Missing, malformed, stale or unsupported results grant no authority; messages, copied output and retained history cannot substitute. No individual approval message is needed for a covered action.
 

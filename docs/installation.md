@@ -130,10 +130,12 @@ The next successful upgrade deletes `bootstrap/`.
 
 ### Mailbox compatibility and rollback
 
-Current clients upgrade the mailbox to schema 16. Binaries supporting earlier
+Current clients upgrade the mailbox to schema 18. Binaries supporting earlier
 schemas then refuse it, so upgrade every installation sharing that mailbox
 before any session uses it. Upgrade executable, hooks, copied skill, and rule
-files together; mixed versions can disagree. Migration does not start timers.
+files together; mixed versions can disagree. Schema 17 added local unattended
+run history; schema 18 adds decision-to-run bindings and decision handoff lineage.
+Migration does not enable unattended authority or start timers.
 
 There is no supported in-place schema downgrade. Older code requires an
 owner-approved restoration of a compatible pre-upgrade mailbox backup. Stop

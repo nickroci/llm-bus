@@ -577,7 +577,7 @@ def test_upgrade_from_15_keeps_source_history(
         db.execute("PRAGMA user_version=15")
     upgraded = Store(store.path)
     with upgraded.transaction() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 16
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert (
             db.execute(
                 "SELECT status FROM coordination_work_reports WHERE message_id=?", (message_id,)
@@ -623,7 +623,7 @@ def test_settings_binding_authority_and_schema_reupgrade(
         db.execute("PRAGMA user_version=15")
     upgraded = Store(store.path)
     with upgraded.transaction() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 16
+        assert db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION == 18
         assert stalls.threshold(db, record) == 3600
         assert db.execute(
             "SELECT token,lease_until,due_at FROM coordination_stall_timers"

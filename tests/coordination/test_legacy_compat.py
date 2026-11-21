@@ -105,8 +105,9 @@ def test_project_without_delegation_unchanged(
 
     shown = cast("dict[str, object]", run(owner, "coordination", "show", "demo"))
     # Revision 2 adds caller-bound execution status alongside unacknowledged directions.
-    assert set(shown) == SHOW_KEYS | {"directions", "project_execution_allowed"}
+    assert set(shown) == SHOW_KEYS | {"directions", "project_execution_allowed", "unattended"}
     assert shown["project_execution_allowed"] is False
+    assert shown["unattended"] == {"active": False, "run": None, "history": []}
 
     run(worker, "join", "demo")
     assert grants() == [grant]

@@ -13,8 +13,9 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
-from llm_bus.coordination import amendments, delegation, store
-from llm_bus.coordination.models import ticket_text
+from llm_bus.coordination import amendments, delegation, run_actions, runs, store
+from llm_bus.coordination.authority import authorize
+from llm_bus.coordination.models import Direction, ticket_text
 from llm_bus.errors import BusError
 from llm_bus.locks import notices
 from llm_bus.locks.timer import TIMER_POLL_SECONDS, spawn
@@ -174,9 +175,138 @@ def _resolve(db: Connection, decision_id: str, text: str, caller: str, now: date
     )
 
 
-def _public(row: dict[str, object]) -> dict[str, object]:
+def _public(db: Connection, row: dict[str, object]) -> dict[str, object]:
     keys = COLUMNS.split(",")
-    return {key: row[key] for key in keys}
+    result = {key: row[key] for key in keys}
+    result["source"] = (
+        None if row["status"] == PENDING else "default" if row["status"] == DEFAULTED else "owner"
+    )
+    if (binding := _binding(db, row)) is not None:
+        result.update(binding)
+        result["source"] = "coordinator"
+    create_tables(db)
+    lineage = cast(
+        "tuple[str, str, str] | None",
+        db.execute(
+            "SELECT original_id,handoff_id,source FROM coordination_decision_lineage "
+            "WHERE decision_id=?",
+            (row["decision_id"],),
+        ).fetchone(),
+    )
+    if lineage is not None:
+        result.update(original_decision_id=lineage[0], handoff_id=lineage[1], source=lineage[2])
+    return result
+
+
+def create_tables(db: Connection) -> None:
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS coordination_decision_lineage ("
+        "decision_id TEXT PRIMARY KEY,original_id TEXT NOT NULL,handoff_id TEXT NOT NULL,"
+        "source TEXT NOT NULL,prior_id TEXT NOT NULL UNIQUE)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS coordination_decision_runs ("
+        "decision_id TEXT PRIMARY KEY,run_id TEXT NOT NULL,grant_id TEXT NOT NULL,"
+        "branch TEXT NOT NULL,claimed_at TEXT NOT NULL,rationale TEXT NOT NULL)"
+    )
+
+
+def _binding(db: Connection, row: dict[str, object]) -> dict[str, object] | None:
+    found = cast(
+        "tuple[str, str, str, str, str] | None",
+        db.execute(
+            "SELECT run_id,grant_id,branch,claimed_at,rationale FROM coordination_decision_runs "
+            "WHERE decision_id=?",
+            (row["decision_id"],),
+        ).fetchone(),
+    )
+    return (
+        None
+        if found is None
+        else dict(
+            zip(("run_id", "grant_id", "branch", "claimed_at", "rationale"), found, strict=True)
+        )
+    )
+
+
+def coordinator_answer(  # noqa: PLR0913 - exact decision and authority context
+    db: Connection,
+    record: dict[str, object],
+    caller: str,
+    decision_id: str,
+    text: str,
+    *,
+    run_id: str,
+    rationale: str,
+    now: datetime,
+) -> Result:
+    """Resolve a routine scope choice on any turn; owner-only classes stay owner-only."""
+    # pylint: disable=too-many-arguments
+    _require_coordinator(db, record, caller)
+    row = _current(db, record, decision_id, ANSWERED)
+    if row["status"] != PENDING:
+        raise BusError(NOT_PENDING)
+    if row["class"] != DEFAULTABLE or row["worker"] is None or row["ticket"] is None:
+        raise BusError("Coordinator decisions require routine scope, explicit worker and ticket")
+    runs.require_active(
+        db,
+        record,
+        caller,
+        run_id=run_id,
+        ticket=str(row["ticket"]),
+        permission="owner-decisions",
+        now=now,
+    )
+    text, rationale = _text(text, "answer"), _text(rationale, "rationale")
+    grants = cast(
+        "list[tuple[str]]",
+        db.execute(
+            "SELECT grant_id FROM coordination_grants "
+            "WHERE scope=? AND project_id=? AND recipient=?",
+            (record["scope"], record["project_id"], row["worker"]),
+        ).fetchall(),
+    )
+    for (grant_id,) in grants:
+        granted = delegation.effective(db, record, grant_id, now=now)
+        direction = run_actions.bind(
+            db,
+            record,
+            str(row["worker"]),
+            Direction(1, str(record["project_id"]), str(record["generation"]), grant_id, "clarify"),
+            run_id=run_id,
+            ticket=str(row["ticket"]),
+        )
+        # This is a decision, not a project-execution direction. Check the existing
+        # grant/consent predicate without claiming project-execution permission.
+        if (
+            granted is not None
+            and granted.owner_decisions
+            and authorize(
+                db,
+                sender=caller,
+                recipient=str(row["worker"]),
+                scope=str(record["scope"]),
+                direction=Direction(
+                    1, direction.project_id, direction.generation, grant_id, "clarify"
+                ),
+                now=now,
+            ).verified
+        ):
+            _resolve(db, decision_id, text, caller, now)
+            db.execute(
+                "INSERT INTO coordination_decision_runs VALUES (?,?,?,?,?,?)",
+                (decision_id, run_id, grant_id, direction.branch, direction.claimed_at, rationale),
+            )
+            return (
+                {"decision_id": decision_id, "status": ANSWERED, "source": "coordinator"},
+                _tell(
+                    db,
+                    record,
+                    str(row["worker"]),
+                    f"Decision {decision_id} resolved. Run decision-show before acting.",
+                ),
+            )
+    raise BusError("Coordinator decision denied: worker lacks current consent and decision grant")
 
 
 def ask(  # noqa: PLR0913 - explicit decision fields
@@ -293,7 +423,7 @@ def answer(  # noqa: PLR0913, PLR0917 - plan signature: positional record fields
     return {"decision_id": decision_id, "status": ANSWERED}, []
 
 
-def _reason(
+def _reason(  # noqa: PLR0911 - fail-closed provenance checks
     db: Connection,
     record: dict[str, object],
     row: dict[str, object],
@@ -301,13 +431,118 @@ def _reason(
     now: datetime,
 ) -> str | None:
     """Why the caller may not act on the decision; None means accepted."""
+    # pylint: disable=clean-code-commented-out-code,too-many-return-statements
+    create_tables(db)
+    if db.execute(
+        "SELECT 1 FROM coordination_decision_lineage WHERE prior_id=?", (row["decision_id"],)
+    ).fetchone():
+        return "transferred"
     if row["generation"] != record["generation"]:
         return "stale_generation"
+    binding = _binding(db, row)
+    if binding is not None:
+        if caller not in {row["worker"], record["coordinator"]}:
+            return "wrong_session"
+        try:
+            direction = Direction(
+                1,
+                str(record["project_id"]),
+                str(record["generation"]),
+                str(binding["grant_id"]),
+                "clarify",
+                str(binding["run_id"]),
+                str(row["ticket"]),
+                str(binding["branch"]),
+                str(binding["claimed_at"]),
+            )
+            run_actions.require(
+                db,
+                record,
+                str(record["coordinator"]),
+                str(row["worker"]),
+                direction,
+                permission="owner-decisions",
+                now=now,
+            )
+            decision = authorize(
+                db,
+                sender=str(record["coordinator"]),
+                recipient=str(row["worker"]),
+                scope=str(record["scope"]),
+                direction=Direction(
+                    1, direction.project_id, direction.generation, direction.grant_id, "clarify"
+                ),
+                now=now,
+            )
+            held = delegation.effective(db, record, str(binding["grant_id"]), now=now)
+            if not decision.verified or held is None or not held.owner_decisions:
+                return "not_delegated"
+        except BusError:
+            return "unattended_authority_denied"
     if row["status"] not in {ANSWERED, DEFAULTED}:
         return "not_answered"
     if store.coordinator_enrolled(db, record, caller):
         return None
     return _worker_reason(db, record, row, caller, now)
+
+
+def transfer(  # noqa: PLR0913 - exact verified handoff bindings
+    db: Connection,
+    record: dict[str, object],
+    caller: str,
+    *,
+    run_id: str,
+    ticket: str,
+    prior: str,
+    replacement: str,
+    grant_id: str,
+    branch: str,
+    claimed_at: str,
+    handoff_id: str,
+) -> list[str]:
+    """Copy applicable answers with lineage; caller atomically moves the claim afterward."""
+    # pylint: disable=too-many-arguments,too-many-locals
+    _require_coordinator(db, record, caller)
+    active = runs.require_active(db, record, caller, run_id=run_id, ticket=ticket)
+    if not cast("dict[str, object]", active["permissions"]).get("owner_decisions"):
+        return []
+    granted = delegation.effective(db, record, grant_id, now=datetime.now(UTC))
+    if granted is None or not granted.owner_decisions:
+        return []
+    carried: list[str] = []
+    for row in decision_rows(db, record):
+        if (row["ticket"], row["worker"], row["class"]) != (ticket, prior, DEFAULTABLE):
+            continue
+        stored = _row(db, str(row["decision_id"]))
+        if stored is None or _reason(db, record, stored, prior, datetime.now(UTC)) is not None:
+            continue
+        binding = _binding(db, row)
+        if binding is not None and binding["run_id"] != run_id:
+            continue
+        decision_id = uuid4().hex
+        db.execute(
+            "INSERT INTO coordination_decisions SELECT ?,scope,project_id,generation,"
+            "class,ticket,?,question,recommended,status,answer,answer_sha256,"
+            "source_session,source_turn,created_at,"
+            "deadline_at,resolved_at FROM coordination_decisions WHERE decision_id=?",
+            (decision_id, replacement, row["decision_id"]),
+        )
+        db.execute(
+            "INSERT INTO coordination_decision_runs VALUES (?,?,?,?,?,?)",
+            (decision_id, run_id, grant_id, branch, claimed_at, "Verified cancellation handoff"),
+        )
+        db.execute(
+            "INSERT INTO coordination_decision_lineage VALUES (?,?,?,?,?)",
+            (
+                decision_id,
+                row.get("original_decision_id", row["decision_id"]),
+                handoff_id,
+                row["source"],
+                row["decision_id"],
+            ),
+        )
+        carried.append(decision_id)
+    return carried
 
 
 def _worker_reason(
@@ -348,7 +583,25 @@ def status(
     if row is None or (row["scope"], row["project_id"]) != (record["scope"], record["project_id"]):
         raise BusError("Decision not found")
     reason = _reason(db, record, row, caller, now)
-    shown = _public(row) if reason is None or store.coordinator_enrolled(db, record, caller) else {}
+    shown = (
+        _public(db, row) if reason is None or store.coordinator_enrolled(db, record, caller) else {}
+    )
+    if (  # pylint: disable=too-many-boolean-expressions
+        reason == "not_answered"
+        and row["deadline_at"] is not None
+        and (
+            row["worker"] == caller
+            and row["ticket"] is not None
+            and _enrolled_worker(db, record, caller)
+            and _worker_reason(db, record, row, caller, now) is None
+        )
+    ):
+        # Show only the waiting worker's timing metadata, never an unaccepted answer.
+        shown = {
+            "deadline_at": row["deadline_at"],
+            "status": PENDING,
+            "wake_behavior": "timer wakes coordinator and bound worker when default applies",
+        }
     return {
         "decision_id": decision_id,
         **shown,
@@ -369,7 +622,7 @@ def decision_rows(
         (record["scope"], record["project_id"], record["generation"]),
     )
     return [
-        dict(zip((column[0] for column in cursor.description), row, strict=True))
+        _public(db, dict(zip((column[0] for column in cursor.description), row, strict=True)))
         for row in cast("list[tuple[object, ...]]", cursor.fetchall())
     ]
 
@@ -380,6 +633,20 @@ def listing(
     """Decisions of the current generation, oldest first; coordinator only."""
     _require_coordinator(db, record, caller)
     return {"decisions": decision_rows(db, record, defaulted=defaulted)}
+
+
+def run_history(db: Connection, record: dict[str, object], run_id: str) -> list[dict[str, object]]:
+    """Retain decision provenance when the current coordinator generation changes."""
+    cursor = db.execute(
+        "SELECT d.* FROM coordination_decisions d JOIN coordination_decision_runs r "
+        "ON r.decision_id=d.decision_id WHERE r.run_id=? AND d.scope=? AND d.project_id=? "
+        "ORDER BY d.rowid",
+        (run_id, record["scope"], record["project_id"]),
+    )
+    return [
+        _public(db, dict(zip((column[0] for column in cursor.description), row, strict=True)))
+        for row in cast("list[tuple[object, ...]]", cursor.fetchall())
+    ]
 
 
 def _known(db: Connection, address: str) -> bool:

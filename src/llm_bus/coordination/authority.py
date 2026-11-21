@@ -5,7 +5,7 @@ from datetime import datetime
 from sqlite3 import Connection
 from typing import cast
 
-from llm_bus.coordination import delegation
+from llm_bus.coordination import delegation, run_actions, runs
 from llm_bus.coordination.models import (
     GATE_OPERATIONS,
     OPERATIONS,
@@ -16,7 +16,7 @@ from llm_bus.coordination.models import (
 )
 from llm_bus.errors import BusError
 from llm_bus.mailbox.agents import expire_idle_agents
-from llm_bus.mailbox.models import address as native_address
+from llm_bus.mailbox.models import is_local_address
 from llm_bus.policy.config import optional_config
 
 REMOTE_PARTS = 3
@@ -28,12 +28,9 @@ def project_execution_allowed(  # noqa: PLR0911 - fail-closed authority checks
     """Fresh caller-bound local consent; stored history and remote identities grant none."""
     # pylint: disable=clean-code-commented-out-code,too-many-return-statements
     expire_idle_agents(db)
-    kind, separator, session = address.partition(":")
-    try:
-        if not separator or native_address(kind, session) != address:
-            return False
-    except BusError:
+    if not is_local_address(address):
         return False
+    kind = address.partition(":")[0]
     row = cast(
         "tuple[str] | None",
         db.execute(
@@ -191,6 +188,22 @@ def authorize(  # noqa: PLR0913, C901, PLR0911, PLR0912 - explicit denial preced
         allowed = cast("list[object]", operations)
         if not all(isinstance(item, str) and item in OPERATIONS for item in allowed):
             return deny("invalid_direction")
+        if direction.run_id is not None:
+            record: dict[str, object] = {
+                "scope": scope,
+                "project_id": direction.project_id,
+                "generation": generation,
+            }
+            if reason := _run_reason(
+                db,
+                record,
+                sender=sender,
+                recipient=recipient,
+                direction=direction,
+                approval=approval,
+                now=now,
+            ):
+                return deny(reason)
         if direction.operation in GATE_OPERATIONS:
             return _gate_decision(
                 db,
@@ -206,6 +219,64 @@ def authorize(  # noqa: PLR0913, C901, PLR0911, PLR0912 - explicit denial preced
     except (BusError, ValueError, TypeError):
         return deny("invalid_direction")
     return AuthorityDecision(verified=True, reason="verified", grant_id=grant_id)
+
+
+def _run_reason(  # noqa: PLR0913, PLR0911, C901 - explicit fail-closed action bindings
+    db: Connection,
+    record: dict[str, object],
+    *,
+    sender: str,
+    recipient: str,
+    direction: Direction,
+    approval: Approval | None,
+    now: datetime,
+) -> str | None:
+    """Run scope supplements, and never replaces, the ordinary authority predicate."""
+    # pylint: disable=clean-code-commented-out-code,too-many-arguments,too-many-return-statements
+    permission: str | None = None
+    if direction.operation in GATE_OPERATIONS:
+        if approval is None:
+            return "invalid_direction"
+        permission = f"{GATE_OPERATIONS[direction.operation]}:{approval.base}"
+        if (approval.ticket, approval.branch) != (direction.ticket, direction.branch):
+            return "wrong_ticket"
+        if direction.operation == "approve-merge-admin":
+            return "unattended_admin_denied"
+        if direction.operation == "approve-merge" and approval.record_id is None:
+            return "independent_review_required"
+        if direction.operation == "approve-merge" and approval.repository is None:
+            return "repository_binding_required"
+    try:
+        run_actions.require(
+            db, record, sender, recipient, direction, permission=permission, now=now
+        )
+        if direction.operation == "approve-merge" and approval is not None:
+            runs.require_active(
+                db, record, sender, run_id=direction.run_id, permission="auto-merge", now=now
+            )
+            held = delegation.effective(db, record, direction.grant_id, now=now)
+            if held is None or not held.auto_merge:
+                return "gate_not_delegated"
+            submitter = cast(
+                "tuple[str, str] | None",
+                db.execute(
+                    "SELECT submitted_by,grant_id FROM coordination_gate_records WHERE record_id=?",
+                    (approval.record_id,),
+                ).fetchone(),
+            )
+            if submitter != (recipient, direction.grant_id):
+                return "record_wrong_worker"
+            run_actions.require_gate(
+                db,
+                record,
+                recipient,
+                approval.ticket,
+                str(approval.record_id),
+                run_id=direction.run_id,
+            )
+    except BusError:
+        return "unattended_authority_denied"
+    return None
 
 
 def _record_accepted(db: Connection, record: dict[str, object], approval: Approval) -> bool:

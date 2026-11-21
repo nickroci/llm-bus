@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from typing import cast
 
 COLLAB_EXTRA_MODULES = frozenset(
     {
@@ -17,6 +19,102 @@ COLLAB_EXTRA_MODULES = frozenset(
         "llm_bus.collab.delivery",
     }
 )
+BUS_DB_ENV = "LLM_BUS_DB"
+BUS_CONFIG_ENV = "LLM_BUS_CONFIG"
+CODEX_THREAD_ENV = "CODEX_THREAD_ID"
+GUIDANCE_MISSING = "Installed wake/resume guidance omits the active run or recovery reference"
+
+
+def unattended_guidance(cli: Path, sandbox: Path, root: Path, environment: dict[str, str]) -> None:
+    """Smoke installed commands and copied guidance with a synthetic host callback."""
+    fixture = environment.copy()
+    for name in (
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_MESSAGING_SOCKET",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+        CODEX_THREAD_ENV,
+        "CODEX_SESSION_ID",
+    ):
+        fixture.pop(name, None)
+    fixture.update(
+        {
+            BUS_DB_ENV: str(sandbox / "acceptance.db"),
+            BUS_CONFIG_ENV: str(sandbox / "missing.toml"),
+            CODEX_THREAD_ENV: "package-owner",
+        }
+    )
+    (sandbox / ".beads").mkdir()
+    references = sandbox / "skills" / "llm-bus"
+    shutil.copytree(root / "skills" / "llm-bus", references)
+
+    def invoke(*argv: str, payload: dict[str, str] | None = None) -> str:
+        result = subprocess.run(  # noqa: S603 - isolated installed CLI and fixed fixture arguments
+            [str(cli), *argv],
+            cwd=sandbox,
+            env=fixture,
+            input=None if payload is None else json.dumps(payload),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            raise RuntimeError(f"Installed fixture command failed: {argv!r}: {result.stderr}")
+        return result.stdout
+
+    profile = cast(
+        "dict[str, object]", json.loads(invoke("coordinate", "package-smoke", "--setup"))
+    )
+    if cast("dict[str, object]", profile["mode"])["choices"] != ["unattended", "guided"]:
+        raise ValueError("Installed setup does not offer unattended first")
+    callback = {
+        "session_id": "package-owner",
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": str(sandbox),
+        "prompt": "Owner confirms the isolated package smoke fixture",
+    }
+    invoke(
+        "coordinate",
+        "package-smoke",
+        "--objective",
+        "Package acceptance",
+        "--beads-workspace",
+        str(sandbox),
+        "--memory-ticket",
+        "package-1",
+        "--owner-decisions",
+    )
+    invoke("hook", "codex", payload=callback)
+    activated = cast(
+        "dict[str, object]",
+        json.loads(
+            invoke(
+                "coordination",
+                "unattended",
+                "package-smoke",
+                "--objective",
+                "Package acceptance",
+                "--ticket",
+                "package-1",
+                "--completion",
+                "Reviewed PR ready",
+                "--expires-at",
+                "2099-01-01T00:00:00Z",
+                "--permission",
+                "owner-decisions",
+                "--confirm",
+            )
+        ),
+    )
+    run_id = str(activated["run_id"])
+    callback["prompt"] = (
+        "llm-bus message #1 from claude:package-worker. Read and handle it with `llm-bus inbox`."
+    )
+    invoke("hook", "codex", payload=callback)
+    notice = invoke("--format", "agent", "guidance")
+    if run_id not in notice or "recovery.md" not in notice:
+        raise ValueError(GUIDANCE_MISSING)
+    if not (references / "references/coordination/recovery.md").is_file():
+        raise ValueError("Copied recovery guidance is missing")
 
 
 def application_modules(source: Path) -> list[str]:
@@ -95,6 +193,7 @@ def main() -> None:
         subprocess.run(  # noqa: S603 - installed entry point; help does not access user state
             [str(cli), "--help"], cwd=sandbox, env=environment, check=True
         )
+        unattended_guidance(cli, sandbox, root, environment)
 
 
 if __name__ == "__main__":

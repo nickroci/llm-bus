@@ -427,7 +427,22 @@ def test_wizard_with_every_gate_disabled_stores_decisions_only(tmp_path: Path) -
     store = Project(tmp_path, claim=False).store
     store.register("codex", "wiz", str(tmp_path))
     replies = iter(
-        ["Ship", str(tmp_path), "bus-2", "develop", "no", "no", "no", "no", "", "no", "", "", "yes"]
+        [
+            "guided",
+            "Ship",
+            str(tmp_path),
+            "bus-2",
+            "develop",
+            "no",
+            "no",
+            "no",
+            "no",
+            "",
+            "no",
+            "",
+            "",
+            "yes",
+        ]
     )
     prompts: list[str] = []
 
@@ -457,7 +472,21 @@ def test_wizard_declining_decisions_with_no_gate_stores_nothing_new(tmp_path: Pa
     store = Project(tmp_path, claim=False).store
     store.register("codex", "wiz", str(tmp_path))
     replies = iter(
-        ["Ship", str(tmp_path), "bus-2", "develop", "no", "no", "no", "no", "no", "", "", "yes"]
+        [
+            "guided",
+            "Ship",
+            str(tmp_path),
+            "bus-2",
+            "develop",
+            "no",
+            "no",
+            "no",
+            "no",
+            "no",
+            "",
+            "",
+            "yes",
+        ]
     )
     result = setup.run_wizard(
         store, "wiz", str(tmp_path), "codex:wiz", ask=lambda _p: next(replies), say=lambda _l: None

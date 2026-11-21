@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 
 from llm_bus.collab.models import CollabError
 from llm_bus.collab.policy import github_user
+from llm_bus.ssh_signatures import verification_command
 
 if TYPE_CHECKING:
     from http.client import HTTPResponse
@@ -177,19 +178,9 @@ def verify(user: str, data: bytes, signature: str) -> str | None:
             signature_file = Path(temporary) / "signature"
             signature_file.write_text(signature, encoding="ascii")
             result = subprocess.run(  # noqa: S603 - fixed argv, no shell
-                [
-                    _ssh_keygen(),
-                    "-Y",
-                    "verify",
-                    "-f",
-                    str(allowed),
-                    "-I",
-                    user.lower(),
-                    "-n",
-                    NAMESPACE,
-                    "-s",
-                    str(signature_file),
-                ],
+                verification_command(
+                    _ssh_keygen(), allowed, user.lower(), NAMESPACE, signature_file
+                ),
                 input=data,
                 capture_output=True,
                 check=False,

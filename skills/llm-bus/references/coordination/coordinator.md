@@ -30,7 +30,9 @@ implicit default). Guided setup collects the owner's choices instead of
 guessing them: `llm-bus --format agent coordinate PROJECT --setup` stores
 nothing and prints a profile (detected integration branch from the local
 `origin/HEAD`, default `--delegate` items, the floor, steps and the command
-to run). Ask the owner through the host's native question UI for the
+to run). Ask **Unattended?** first through the host's native question UI,
+offering unattended before guided. Unattended preselects eligible permissions;
+keep every individual control. Then ask for the
 objective, Beads workspace, memory ticket, integration branch and each
 delegated gate (read `gates.md` first for what each gate covers and cannot
 bypass); the owner may disable items or change branches, never add
@@ -45,13 +47,14 @@ worker merge on a coordinator-accepted gate record (`auto-merge.md`); the
 profile lists it under `flags`. The wizard ignores `--auto-merge` and instead
 asks "Delegate auto-merge?" after the gate prompts, only when a `merge` or
 `merge-admin` gate is kept. It always asks "Delegate owner decisions?" (no gate
-needed) and, when that is on, the minutes for decision defaults (Enter keeps 30,
+needed) and, when that is on, the minutes for decision defaults (Enter keeps 5,
 `no` turns them off); the profile lists `owner-decisions` and
 `decision-defaults` under `flags` and shows `--owner-decisions
---decision-defaults 30` in its command (`owner-decisions.md`).
+--decision-defaults 5` in its command (`owner-decisions.md`).
 
 After those choices, both setup paths ask "Preapprove paid or live QA runs and
-development deployments for this project?" with a default of No. Use explicit
+development deployments for this project?" Guided mode defaults to No;
+unattended mode preselects Yes and lets the owner disable it. Use explicit
 owner interaction through the host's native question UI for agent-guided setup;
 a recognized wake does not authenticate the owner's words. Keep the example
 command unchanged unless the owner explicitly opts in, then add
@@ -61,6 +64,61 @@ same-machine membership, revocation, the permanent floor, separate merge
 authorization, and native/provider permissions (`core.md`). The terminal wizard
 shows the same scope and limits in its final review; cancellation stores nothing.
 This option can stand alone without delegated gates or owner decisions.
+
+Unattended setup also asks for the finite ticket set, completion condition,
+completion proof and timezone-aware deadline. Choose `reviewed-pr` for a reviewed
+green PR or `merged-pr` when merging is part of the approved finish line and a
+merge permission is selected. Review these, the exact objective revision and every
+selected permission before activation. The terminal wizard stores everything
+atomically after `yes`; cancellation stores nothing. For agent-guided creation,
+append `--unattended --ticket TICKET ... --completion CONDITION --completion-proof reviewed-pr --expires-at ISO
+--permission ITEM ... --confirm` to the owner-confirmed `coordinate` command.
+Each permission must already appear in that command's delegation.
+
+### Unattended run lifetime
+
+Existing projects stay guided until the owner explicitly activates a run. From
+the owner's terminal in the repository, use:
+
+```sh
+llm-bus coordination unattended PROJECT --setup
+```
+
+This path previews the current objective revision, coordinator, finite tickets,
+completion condition, deadline and individually selected existing permissions.
+It stores a run only after the owner types `yes`. It does not widen project
+delegation. To add permissions, obtain the owner's explicit delegation amendment
+first, then confirm a fresh run.
+
+With a recorded direct owner turn, the enrolled coordinator may instead run
+`coordination unattended PROJECT --objective OBJECTIVE --ticket TICKET ...
+--completion CONDITION --expires-at ISO --permission ITEM ...` for a preview,
+then repeat with `--confirm` after owner confirmation. A recognized bus wake
+cannot activate or renew authority. Missing turn context requires the owner
+terminal path. Turn-origin checks are procedural checks under the same-OS-user
+trust model; they cannot authenticate the owner's actual words.
+
+`coordination show PROJECT` exposes caller-bound `unattended` status to the
+current local coordinator, including the active run and retained history. Other
+callers receive `active: false`. Renewing creates a new run and ends the old one.
+Completion, expiry, revocation, objective revision or generation changes stop
+new run authority. Removing a selected delegation permission also ends the run;
+restoring that permission does not reactivate it. End a run explicitly with:
+
+```sh
+llm-bus --format agent coordination unattended-revoke PROJECT --run-id RUN_UUID
+llm-bus --format agent coordination unattended-complete PROJECT --run-id RUN_UUID
+```
+
+Completion requires every ticket's confirmed PR proof. Use `run-result` for a
+reviewed green PR without merging, or reconcile an authorized merge with
+`run-merge-reconcile`. See `recovery.md` for checkpoints, bounded read-only
+retries, explicit cancellation handoffs and retained outcome summaries.
+Ending a run keeps history and does not revoke independent manual permissions.
+Worker joins, grants, claims, machine policy, host/provider permissions and
+repository merge rules still apply. Unattended state is local and does not grant
+remote authority. Run status alone is not a worker approval: each run-bound
+action must verify its live run and its existing action-specific authority.
 
 Resuming with
 `coordinate PROJECT --delegate ... [--auto-merge] [--owner-decisions] [--decision-defaults MINUTES] [--project-execution]`
@@ -113,6 +171,13 @@ llm-bus --format agent send claude:WORKER_ID --project PROJECT --direction assig
 
 Both `--project` and `--direction` are required together. Targets are routing
 references, not grants. Ordinary sends never inherit authority from enrollment.
+For an unattended direction, also pass `--run-id RUN_UUID --ticket TICKET`.
+The worker must already hold the ticket's exact local claim and the existing
+operation grant. The bus persists that run and claim with the
+direction and verifies them at admission and each later exposure. After a wait,
+the worker rereads current verification before acting. Claim replacement or run
+termination invalidates the direction. Omitting the run binding uses the
+existing independent manual authority; it never establishes unattended authority.
 Join records local targets automatically. Advanced explicit routing can use
 `coordination target PROJECT --recipient claude:WORKER_ID --grant-id GRANT_UUID`.
 

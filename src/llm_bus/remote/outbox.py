@@ -106,7 +106,7 @@ def enqueue_in_transaction(  # noqa: PLR0913, PLR0917 - shared transaction write
         envelope["availability"] = asdict(availability)
     if direction is not None:
         require_coordinator(db, native, scope, direction)
-        envelope["coordination"] = asdict(direction)
+        envelope["coordination"] = direction.wire()
     if approval is not None:
         envelope["approval"] = remote_approval(direction, approval)
     self.store.validate_reply(db, reply_to, (native, scope), (recipient, f"remote:{repo_id}"))

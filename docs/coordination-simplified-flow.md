@@ -122,6 +122,9 @@ on `llm-bus coordination approve` directions only after checking branch, head
 SHA, required checks and review evidence live; the bus checks none of these.
 Never delegated: force-push, production changes, credential or secret changes,
 merge with failing or pending CI.
+One exact development secret operation may instead use a separate
+[owner-signed receipt](coordination.md#exact-development-secret-consent).
+Unattended setup, delegation and project execution do not issue receipts.
 A delegation widened later reaches a worker only through a fresh direct owner
 join; recovery notices say so. Session banners (project, role, label, ticket,
 branch, folder) appear in recovery notices. Workers include them in requests

@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from llm_bus.coordination import stalls, work_state
+from llm_bus.coordination import decisions, runs, stalls, work_state
 from llm_bus.coordination import store as coordination_store
 from llm_bus.mailbox import migrations
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from sqlite3 import Connection
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 18
 SYNC_SCHEMA_VERSION = 2
 WAKE_SCHEMA_VERSION = 3
 LOCK_SCHEMA_VERSION = 5
@@ -25,6 +25,8 @@ DELEGATION_SCHEMA_VERSION = 13
 HOST_PROCESS_SCHEMA_VERSION = 14
 WORK_STATE_SCHEMA_VERSION = 15
 STALL_SCHEMA_VERSION = 16
+RUN_SCHEMA_VERSION = 17
+DECISION_RUN_SCHEMA_VERSION = 18
 SYNC_WORK_TABLE = (
     "CREATE TABLE IF NOT EXISTS remote_sync_work (kind TEXT NOT NULL, key TEXT NOT NULL, "
     "attempts INTEGER NOT NULL DEFAULT 0, next_attempt_at TEXT, last_attempt_at TEXT, "
@@ -230,6 +232,10 @@ def ensure_schema(  # noqa: C901, PLR0912
             work_state.create_tables(db)
         if version < STALL_SCHEMA_VERSION:
             stalls.create_tables(db)
+        if version < RUN_SCHEMA_VERSION:
+            runs.create_tables(db)
+        if version < DECISION_RUN_SCHEMA_VERSION:
+            decisions.create_tables(db)
         if version < SCHEMA_VERSION:
             db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         db.commit()
