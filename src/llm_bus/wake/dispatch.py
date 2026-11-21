@@ -258,9 +258,10 @@ def dispatch_due(store: Store) -> None:
         recipients = cast(
             "list[tuple[str]]",
             db.execute(
-                "SELECT DISTINCT m.recipient FROM messages m JOIN wake_dispatch d "
-                "ON d.recipient=m.recipient WHERE m.acknowledged_at IS NULL "
-                "AND m.recipient NOT IN (SELECT address FROM remote_proxies)"
+                "SELECT d.recipient FROM wake_dispatch d "
+                "WHERE d.recipient NOT IN (SELECT address FROM remote_proxies) "
+                "AND EXISTS (SELECT 1 FROM messages m WHERE m.recipient=d.recipient "
+                "AND m.acknowledged_at IS NULL)"
             ).fetchall(),
         )
     for (recipient,) in recipients:

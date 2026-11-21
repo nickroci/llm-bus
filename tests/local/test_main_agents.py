@@ -15,6 +15,7 @@ from llm_bus.hosts.settings import configure_hosts
 from llm_bus.locks.models import Request
 from llm_bus.locks.service import Locks
 from llm_bus.locks.timer import run_timer
+from llm_bus.mailbox import connection
 from llm_bus.mailbox.models import SenderContext
 from llm_bus.mailbox.store import Store
 from llm_bus.remote.bridge import Bridge
@@ -143,6 +144,41 @@ def test_remote_child_admission_denied_and_advertisement_withdrawn(
         remote.enqueue(
             SenderContext("codex", "child", folder), "a/xyz/codex:parent", "xyz", "report"
         )
+
+
+def test_idle_roster_poll_bounds_database_connections(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLM_BUS_CONFIG", str(tmp_path / "config.toml"))
+    store, config = setup_machine(tmp_path, "b")
+    folder = str(tmp_path / "repo")
+    for number in range(12):
+        session = f"historical-{number}"
+        store.register("claude", session, folder)
+        store.end_session("claude", session)
+    bridge = Bridge(store, config)
+
+    def accept_request(*_args: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(bridge.relay, "request", accept_request)
+    assert publish_sessions(bridge) == 0
+
+    def unexpected_request(*_args: object) -> object:
+        pytest.fail("An unchanged roster must not be republished")
+
+    original_connect = connection.connect
+    connections = 0
+
+    def count_connection(path: Path) -> sqlite3.Connection:
+        nonlocal connections
+        connections += 1
+        return original_connect(path)
+
+    monkeypatch.setattr(bridge.relay, "request", unexpected_request)
+    monkeypatch.setattr(connection, "connect", count_connection)
+    assert publish_sessions(bridge) == 0
+    assert connections <= 4
 
 
 @pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "SessionEnd"])

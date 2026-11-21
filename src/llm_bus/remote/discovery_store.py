@@ -5,26 +5,38 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, cast
 
+from llm_bus.mailbox.agents import expire_idle_agents
+
 if TYPE_CHECKING:
     from llm_bus.remote.models import Peer
     from llm_bus.remote.store import RemoteStore
 
 
 def sessions(self: RemoteStore) -> list[dict[str, str | int | None]]:
-    self.store.all_agents()  # Apply the native inactivity rule before exporting activity.
     with self.store.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
+        expire_idle_agents(db)
         rows = cast(
-            "list[tuple[str, str, str, str | None, str, str | None]]",
+            "list[tuple[str, str, str, str | None, str, str | None, int | None, str | None]]",
             db.execute(
-                "SELECT a.address, a.project, a.last_seen, a.ended_at, a.scope, l.label "
+                "SELECT a.address, a.project, a.last_seen, a.ended_at, a.scope, l.label, "
+                "p.revision, p.payload "
                 "FROM agents a LEFT JOIN agent_labels l ON l.address=a.address "
+                "LEFT JOIN session_publications p ON p.address=a.address "
                 "WHERE a.address NOT IN (SELECT address FROM remote_proxies)"
             ).fetchall(),
         )
         result: list[dict[str, str | int | None]] = []
-        for row in rows:
-            address, project, last_seen, ended_at, scope, label = row
+        for (
+            address,
+            project,
+            last_seen,
+            ended_at,
+            scope,
+            label,
+            prior_revision,
+            prior_payload,
+        ) in rows:
             session: dict[str, str | int | None] = {
                 "native_address": address,
                 "project": project,
@@ -34,33 +46,32 @@ def sessions(self: RemoteStore) -> list[dict[str, str | int | None]]:
                 "label": label if ended_at is None else None,
             }
             payload = json.dumps(session, sort_keys=True)
-            previous = cast(
-                "tuple[int, str] | None",
+            revision = 1 if prior_revision is None else prior_revision
+            if payload != prior_payload:
+                if prior_revision is not None:
+                    revision = prior_revision + 1
                 db.execute(
-                    "SELECT revision,payload FROM session_publications WHERE address=?", (address,)
-                ).fetchone(),
-            )
-            revision = 1 if previous is None else previous[0] + int(previous[1] != payload)
-            db.execute(
-                "INSERT INTO session_publications(address,revision,payload) VALUES (?,?,?) "
-                "ON CONFLICT(address) DO UPDATE SET "
-                "revision=excluded.revision,payload=excluded.payload",
-                (address, revision, payload),
-            )
+                    "INSERT INTO session_publications(address,revision,payload) VALUES (?,?,?) "
+                    "ON CONFLICT(address) DO UPDATE SET "
+                    "revision=excluded.revision,payload=excluded.payload",
+                    (address, revision, payload),
+                )
             session["revision"] = revision
             result.append(session)
     return result
 
 
-def published(self: RemoteStore, key: str, payload: str | None = None) -> bool:
+def publication_payloads(self: RemoteStore) -> dict[str, str]:
     with self.store.transaction() as db:
-        row = cast(
-            "tuple[str] | None",
-            db.execute(
-                "SELECT payload FROM remote_publications WHERE address=?", (key,)
-            ).fetchone(),
+        return dict(db.execute("SELECT address,payload FROM remote_publications"))
+
+
+def published(self: RemoteStore, key: str) -> bool:
+    with self.store.transaction() as db:
+        return (
+            db.execute("SELECT 1 FROM remote_publications WHERE address=?", (key,)).fetchone()
+            is not None
         )
-    return row is not None and (payload is None or row[0] == payload)
 
 
 def record_publication(self: RemoteStore, key: str, payload: str) -> None:
