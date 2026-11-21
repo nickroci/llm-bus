@@ -6,6 +6,7 @@ import json
 from typing import TYPE_CHECKING, cast
 
 from llm_bus.errors import BusError
+from llm_bus.mailbox.eligibility import cutoff
 from llm_bus.mailbox.models import MAX_BATCH
 from llm_bus.routing import routing_scope
 
@@ -22,8 +23,8 @@ def monitor_history(
         raise BusError("Monitor limit must be between 1 and 100")
     if before is not None and before < 1:
         raise BusError("Monitor cursor must be a positive ID")
-    clauses: list[str] = []
-    parameters: list[str | int] = []
+    clauses: list[str] = ["retention_at>?"]
+    parameters: list[str | int] = [cutoff()]
     if repository is not None:
         clauses.append("scope=?")
         parameters.append(routing_scope(repository))

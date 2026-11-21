@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, cast
 
 from llm_bus.coordination.stalls import observe_message
 from llm_bus.errors import BusError
+from llm_bus.mailbox.eligibility import cutoff, remote_retained, report_open
 from llm_bus.reports.lifecycle import TERMINAL
 from llm_bus.reports.protocol import (
     Report,
@@ -25,26 +26,37 @@ if TYPE_CHECKING:
     from llm_bus.reports.store import Reports
 
 
-def deadline(self: Reports, remote_id: str, value: object) -> None:
+def deadline(self: Reports, remote_id: str, value: object, retention: object = None) -> None:
     expires = report_deadline(value)
+    bound = report_deadline(retention) if retention is not None else None
     with self.remote.store.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
+        if not remote_retained(db, remote_id):
+            return
         prior = cast(
-            "tuple[str] | None",
+            "tuple[str, str | None] | None",
             db.execute(
-                "SELECT expires_at FROM remote_report_windows WHERE id=?", (remote_id,)
+                "SELECT expires_at,retention_expires_at FROM remote_report_windows WHERE id=?",
+                (remote_id,),
             ).fetchone(),
         )
         if prior and prior[0] != expires:
             raise BusError("Relay report deadline changed")
-        db.execute("INSERT OR IGNORE INTO remote_report_windows VALUES (?,?)", (remote_id, expires))
+        if prior and prior[1] is not None and bound is not None and prior[1] != bound:
+            raise BusError("Relay retention deadline changed")
+        db.execute(
+            "INSERT INTO remote_report_windows(id,expires_at,retention_expires_at) VALUES (?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET retention_expires_at="
+            "COALESCE(remote_report_windows.retention_expires_at,excluded.retention_expires_at)",
+            (remote_id, expires, bound),
+        )
 
 
 def pollable_pages(self: Reports, *, now: datetime | None = None) -> Iterator[list[Envelope]]:
     instant = now or datetime.now(UTC)
     after = 0
     while True:
-        page = pollable_page(self, after)
+        page = pollable_page(self, after, instant)
         if not page:
             return
         after = page[-1][0]
@@ -59,25 +71,36 @@ def pollable_pages(self: Reports, *, now: datetime | None = None) -> Iterator[li
         yield result
 
 
-def pollable_page(self: Reports, after: int) -> list[tuple[int, str, str]]:
+def pollable_page(self: Reports, after: int, instant: datetime) -> list[tuple[int, str, str]]:
     with self.remote.store.transaction() as db:
         return cast(
             "list[tuple[int, str, str]]",
             db.execute(
                 "SELECT o.local_id,o.envelope,w.expires_at FROM remote_outbox o "
-                "JOIN remote_report_windows w ON w.id=o.id "
-                "WHERE o.state<>'queued_local' AND o.local_id>? "
+                "JOIN remote_report_windows w ON w.id=o.id JOIN messages m ON m.id=o.local_id "
+                "WHERE o.state<>'queued_local' AND o.local_id>? AND m.retention_at>? "
+                "AND (w.retention_expires_at IS NULL OR "
+                "julianday(w.retention_expires_at)>julianday(?)) "
                 "ORDER BY o.local_id LIMIT 100",
-                (after,),
+                (after, cutoff(instant), instant.isoformat()),
             ).fetchall(),
         )
 
 
 def snapshot(self: Reports, remote_id: str) -> Report | None:
     with self.remote.store.transaction() as db:
+        now = datetime.now(UTC)
         row = cast(
             "tuple[str] | None",
-            db.execute("SELECT payload FROM remote_reports WHERE id=?", (remote_id,)).fetchone(),
+            db.execute(
+                "SELECT r.payload FROM remote_reports r JOIN remote_outbox o ON o.id=r.id "
+                "JOIN messages m ON m.id=o.local_id LEFT JOIN remote_report_windows w ON w.id=r.id "
+                "WHERE r.id=? AND m.retention_at>? "
+                "AND (w.expires_at IS NULL OR julianday(w.expires_at)>julianday(?)) "
+                "AND (w.retention_expires_at IS NULL OR "
+                "julianday(w.retention_expires_at)>julianday(?))",
+                (remote_id, cutoff(now), now.isoformat(), now.isoformat()),
+            ).fetchone(),
         )
     return parse_report(cast("object", json.loads(row[0])), remote_id) if row else None
 
@@ -111,6 +134,8 @@ def receive(self: Reports, envelope: Envelope, value: object, config: Config) ->
         raise BusError("Local capability policy: report receiving is disabled")
     with self.remote.store.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
+        if not report_open(db, envelope["id"]):
+            return
         row = cast(
             "tuple[str] | None",
             db.execute(

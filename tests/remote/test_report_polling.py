@@ -31,8 +31,6 @@ def test_report_polling_survives_ack_and_uses_relay_deadline(
     )
     sender = SenderContext("codex", "sender", str(tmp_path / "repo"))
     sent = enqueue_remote(store, config, sender, "b/xyz/claude:recipient", "offline")
-    with store.transaction() as db:
-        db.execute("UPDATE messages SET sent_at='2020-01-01T00:00:00.000Z'")
     polls: list[str] = []
     terminal = False
     clock = FakeClock()

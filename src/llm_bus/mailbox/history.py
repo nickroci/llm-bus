@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, cast
 
 from llm_bus.coordination.delivery import verification
 from llm_bus.errors import BusError
+from llm_bus.mailbox.eligibility import cutoff
 from llm_bus.mailbox.models import (
     MAX_BATCH,
     HistoryMessage,
@@ -39,8 +40,9 @@ def history(  # noqa: C901, PLR0913, PLR0912 - independent public history filter
         raise BusError("Use either --before or --after, not both")
     if folder is not None and repository is not None:
         raise BusError("Use either folder or repository scope, not both")
-    clauses: list[str] = []
-    parameters: list[str | int] = []
+    retained_after = cutoff()
+    clauses: list[str] = ["retention_at>?"]
+    parameters: list[str | int] = [retained_after]
     if peer is not None:
         clauses.append("(sender = ? OR recipient = ?)")
         parameters.extend((peer, peer))
@@ -70,7 +72,7 @@ def history(  # noqa: C901, PLR0913, PLR0912 - independent public history filter
     order = "ASC" if after is not None else "DESC"
     parameters.append(limit)
     if conversation is not None:
-        root = _conversation_root(db, conversation)
+        root = _conversation_root(db, conversation, retained_after)
         prefix = (
             "WITH RECURSIVE conversation(id) AS (SELECT ? UNION "
             "SELECT m.id FROM messages m JOIN conversation c ON m.reply_to=c.id) "
@@ -104,7 +106,7 @@ def history(  # noqa: C901, PLR0913, PLR0912 - independent public history filter
     return messages
 
 
-def _conversation_root(db: sqlite3.Connection, message_id: int) -> int:
+def _conversation_root(db: sqlite3.Connection, message_id: int, retained_after: str) -> int:
     seen: set[int] = set()
     while True:
         if message_id in seen:
@@ -112,7 +114,12 @@ def _conversation_root(db: sqlite3.Connection, message_id: int) -> int:
         seen.add(message_id)
         row = cast(
             "tuple[int | None] | None",
-            db.execute("SELECT reply_to FROM messages WHERE id=?", (message_id,)).fetchone(),
+            db.execute(
+                "SELECT CASE WHEN EXISTS(SELECT 1 FROM messages p WHERE p.id=m.reply_to "
+                "AND p.retention_at>?) THEN reply_to END FROM messages m "
+                "WHERE id=? AND retention_at>?",
+                (retained_after, message_id, retained_after),
+            ).fetchone(),
         )
         if row is None:
             raise BusError("Unknown conversation message")

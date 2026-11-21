@@ -1,5 +1,6 @@
 """Durable informational local arrivals; these records confer no authority."""
 
+from datetime import UTC
 from sqlite3 import Connection
 from typing import cast
 
@@ -49,8 +50,9 @@ def record_remote(  # noqa: PLR0913 - existing join transaction and exact identi
     previous = cast(
         "tuple[int, str, str] | None",
         db.execute(
-            "SELECT o.local_id,o.id,o.state FROM coordination_local_availability a "
-            "JOIN remote_outbox o ON o.local_id=a.message_id WHERE a.grant_id=?",
+            "SELECT a.message_id,COALESCE(o.id,a.remote_id),COALESCE(o.state,'unavailable') "
+            "FROM coordination_local_availability a "
+            "LEFT JOIN remote_outbox o ON o.local_id=a.message_id WHERE a.grant_id=?",
             (grant_id,),
         ).fetchone(),
     )
@@ -71,8 +73,8 @@ def record_remote(  # noqa: PLR0913 - existing join transaction and exact identi
         ),
     )
     db.execute(
-        "INSERT INTO coordination_local_availability(grant_id,message_id) VALUES (?,?)",
-        (grant_id, result["id"]),
+        "INSERT INTO coordination_local_availability(grant_id,message_id,remote_id) VALUES (?,?,?)",
+        (grant_id, result["id"], result["remote_id"]),
     )
     return result
 
@@ -124,19 +126,29 @@ def accept(  # noqa: PLR0913 - explicit admission interface
     prior = cast(
         "list[tuple[str, str, str]]",
         db.execute(
-            "SELECT a.sent_at,a.event_id,a.grant_id FROM coordination_availability_events a "
-            "JOIN messages m ON m.id=a.message_id JOIN remote_imports r ON r.local_id=m.id "
-            "WHERE a.sender=? AND m.recipient=? AND m.recipient_scope=? "
-            "AND json_extract(r.envelope,'$.availability.project_id')=? "
-            "AND json_extract(r.envelope,'$.availability.generation')=?",
+            "SELECT sent_at,event_id,grant_id FROM coordination_availability_events "
+            "WHERE sender=? AND recipient=? AND scope=? AND project_id=? AND generation=? "
+            "ORDER BY sent_at DESC,event_id DESC LIMIT 1",
             (sender, recipient, scope, event.project_id, event.generation),
         ).fetchall(),
     )
     if any((observed_at, event_id) <= (timestamp(row[0]), row[1]) for row in prior):
         return False
     db.execute(
-        "INSERT INTO coordination_availability_events VALUES (?,?,?,?,?)",
-        (message_id, event.grant_id, sender, sent_at, event_id),
+        "INSERT INTO coordination_availability_events "
+        "(message_id,grant_id,sender,sent_at,event_id,recipient,scope,project_id,generation) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
+        (
+            message_id,
+            event.grant_id,
+            sender,
+            observed_at.astimezone(UTC).isoformat(timespec="microseconds"),
+            event_id,
+            recipient,
+            scope,
+            event.project_id,
+            event.generation,
+        ),
     )
     db.execute(
         "INSERT OR REPLACE INTO coordination_targets VALUES (?,?,?,?,?)",

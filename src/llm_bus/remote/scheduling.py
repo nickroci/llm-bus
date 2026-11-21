@@ -9,6 +9,7 @@ from llm_bus.diagnostics.synchronization import (
     synchronization_snapshot,
 )
 from llm_bus.errors import BusError
+from llm_bus.mailbox.eligibility import remote_retained
 
 if TYPE_CHECKING:
     from llm_bus.remote.store import RemoteStore
@@ -58,6 +59,9 @@ def record_sync_result(
         raise BusError("Invalid synchronization error code")
     with self.store.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
+        message_key = key.rsplit(":", 1)[0] if kind == "report_submit" else key
+        if not remote_retained(db, message_key, now=now):
+            return
         row = cast(
             "tuple[int] | None",
             db.execute(
@@ -92,6 +96,9 @@ def record_sync_result(
 
 def observe_acceptance(self: RemoteStore, key: str, now: datetime) -> None:
     with self.store.transaction() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not remote_retained(db, key, now=now):
+            return
         db.execute(
             "INSERT INTO remote_sync_work(kind,key,first_accepted_at) VALUES ('status',?,?) "
             "ON CONFLICT(kind,key) DO UPDATE SET first_accepted_at="

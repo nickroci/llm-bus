@@ -38,7 +38,9 @@ The committed `wrangler.jsonc` keeps a placeholder D1 ID and `workers_dev: false
 
 When your Cloudflare login can see more than one account, set `CLOUDFLARE_ACCOUNT_ID` for the `wrangler` commands so that they select the right account.
 
-Back up existing D1 data before upgrades. Apply all migrations before deploying the matching Worker:
+For an existing relay, complete the [offline retention cutover](#offline-retention-cutover)
+before applying these commands. Back up D1 data and apply all migrations before
+deploying the matching Worker:
 
 ```sh
 bunx wrangler d1 migrations apply llm-bus --remote --config wrangler.local.jsonc
@@ -195,7 +197,7 @@ To reply, use `llm-bus send MACHINE/REPO/NATIVE_ADDRESS --reply-to 123 --body "R
 
 The bridge checks authenticated `GET /v1/capabilities` before uploading linked messages. Missing reply support or HTTP 404, 405, or 501 keeps the message `queued_local` with `unsupported_reply_link` and capped retry delays up to five minutes. Malformed capability fields and other HTTP errors fail closed. Roots continue using the old protocol. A child arriving before its retained parent is not receipted; later scans retry from sequence zero and can resolve it after the parent arrives. Other valid deliveries in that scan continue.
 
-Reply-parent resolution uses retained native imports or outgoing messages on the same saved connection. A monitor-only parent cannot establish a native reply link and is never promoted by replay. A child with no resolvable parent remains unreceipted at the relay until a valid parent becomes available or the relay delivery window expires; monitor-only ancestry alone cannot resolve it.
+Reply-parent resolution uses retained native imports or outgoing messages on the same saved connection. A monitor-only parent cannot establish a native reply link and is never promoted by replay. A recent, already accepted child can survive a purged parent only when a retained replay UUID confirms deletion and independent participant, policy, and authority checks pass. The UUID supplies no authority. An unknown parent remains unreceipted until a valid parent becomes available or the relay delivery window expires; monitor-only ancestry alone cannot resolve it.
 
 `list` combines native peers with cached remote peers whose exact local peer policy permits `send_messages`, for the current repository. `list --all` extends that selection to all mapped repositories; the cache is not proof of connectivity or current server access. The server rechecks authorization before any remote delivery. Absolute checkout paths and local host socket endpoints are never sent to the relay.
 
@@ -211,7 +213,7 @@ Remote `send` commits a message and UUID outbox record locally, then returns `qu
 | `accepted_remote` | Durable in the relay mailbox; destination receipt is pending. |
 | `delivered_local` | Destination committed either its native inbox copy or separate monitor copy. |
 | `acknowledged` | Destination agent acknowledged its native local message and the bridge synchronized it. Human monitor reads do not acknowledge. |
-| `expired` | An unreceived message reached the relay's 30-day delivery window. |
+| `expired` | An unreceived message reached the relay's 48-hour delivery window. |
 
 Outgoing records retain `id`, `remote_id`, `recipient`, `status`, and `work_report`, and add the same body-free projection as `status ID`. `synchronization` separates transport timing from report timing; `upload_synchronization` and `report_synchronization` retain their operation-specific metadata. Cached peers include separate synchronization freshness. Missing timestamps are null and stale; a cached value is never proof of current relay state.
 
@@ -223,7 +225,7 @@ The single-message result contains `id`, `remote_id`, `sender`, `recipient`, `re
 
 `synchronization` contains `last_attempt_at`, `last_success_at`, `next_attempt_at`, `error_code`, `polling_suspended_at`, and `stale`. It is stale without a successful observation, when that observation is at least 30 seconds old, or after an error. When operations have retained metadata, `operations` lists each fixed kind separately, including upload, receipt, acknowledgement, report read, or report submission. Report submissions include `expected_revision`; each attempted revision retains its own success, error, and retry timing. The summary describes transport synchronization, so inspect submission operations even when a receipt succeeded. A successful transport read cannot establish report freshness. For an outgoing relay message, `work_report` is only the strict synchronized sender-side snapshot; for a local coordination direction it is the recipient's local report. Queued recipient submissions are not displayed as accepted reports. These fields are diagnostic data, never instructions or approval.
 
-Transport polling suspends 30 days after the first valid relay acceptance observed locally. Suspension preserves the last known transport state, including delivery; it does not assign `expired`. Queued uploads have no local expiry or fabricated acceptance date. Report polling remains governed separately by the relay's saved report deadline and terminal report snapshots.
+Transport polling retains its separate 30-day observation horizon after the first valid relay acceptance observed locally. Suspension preserves the last known transport state, including delivery; it does not assign `expired`. The 14-day local retention limit can remove an outgoing record sooner, including one never uploaded. Offline enqueue time is never fabricated as relay acceptance time. Report polling also requires current retention, the saved relay report deadline, and a nonterminal report snapshot.
 
 A Queue acknowledgement, a destination receipt, a host wake, and an agent acknowledgement are separate events. Host wake is best effort and uses the existing local adapter. Reads never consume messages. Native inbox imports share the local recipient coordinator: one lease gathers pending IDs, rechecks current policy, and requests one fixed notice without body, monitor, or report content. Successful requested coverage persists across restarts and prevents automatic repeat wakes for those same IDs. Later arrivals remain distinct durable messages and can cause a follow-up request; each call permits at most two native attempts. A host losing an already queued notice does not trigger an automatic resend; pending messages remain visible at the recipient's next hook or inbox read.
 
@@ -274,7 +276,7 @@ Success prints a durable queued intent containing `message_id` (the original UUI
 
 The command returns a JSON array of up to 100 such outgoing rows. `work_report: null` means no snapshot has been synchronized. A snapshot with `revision: 0`, `status: null`, and `reason: null` means the relay had no explicit report yet. Neither condition proves a report is available; check relay compatibility, policy, and retention. Reports may continue after transport acknowledgement and stop polling after a terminal report or the relay-owned report deadline.
 
-Successful message acceptance and transport-status responses include `report_expires_at`, an explicit UTC deadline 30 days after relay acceptance. Identical upload retries preserve it. Offline enqueue time does not start that clock. Invalid supplied deadlines are protocol errors; an existing deadline cannot silently change. A legacy relay omitting this metadata still supports ordinary transport, but reports cannot be polled without a valid deadline. Already acknowledged originals without a stored deadline are not automatically revisited for one.
+Successful message acceptance and transport-status responses include `report_expires_at` and a separate `retention_expires_at`. New relay messages advertise 14 days after acceptance for both. Legacy stored messages preserve their original 30-day report deadline while advertising the separate 14-day retention bound. Reports require both windows to remain open. Identical upload retries preserve the report deadline; clients never rewrite a saved legacy deadline. Offline enqueue time does not start the relay clock. Invalid supplied deadlines are protocol errors. A legacy response omitting expiry metadata cannot extend local retention; reports cannot be polled without a valid saved report deadline. Already acknowledged originals without a stored deadline are not automatically revisited for one.
 
 Reports use ordered revisions starting from zero; successful changes increment atomically. Identical retries of the last accepted intent are idempotent. Stale/concurrent changes conflict, and delayed older snapshots cannot overwrite newer ones. Intermediate states may be skipped. `not_proceeding` may later become `proceeding`; `received` cannot replace a later lifecycle state. `completed` and `failed` are terminal and permit only identical retries. Polling returns the latest snapshot, not a report event log.
 
@@ -299,7 +301,7 @@ Monitor IDs are separate pagination cursors. They are not native message IDs for
 
 UUID deduplication spans inbox and monitor admissions. The first stored class wins: changing monitor to inbox never promotes old monitored text on replay. Changed content for a stored UUID is rejected. Inbox history also retains its original class if policy later changes to monitor; current policy can withhold its pending exposure.
 
-Monitor history has no automatic local expiry. It remains explicitly readable after blocking a peer, removing a repository or configuration, or losing current relay access. Reads use the stored scope and connection snapshot; they need no current token or remote configuration. Native `history` and its viewer remain separate. Back up and protect the mailbox like other untrusted message history. This is bus delivery separation, not file isolation from another process sharing the account.
+Monitor history expires 14 days after original relay acceptance. Until then it remains explicitly readable after blocking a peer, removing a repository or configuration, or losing current relay access. Reads use the stored scope and connection snapshot; they need no current token or remote configuration. Native `history` and its viewer remain separate. Back up and protect the mailbox like other untrusted message history. This is bus delivery separation, not file isolation from another process sharing the account.
 
 ## Policy changes
 
@@ -416,6 +418,11 @@ and retain backups before rollback; older clients reject schema 13 mailboxes.
 
 ## Migration and rollback
 
+The retention release requires the offline procedure below before any updated
+process performs a writable mailbox operation. The earlier migration notes in
+this section explain individual schema changes; they do not authorize a rolling
+upgrade across the retention compatibility floor.
+
 For an existing installation, stop every remote bridge before changing clients or policy. Back up the local SQLite mailboxes, existing configuration, and D1 using Cloudflare's backup facilities. Keep tokens private and outside repositories.
 
 1. The relay operator applies additive `0002_reports.sql` and `0003_reply_to.sql` migrations after `0001_bus.sql`, then deploys the matching Worker, using the [relay commands](#deploy-the-relay). Keep the existing machine credentials, grants, messages, and session data. Upgrading the relay does not select local peers or activate a bridge.
@@ -430,11 +437,141 @@ Local schema version 4 adds the nullable parent ID and reply index transactional
 
 Single-message `status` adds no schema migration and reads missing legacy metadata as null. Reading status does not upgrade an old mailbox; an ordinary current-client operation performs the transactional additive upgrade. This does not make old clients safe for a newer mailbox: retain the pre-upgrade backup and stop bridges before rollback. Mixed relays retain single-item reads and unlinked-message support; linked messages require explicit reply capability. Do not strip reply links or resend to bypass an incompatible relay.
 
-D1 holds unreceived messages for a 30-day delivery window independently of Queue retention. The report window also ends 30 days after relay acceptance, independently of delivery/acknowledgement. Expired messages are excluded from delivery and report `expired`; relay rows remain stored for history/status rather than being deleted automatically. There is no automatic local purge of native messages, monitoring, or stored report snapshots. The operator owns relay archival and backup policy.
+D1 stops first delivery at exactly 48 hours after acceptance, independently of
+Queue retention. Already received messages keep delivered/acknowledged transport
+status until 14-day retention ends. Every message class, including typed
+coordination and availability, follows these limits. The receiver rechecks age
+before first local admission, including responses buffered across the deadline.
+
+At exactly 14 days, relay and main-mailbox reads exclude messages regardless of
+receipt, acknowledgement, policy denial, or active coordination. Relay cron and
+rate-limited local writable activity delete bounded batches of original rows,
+monitors, message-linked reports, synchronization state, and message-specific
+coordination records. A retained recent reply keeps its body and original
+accepted envelope, while its database parent link becomes null. Content-free
+UUID replay guards and monotonic ID allocation survive deletion. Project grants,
+runs, independent gates, provider reconciliation state, and availability ordering
+remain. An idle local mailbox physically purges on its next writable activity.
+Read-only `status` and `retention-preview` never migrate or purge data.
+
+### Offline retention cutover
+
+This procedure is for relay operators and each machine owner. Production
+deployment and the first deletion require separate owner authorization after
+implementation and verification finish. Do not use a production mailbox for a
+rehearsal. There is no permanent maintenance switch or automatic version lock:
+the operator must stop access using the host and provider's existing controls.
+
+1. Record the exact compatible release before deployment: the accepted Git
+   commit, Python wheel filename and SHA-256 digest, installed executable paths
+   for every hook/bridge/client, Worker deployment/version ID and bundle digest,
+   and applied database migrations. `0.1.0` alone is not an exact identity.
+   The first complete release implementing this procedure is the minimum floor;
+   fill these identities from the actual accepted artifacts, never a guessed
+   future release tag. This release covers local schema **21** (retention in
+   **19**, durable availability in **20**, saved retention deadline in **21**)
+   and relay migrations **0008_message_retention.sql** and
+   **0009_retained_reply_identity.sql**, after **0001–0007**.
+2. Inventory every Worker deployment sharing D1. Block every relay HTTP route,
+   including alternate domains and `workers.dev`. Pause all associated Queue
+   consumers and cron using provider controls. Drain or terminate
+   in-flight HTTP, Queue, and scheduled invocations and verify their completion.
+   Keep queued UUID jobs for the compatible Worker. Stop bridges, agents and
+   hooks, collaboration daemons that deliver into the main mailbox, timers,
+   viewers, and other mailbox readers/writers on each machine. Disable supervisor
+   and host automatic restarts. Verify process exits and open database handles;
+   replacing an executable does not stop an already-open `Store`. Disconnect
+   endpoints that cannot meet the floor. Unknown process/version state blocks
+   activation.
+3. With access stopped, back up D1, SQLite, policy, and deployment configuration.
+   Use SQLite's backup facility or a clean stopped/checkpointed copy, accounting
+   for WAL files. Keep backup identities and restricted storage locations in the
+   cutover record. Run the compatible preview executable without starting normal
+   commands. For each local database:
+
+   ```sh
+   LLM_BUS_DB=/absolute/path/to/bus.sqlite3 llm-bus retention-preview
+   ```
+
+   The JSON returns one captured UTC `as_of`, `retention_cutoff`, and `messages`
+   and `monitors` objects containing only `candidates` and `oldest_eligible_at`.
+   It streams timestamp metadata for legacy validation and reads no message body
+   into the client. A missing database fails without creating it. Any invalid
+   age blocks activation; repair only from authoritative timestamp evidence while
+   stopped. Do not infer an age from retry, migration, or restoration time.
+4. From the accepted checkout's `cloudflare/` directory, run the equivalent
+   body-free relay inventory before and after migration:
+
+   ```sh
+   bunx wrangler d1 execute llm-bus --remote --config wrangler.local.jsonc --file retention-preview.sql
+   ```
+
+   This read-only statement returns expired unreceived delivery counts at 48
+   hours, deletion counts at 14 days, their oldest eligible UTC timestamps, and
+   `invalid_timestamps`. A nonzero invalid count blocks activation even if the
+   candidate counts are zero. It uses original acceptance ages and works before
+   `0008` and after `0009`; its timestamp-only scan validates the whole backlog.
+5. Apply D1 migrations using the deployment commands above while ingress,
+   consumers, and cron remain stopped. Install the compatible Python artifact
+   and update hook executable paths without starting agents. Migrate each local
+   mailbox separately from purge:
+
+   ```sh
+   LLM_BUS_DB=/absolute/path/to/bus.sqlite3 uv run python -c 'from llm_bus.mailbox.connection import default_path; from llm_bus.mailbox.store import Store; Store(default_path())'
+   ```
+
+   Run this command from the accepted checkout/environment, not an older
+   installation. Construction migrates only; do not call `transaction()`,
+   `bridge --once`, `whoami`, or other normal writable commands yet. Deploy the
+   compatible Worker with routes, Queue consumption, and cron still blocked.
+   Repeat both previews, record counts/cutoffs, and run
+   `PRAGMA foreign_key_check` on both databases. Run `PRAGMA integrity_check`
+   on local SQLite; D1 rejects that pragma, so use the provider's available
+   database health and backup verification controls. Confirm local
+   `PRAGMA user_version` is 21 and applied D1 migrations include `0009`.
+6. Review the actual backlog and obtain first-deletion authorization. Only then
+   allow compatible writable activity and bounded maintenance. Local batches
+   remove up to 100 main messages and 100 monitors, at most once per 60 seconds;
+   relay cron removes up to 100 messages per pass. Large backlogs take multiple
+   passes, but exposure checks apply immediately. Resume HTTP, Queue, cron,
+   hooks, and supervisors only after confirming every accessing process meets
+   the recorded floor. Keep unupgraded machines disconnected until their local
+   cutover finishes. Check body-free counts, integrity, and compatible delayed
+   jobs/retries; never resend expired directions to bypass expiry.
+
+### Stopped recovery and backups
+
+If migration, purge, integrity, or version verification fails, keep or return
+the system to the stopped state before diagnosis: block HTTP, pause consumers
+and cron, stop local delivery/uploads/wakes/maintenance, and disable restarts.
+Migration failure rolls back its transaction; purge failure rolls back the
+bounded batch, including replay and reply changes. Earlier successful batches
+remain committed. Re-run previews and integrity checks after correcting the
+confirmed cause. Resume only a verified compatible release; an old executable
+must never access an activated database, including during rollback. There is
+no supported in-place schema downgrade.
+
+Deletion removes content from active application tables. It does not erase
+backups, filesystem snapshots, SQLite free pages/WAL remnants, host transcripts,
+or copies already exposed to agents. Those follow their own retention policies.
+The separate opt-in collaboration database remains outside this policy; its
+copies in the main mailbox still expire normally.
+
+Restore backups offline with separate owner authorization. Before resuming
+access, apply compatible migrations. Reconcile relay `purged_message_ids` and
+local `remote_replay_guard` and `mailbox_id_high_water` against post-cutover state,
+then apply current retention checks and authorized deletion. Preserve provider reconciliation and
+durable authority. A pre-cutover backup can otherwise resurrect a purged UUID or
+reuse an ID. If replay or identifier safety cannot be established from retained
+post-cutover evidence, keep the restored service stopped. A backup is not
+permission to reset ages, replay approvals, or reconnect an older release.
 
 Stopping the bridge suspends remote transfers without affecting local messaging. Remove or move the configuration file to hide remote peers and disable remote sends; retain databases. Pending outbox entries can resume when the same connection and permissions return. Previously stored history is not erased by blocking.
 
-Before downgrading to a client without peer policy, stop all remote bridges and keep them stopped. Older clients cannot preserve inbox revocation or monitor/report isolation. Review existing pending native records before running an older agent-facing client; stopping the bridge alone does not add the new pending checks to old code. Do not restore the old permissive remote settings and resume old bridges expecting these restrictions. Retain additive database tables and backups; no destructive schema rollback is required for local-only recovery.
+Keep every client below the recorded compatibility floor disconnected from
+activated mailboxes, even for local-only recovery. Stopping a bridge alone does
+not stop an older hook, viewer, or already-open writer. Retain upgraded stores
+and backups, preserve peer policy, and use the stopped recovery procedure above.
 
 ## Development verification
 

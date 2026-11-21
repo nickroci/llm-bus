@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, cast
 from llm_bus.coordination import work_state
 from llm_bus.diagnostics.synchronization import SYNC_KINDS, synchronization_snapshot
 from llm_bus.errors import BusError
+from llm_bus.mailbox.eligibility import cutoff
+from llm_bus.mailbox.retention_schema import normalize_age
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -69,6 +71,8 @@ def message_status(path: Path, message_id: int) -> dict[str, object]:
         if row is None:
             raise BusError("Unknown message ID")
         message: dict[str, object] = dict(zip(names, row, strict=True))
+        if normalize_age(cast("str", message["sent_at"])) <= cutoff():
+            raise BusError("Unknown message ID")
         return _message_status(db, message)
 
 

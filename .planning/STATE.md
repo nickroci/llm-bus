@@ -1,6 +1,6 @@
 # Project State
 
-Last activity: 2026-11-21 - Unattended coordination PR #93 merged as f2273f38 and was verified on all three configured hosts.
+Last activity: 2026-11-21 - Message delivery and retention PR #96 passed independent review and CI on the reviewed head. Final tracking validation and merge are pending.
 
 ## Registered Work
 
@@ -11,6 +11,7 @@ Last activity: 2026-11-21 - Unattended coordination PR #93 merged as f2273f38 an
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261121-mrt | Message delivery and retention — PR #96 | Independent review and reviewed-head CI passed. Final tracking validation and merge pending. Production rollout requires separate authorization. | [261121-mrt-message-retention](./quick/261121-mrt-message-retention/) |
 | 261121-unc | Unattended coordination — PR #93 | Merged after final-head CI. Release f2273f38 verified on all three configured hosts. | [261121-unc-unattended-coordination](./quick/261121-unc-unattended-coordination/) |
 | 261120-pap | Project action preapproval — PR #92 | Implementation review and CI passed. Merge pending final tracking validation. | [261120-pap-project-action-preapproval](./quick/261120-pap-project-action-preapproval/) |
 | 261114-s7n | Coordination blocker reporting and stall detection — PR #90 | PR #90 review passed (R2) and CI passed on 1166e361; final tracking validation, current-head CI and merge pending; no installed rollout | [261114-s7n-coordination-blocker-reporting-and-stall](./quick/261114-s7n-coordination-blocker-reporting-and-stall/) |

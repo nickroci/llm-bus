@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from llm_bus.errors import BusError
+from llm_bus.mailbox.eligibility import report_open
 from llm_bus.remote import batches, incoming
 from llm_bus.remote.http import HTTP_POST
 from llm_bus.reports.store import Reports
@@ -57,6 +58,9 @@ def poll_reports(self: Bridge) -> int:
 
 
 def permits_report(self: Bridge, envelope: Envelope) -> bool:
+    with self.store.transaction() as db:
+        if not report_open(db, envelope["id"], now=self.clock()):
+            return False
     current = self.current_config()
     if current is None:
         return False

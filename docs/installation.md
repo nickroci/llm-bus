@@ -130,17 +130,26 @@ The next successful upgrade deletes `bootstrap/`.
 
 ### Mailbox compatibility and rollback
 
-Current clients upgrade the mailbox to schema 18. Binaries supporting earlier
+Current clients upgrade the mailbox to schema 21. Binaries supporting earlier
 schemas then refuse it, so upgrade every installation sharing that mailbox
 before any session uses it. Upgrade executable, hooks, copied skill, and rule
 files together; mixed versions can disagree. Schema 17 added local unattended
 run history; schema 18 adds decision-to-run bindings and decision handoff lineage.
-Migration does not enable unattended authority or start timers.
+Migration does not enable unattended authority or start timers. Schema 19 adds
+normalized retention ages, replay identifiers, and durable ID allocation.
+Schema 20 preserves availability ordering and deduplication after message
+deletion. Schema 21 adds the nullable saved relay retention deadline without
+rewriting a previously advertised report deadline. Migrations do not purge data.
+The next writable operation can begin bounded deletion. Before first activation,
+follow the [offline retention cutover](remote-bus.md#offline-retention-cutover),
+including local-only hosts and processes with an already-open mailbox.
 
-There is no supported in-place schema downgrade. Older code requires an
-owner-approved restoration of a compatible pre-upgrade mailbox backup. Stop
-bridges and retain backups before rollback; never resend directions as ordinary
-messages to bypass compatibility checks. See
+There is no supported in-place schema downgrade. Keep older code off an activated
+mailbox, including during rollback. Restore backups offline only with owner
+authorization, reconcile replay identifiers and ID high-water marks, and apply
+compatible migrations and current retention before resuming access. Stop bridges
+and retain backups before recovery; never resend directions as ordinary messages
+to bypass compatibility checks. See
 [coordination installation and rollback](../skills/llm-bus/references/coordination.md#installation-and-rollback)
 and [relay migration and rollback](remote-bus.md#migration-and-rollback).
 

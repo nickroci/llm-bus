@@ -46,7 +46,7 @@ def test_wake_failed_or_unknown_retries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:
     store, recipient, _sender = _mailbox(tmp_path)
-    clock = datetime(2030, 1, 1, tzinfo=UTC)
+    clock = datetime.now(UTC)
     calls: list[int] = []
 
     def native(_recipient: str, key: int, _sender: str) -> llm_bus.wake.adapters.WakeResult:
@@ -70,7 +70,7 @@ def test_wake_retry_excludes_previously_successful_members(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:
     store, recipient, sender = _mailbox(tmp_path)
-    clock = datetime(2030, 1, 1, tzinfo=UTC)
+    clock = datetime.now(UTC)
     monkeypatch.setattr(llm_bus.wake.dispatch, "_now", lambda: clock)
     monkeypatch.setattr(llm_bus.wake.dispatch, "wake", _requested)
     assert llm_bus.wake.dispatch.dispatch_pending(store, recipient)["status"] == "requested"
@@ -124,7 +124,7 @@ def test_wake_requested_coverage_persists_but_never_covers_later_members(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, recipient, sender = _mailbox(tmp_path)
-    clock = datetime(2030, 1, 1, tzinfo=UTC)
+    clock = datetime.now(UTC)
     calls: list[int] = []
 
     def native(_recipient: str, key: int, _sender: str) -> llm_bus.wake.adapters.WakeResult:
@@ -151,7 +151,7 @@ def test_wake_legacy_due_time_does_not_repeat_successful_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, recipient, _sender = _mailbox(tmp_path)
-    clock = datetime(2030, 1, 1, tzinfo=UTC)
+    clock = datetime.now(UTC)
     monkeypatch.setattr(llm_bus.wake.dispatch, "_now", lambda: clock)
     monkeypatch.setattr(llm_bus.wake.dispatch, "wake", _requested)
     assert llm_bus.wake.dispatch.dispatch_pending(store, recipient)["status"] == "requested"
@@ -181,7 +181,7 @@ def test_wake_unsupported_waits_for_capability_or_new_send(
     recipient = store.register("claude", "recipient", str(tmp_path))
     sender = SenderContext("codex", "sender", str(tmp_path))
     store.send(sender, recipient, "first")
-    clock = datetime(2030, 1, 1, tzinfo=UTC)
+    clock = datetime.now(UTC)
     calls: list[int] = []
 
     def native(

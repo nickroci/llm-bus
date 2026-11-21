@@ -9,12 +9,14 @@ from llm_bus.coordination.delivery import persist, require_coordinator
 from llm_bus.coordination.stalls import observe_message
 from llm_bus.errors import BusError
 from llm_bus.hosts.sessions import require_main_agent
+from llm_bus.mailbox.eligibility import cutoff
 from llm_bus.mailbox.models import (
     MAX_BATCH,
     MAX_MESSAGE_BYTES,
     Message,
     message_from_row,
 )
+from llm_bus.mailbox.retention_schema import allocate_id
 
 if TYPE_CHECKING:
     import sqlite3
@@ -69,10 +71,12 @@ def send_in_transaction(  # noqa: PLR0913, C901  # pylint: disable=too-many-argu
         )
         if not decision.verified:
             raise BusError(f"Direction denied: {decision.reason}")
-    cursor = db.execute(
-        "INSERT INTO messages(sender, recipient, body, sender_cwd, recipient_cwd, "
-        "sender_scope, recipient_scope, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    message_id = allocate_id(db, "message")
+    db.execute(
+        "INSERT INTO messages(id, sender, recipient, body, sender_cwd, recipient_cwd, "
+        "sender_scope, recipient_scope, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
+            message_id,
             sender,
             recipient,
             body,
@@ -83,9 +87,6 @@ def send_in_transaction(  # noqa: PLR0913, C901  # pylint: disable=too-many-argu
             reply_to,
         ),
     )
-    message_id = cursor.lastrowid
-    if message_id is None:
-        raise RuntimeError("SQLite did not return a message ID")
     if direction is not None:
         persist(db, message_id, direction, approval)
     elif reply_to is not None:
@@ -109,22 +110,28 @@ def validate_reply(
     parent_id: int | None,
     sender: tuple[str, str],
     recipient: tuple[str, str],
+    *,
+    accepted_remote: bool = False,
 ) -> None:
     """Bind a retained parent to the same participants and their individual scopes."""
+    # pylint: disable=clean-code-boolean-flag-argument
     if parent_id is None:
         return
     if isinstance(parent_id, bool) or parent_id < 1:
         raise BusError("Reply ID must be a positive integer")
     parent = cast(
-        "tuple[str, str, str | None, str | None] | None",
+        "tuple[str, str, str | None, str | None, str] | None",
         db.execute(
-            "SELECT sender,recipient,sender_scope,recipient_scope FROM messages WHERE id=?",
+            "SELECT sender,recipient,sender_scope,recipient_scope,retention_at "
+            "FROM messages WHERE id=?",
             (parent_id,),
         ).fetchone(),
     )
     if parent is None:
         raise BusError("Unknown reply parent")
-    parent_sender, parent_recipient, parent_sender_scope, parent_recipient_scope = parent
+    parent_sender, parent_recipient, parent_sender_scope, parent_recipient_scope, age = parent
+    if not accepted_remote and age <= cutoff():
+        raise BusError("Unknown reply parent")
     if sorted((parent_sender, parent_recipient)) != sorted((sender[0], recipient[0])):
         raise BusError("Reply participants do not match parent")
     if (
@@ -188,15 +195,14 @@ def deliver_collab(db: sqlite3.Connection, sender: str, recipient: str, body: st
         "ON CONFLICT(address) DO UPDATE SET last_seen = excluded.last_seen",
         (sender,),
     )
-    cursor = db.execute(
-        "INSERT INTO messages(sender, recipient, body, recipient_cwd, recipient_scope) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (sender, recipient, body, recipient_row[0], recipient_row[1]),
+    message_id = allocate_id(db, "message")
+    db.execute(
+        "INSERT INTO messages(id, sender, recipient, body, recipient_cwd, recipient_scope) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (message_id, sender, recipient, body, recipient_row[0], recipient_row[1]),
     )
-    if cursor.lastrowid is None:
-        raise RuntimeError("SQLite did not return a message ID")
     request_dispatch(db, recipient)
-    return cursor.lastrowid
+    return message_id
 
 
 def acknowledge(db: sqlite3.Connection, recipient: str, ids: list[int]) -> int:
@@ -205,12 +211,13 @@ def acknowledge(db: sqlite3.Connection, recipient: str, ids: list[int]) -> int:
         raise BusError("Provide 1-100 positive integer message IDs")
     unique_ids = list(dict.fromkeys(ids))
     acknowledged = 0
+    retained_after = cutoff()
     for message_id in unique_ids:
         exists = cast(
             "tuple[int] | None",
             db.execute(
-                "SELECT 1 FROM messages WHERE recipient = ? AND id = ?",
-                (recipient, message_id),
+                "SELECT 1 FROM messages WHERE recipient = ? AND id = ? AND retention_at>?",
+                (recipient, message_id, retained_after),
             ).fetchone(),
         )
         if exists is None:

@@ -239,6 +239,22 @@ checks are not a sandbox against processes sharing an operating-system user.
 
 ## Browse message history
 
+The main mailbox retains messages for 14 days from their original enqueue time;
+imported relay copies and monitors use relay acceptance time. Acknowledgement,
+replies, retries, and coordination state never restart that clock. History,
+inbox, diagnostics, and wakes hide expired messages even before physical deletion.
+Normal writable activity removes bounded batches; an idle mailbox waits until
+its next writable activity. Recent replies survive an expired parent, with a
+nullable local parent link. New replies require a retained parent.
+
+Run `llm-bus retention-preview` for body-free deletion counts and the oldest
+eligible timestamp in the main mailbox and separate monitor table. It needs no
+host identity or remote configuration and never creates, migrates, or purges a
+mailbox. Invalid timestamps stop the preview. For first activation and backups,
+follow the [offline retention cutover](remote-bus.md#offline-retention-cutover).
+The separate opt-in collaboration database has its own lifecycle; collaboration
+copies delivered into the main mailbox follow this 14-day policy.
+
 `history` reads retained bus messages without acknowledging them and needs no
 host session identity. Its default scope is the current folder:
 

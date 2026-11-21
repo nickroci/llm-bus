@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from contextlib import AbstractContextManager, closing
+from contextlib import closing, contextmanager
 from typing import TYPE_CHECKING
 
 from llm_bus.coordination import stalls
 from llm_bus.diagnostics.messages import message_status
-from llm_bus.mailbox import agents, connection, history, labels, pending, writes
+from llm_bus.mailbox import agents, connection, history, labels, pending, retention, writes
 from llm_bus.mailbox.models import MAX_BATCH, Agent, HistoryMessage, Message, SenderContext
 from llm_bus.routing import routing_scope
 
 if TYPE_CHECKING:
     import sqlite3
+    from collections.abc import Generator
     from pathlib import Path
 
     from llm_bus.coordination.models import Approval, Direction
@@ -21,12 +22,14 @@ class Store:  # pylint: disable=too-many-public-methods
     """Durable messages; inbox reads leave items pending until acknowledged."""
 
     path: Path
+    _maintenance: bool
 
     @classmethod
     def read_only(cls, path: Path) -> Store:
         """Open retained diagnostics without mailbox creation, migration, or chmod."""
         store = cls.__new__(cls)
         store.path = path
+        store._maintenance = False
         return store
 
     def message_status(self, message_id: int) -> dict[str, object]:
@@ -35,13 +38,19 @@ class Store:  # pylint: disable=too-many-public-methods
 
     def __init__(self, path: Path) -> None:
         self.path = path
+        self._maintenance = True
         connection.initialize(self.path)
 
     def _connect(self) -> sqlite3.Connection:
         return connection.connect(self.path)
 
-    def transaction(self) -> AbstractContextManager[sqlite3.Connection]:
-        return connection.transaction(self._connect)
+    @contextmanager
+    def transaction(self) -> Generator[sqlite3.Connection]:
+        # pylint: disable=contextmanager-generator-missing-cleanup
+        with connection.transaction(self._connect) as db:
+            if self._maintenance:
+                retention.maintain(db)
+            yield db
 
     def register(  # noqa: PLR0913 - explicit optional registration metadata
         self,

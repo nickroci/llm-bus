@@ -41,7 +41,7 @@ denied → report restriction. No bypass via shorter local address,
 other peer, forwarding, report text, `--cross-folder`, or policy edits. No
 shared topology files or remotely editable local permissions.
 
-Blocking keeps history, stops pending agent exposure and future
+Blocking keeps history within its retention period, stops pending agent exposure and future
 wakes. Cannot recall already exposed content or submitted wake.
 
 ## Interpret transport state
@@ -151,7 +151,23 @@ Native imports/outbox bindings resolve reply parents; monitor-only ancestry neve
 becomes a native parent. Unresolved children remain unreceipted until a valid parent
 is available or relay delivery expiry. Follow the remote guide for operator upgrades.
 
-Current mailboxes use schema 18. Local silence observation, unattended run history,
+Current mailboxes use schema 21. The relay stops first delivery at 48 hours and
+deletes message content at 14 days, regardless of acknowledgement. The main local
+mailbox also retains messages and monitors for 14 days. Queued messages age from
+local enqueue; imported messages and monitors age from original relay acceptance.
+Replies and retries do not reset age. Normal writable activity purges bounded
+batches; an idle mailbox waits until its next writable activity. Reads and wakes
+exclude expired records immediately. `llm-bus retention-preview` returns only
+deletion counts and oldest eligible timestamps without migration or deletion.
+
+First activation requires separate deployment and deletion authorization, stopped
+HTTP/Queue/cron and all local mailbox processes, then compatible migrations and
+restarts. Retention requires relay migrations `0008_message_retention.sql` and
+`0009_retained_reply_identity.sql`. Keep older releases off activated databases,
+including after restoration. Follow the operator's
+[offline cutover and recovery procedure](https://github.com/wnz99/llm-bus/blob/main/docs/remote-bus.md#offline-retention-cutover).
+
+Local silence observation, unattended run history,
 and decision-to-run bindings need no additional relay migration. Directions
 require relay migration `0004_coordination.sql`, with
 separate version 1 `/v2/coordination` capability/message/inbox routes. Legacy

@@ -12,7 +12,9 @@ from llm_bus.coordination.delivery import persist, require_coordinator
 from llm_bus.coordination.stalls import observe_message
 from llm_bus.errors import BusError
 from llm_bus.hosts.sessions import require_main_agent
+from llm_bus.mailbox.eligibility import cutoff
 from llm_bus.mailbox.models import MAX_MESSAGE_BYTES, address
+from llm_bus.mailbox.retention_schema import allocate_id
 from llm_bus.remote.models import Envelope
 from llm_bus.routing import routing_scope
 
@@ -131,15 +133,13 @@ def enqueue_in_transaction(  # noqa: PLR0913, PLR0917 - shared transaction write
         (native, sender.kind, sender.project, scope),
     )
     proxy(db, recipient, repo_id)
-    cursor = db.execute(
-        "INSERT INTO messages(sender,recipient,body,sender_cwd,"
+    local_id = allocate_id(db, "message")
+    db.execute(
+        "INSERT INTO messages(id,sender,recipient,body,sender_cwd,"
         "sender_scope,recipient_scope,reply_to) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (native, recipient, body, sender.project, scope, f"remote:{repo_id}", reply_to),
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (local_id, native, recipient, body, sender.project, scope, f"remote:{repo_id}", reply_to),
     )
-    local_id = cursor.lastrowid
-    if local_id is None:
-        raise RuntimeError("SQLite did not return an outgoing message ID")
     if direction is not None:
         persist(db, local_id, direction)
     db.execute(
@@ -183,52 +183,58 @@ def outgoing(self: RemoteStore, *, after: int = 0) -> list[tuple[Envelope, str]]
         rows = cast(
             "list[tuple[str, str]]",
             db.execute(
-                "SELECT envelope,state FROM remote_outbox "
-                "WHERE state NOT IN ('acknowledged','expired') AND local_id>? "
-                "ORDER BY local_id LIMIT 100",
-                (after,),
+                "SELECT o.envelope,o.state FROM remote_outbox o JOIN messages m ON m.id=o.local_id "
+                "WHERE o.state NOT IN ('acknowledged','expired') AND o.local_id>? "
+                "AND m.retention_at>? ORDER BY o.local_id LIMIT 100",
+                (after, cutoff()),
             ).fetchall(),
         )
     return [(cast("Envelope", json.loads(payload)), state) for payload, state in rows]
 
 
 def outgoing_pages(self: RemoteStore) -> Iterator[list[tuple[Envelope, str]]]:
+    """Skip a cached page when its cursor was concurrently purged."""
     after = 0
     while page := self.outgoing(after=after):
         with self.store.transaction() as db:
-            after = cast(
-                "tuple[int]",
+            row = cast(
+                "tuple[int] | None",
                 db.execute(
                     "SELECT local_id FROM remote_outbox WHERE id=?", (page[-1][0]["id"],)
                 ).fetchone(),
-            )[0]
+            )
+        if row is None:
+            continue
+        after = row[0]
         yield page
 
 
 def source_activity(self: RemoteStore, remote_id: str) -> str:
     with self.store.transaction() as db:
         row = cast(
-            "tuple[str]",
+            "tuple[str] | None",
             db.execute(
                 "SELECT m.sent_at FROM messages m JOIN remote_outbox o ON o.local_id=m.id "
-                "WHERE o.id=?",
-                (remote_id,),
+                "WHERE o.id=? AND m.retention_at>?",
+                (remote_id, cutoff()),
             ).fetchone(),
         )
+    if row is None:
+        raise BusError("Unknown remote message ID")
     return row[0]
 
 
 def source_scope(self: RemoteStore, remote_id: str) -> str | None:
     with self.store.transaction() as db:
         row = cast(
-            "tuple[str | None]",
+            "tuple[str | None] | None",
             db.execute(
                 "SELECT m.sender_scope FROM messages m JOIN remote_outbox o ON o.local_id=m.id "
-                "WHERE o.id=?",
-                (remote_id,),
+                "WHERE o.id=? AND m.retention_at>?",
+                (remote_id, cutoff()),
             ).fetchone(),
         )
-    return row[0]
+    return row[0] if row else None
 
 
 def statuses(self: RemoteStore) -> list[dict[str, object]]:
@@ -237,10 +243,19 @@ def statuses(self: RemoteStore) -> list[dict[str, object]]:
             "list[tuple[int]]",
             db.execute(
                 "SELECT o.local_id FROM remote_outbox o "
-                "JOIN messages m ON m.id=o.local_id ORDER BY o.local_id DESC LIMIT 100"
+                "JOIN messages m ON m.id=o.local_id WHERE m.retention_at>? "
+                "ORDER BY o.local_id DESC LIMIT 100",
+                (cutoff(),),
             ).fetchall(),
         )
-    result = [self.store.message_status(local_id) for (local_id,) in rows]
+    result: list[dict[str, object]] = []
+    for (local_id,) in rows:
+        try:
+            result.append(self.store.message_status(local_id))
+        except BusError as error:
+            if str(error) != "Unknown message ID":
+                raise
+            continue  # A concurrent purge may remove a selected diagnostic row.
     for row in result:
         key = cast("str", row["remote_id"])
         row["status"] = cast("dict[str, object]", row["transport"])["status"]
@@ -263,11 +278,17 @@ def set_state(self: RemoteStore, remote_id: str, state: str) -> None:
             "tuple[str, str | None] | None",
             db.execute(
                 "SELECT o.state,m.acknowledged_at FROM remote_outbox o JOIN messages m "
-                "ON m.id=o.local_id WHERE o.id=?",
-                (remote_id,),
+                "ON m.id=o.local_id WHERE o.id=? AND m.retention_at>?",
+                (remote_id, cutoff()),
             ).fetchone(),
         )
         if row is None:
+            if db.execute(
+                "SELECT 1 FROM remote_replay_guard WHERE id=? UNION ALL "
+                "SELECT 1 FROM remote_outbox WHERE id=?",
+                (remote_id, remote_id),
+            ).fetchone():
+                return  # A buffered response cannot restore expired or purged state.
             raise BusError("Unknown remote message ID")
         stored, acknowledged = row
         if stored not in progress:

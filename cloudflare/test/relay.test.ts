@@ -7,7 +7,7 @@ describe('machine and repository boundary', () => {
   it('adds availability metadata to the prior schema without changing history', async () => {
     await bindings.DB.prepare('ALTER TABLE messages DROP COLUMN availability').run();
     const id=crypto.randomUUID();
-    await bindings.DB.prepare('INSERT INTO messages(id,sender,recipient,repo_id,body) VALUES (?,?,?,?,?)')
+    await bindings.DB.prepare("INSERT INTO messages(id,sender,recipient,repo_id,body,retention_at) VALUES (?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
       .bind(id,'a/xyz/codex:a','b/xyz/codex:b','xyz','retained').run();
     const migration=readFileSync(new URL('../migrations/0006_coordination_availability.sql',import.meta.url),'utf8');
     await bindings.DB.prepare(migration).run();
@@ -204,11 +204,13 @@ describe('durability and receipts', () => {
     expect(earlier.map(m=>m.id)).toEqual([first.message.id]);
   });
   it('retains dispatch records for scheduled repair and reports expiry', async () => {
-    const {message} = await send();
+    const {message,response} = await send();
+    const accepted = await response.json() as {report_expires_at:string;retention_expires_at:string};
     await repair(bindings);
     expect(await bindings.DB.prepare('SELECT id FROM messages WHERE ready=0').first()).not.toBeNull();
-    await bindings.DB.prepare("UPDATE messages SET sent_at='2020-01-01T00:00:00.000Z' WHERE id=?").bind(message.id).run();
-    expect(await (await request('a', `status?id=${message.id}`)).json()).toEqual({id: message.id, status: 'expired', report_expires_at: '2020-01-31T00:00:00.000Z'});
+    const age = Date.now()-2*86400_000;
+    await bindings.DB.prepare('UPDATE messages SET retention_at=? WHERE id=?').bind(new Date(age).toISOString(),message.id).run();
+    expect(await (await request('a', `status?id=${message.id}`)).json()).toEqual({...accepted,status:'expired',retention_expires_at:new Date(age+14*86400_000).toISOString()});
     expect(await (await request('b', 'inbox?repo_id=xyz')).json()).toEqual([]);
   });
 });

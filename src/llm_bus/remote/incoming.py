@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from llm_bus.coordination.models import Availability, Direction
 from llm_bus.errors import BusError
+from llm_bus.mailbox.eligibility import remote_retained
 from llm_bus.policy.fields import array_values, object_fields
 from llm_bus.remote.http import HTTP_GET, HTTP_POST
 from llm_bus.remote.outgoing import supports_availability, supports_coordination
@@ -105,6 +106,9 @@ def receive_route(
 
 
 def receipt(self: Bridge, key: str) -> bool:
+    with self.store.transaction() as db:
+        if not remote_retained(db, key):
+            return False
     if not self.remote.work_due("receipt", key, self.clock()):
         return False
     try:

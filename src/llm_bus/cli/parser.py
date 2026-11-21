@@ -99,6 +99,9 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - explicit CLI d
         "status", help="Read retained body-free diagnostics without identity or config"
     )
     status.add_argument("message_id", type=int, help="Retained local integer message ID")
+    commands.add_parser(
+        "retention-preview", help="Read body-free deletion counts without migration or maintenance"
+    )
     _lock_parser(
         commands.add_parser(
             "lock", help="Coordinate exclusive use of a named resource with other sessions"

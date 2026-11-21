@@ -4,7 +4,7 @@ import { beforeEach, beforeAll, afterAll, vi } from 'vitest';
 import worker from '../src/index';
 import { tokenHash } from '../src/auth';
 import type { Env } from '../src/types';
-const migration = ['0001_bus.sql', '0002_reports.sql', '0003_reply_to.sql', '0004_coordination.sql', '0005_session_labels.sql', '0006_coordination_availability.sql', '0007_coordination_approvals.sql'].map(name => readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
+const migration = ['0001_bus.sql', '0002_reports.sql', '0003_reply_to.sql', '0004_coordination.sql', '0005_session_labels.sql', '0006_coordination_availability.sql', '0007_coordination_approvals.sql', '0008_message_retention.sql', '0009_retained_reply_identity.sql'].map(name => readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
 
 const miniflare = new Miniflare({modules: true, scriptPath: 'dist/index.js', compatibilityDate: '2026-08-01', d1Databases: ['DB'], queueProducers: {DELIVERY: 'delivery'}});
 export const bindings = {} as Env;
@@ -28,7 +28,7 @@ export async function send(id = crypto.randomUUID()) {
   return {message, response: await request('a', 'messages', message)};
 }
 beforeEach(async () => {
-  await bindings.DB.exec('DROP TABLE IF EXISTS message_reports; DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS repo_grants; DROP TABLE IF EXISTS machines;');
+  await bindings.DB.exec('DROP TABLE IF EXISTS message_reports; DROP TABLE IF EXISTS purged_message_ids; DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS repo_grants; DROP TABLE IF EXISTS machines;');
   for (const statement of migration.split(';').filter(s => s.trim())) await bindings.DB.prepare(statement).run();
   for (const machine of ['a', 'b', 'c'] as const) {
     await bindings.DB.prepare('INSERT INTO machines(id,token_hash) VALUES (?,?)').bind(machine, await tokenHash(tokens[machine])).run();

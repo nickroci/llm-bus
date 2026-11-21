@@ -19,6 +19,7 @@ from llm_bus.locks.models import FORCE_AUTHORITY, Key, Request
 from llm_bus.locks.service import Locks, force_release, lock_key
 from llm_bus.locks.timer import detach, run_timer
 from llm_bus.mailbox.models import address
+from llm_bus.mailbox.preview import preview
 from llm_bus.policy.config import load_config, optional_config, require_config
 from llm_bus.remote.discovery import remote_peers
 from llm_bus.remote.outgoing import enqueue_remote
@@ -108,10 +109,12 @@ def _hidden_timer(store: Store, command: object, args: dict[str, object]) -> boo
 def human_command(store: Store, command: object, args: dict[str, object]) -> bool:
     if _hidden_timer(store, command, args):
         return True
-    if command == "status":
+    if command in {"status", "retention-preview"}:
         print(
             serialize(
-                store.message_status(cast("int", args["message_id"])),
+                preview(store.path)
+                if command == "retention-preview"
+                else store.message_status(cast("int", args["message_id"])),
                 str(command),
                 str(args.get("format", "json")),
             )

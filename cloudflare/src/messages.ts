@@ -3,7 +3,13 @@ import { HttpError, jsonBody, text, ID, NATIVE, UUID, MAX_BODY_BYTES } from './h
 import { ACTIVE_GRANT, grant } from './auth';
 import { qualified } from './sessions';
 export const BATCH = 100;
-export const LIVE_MESSAGE = `m.sent_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')`;
+const DAY = 86400_000;
+export function retainedMessage(now: number): string {
+  return `m.retention_at > '${new Date(now - 14 * DAY).toISOString()}'`;
+}
+function deliverableMessage(now: number): string {
+  return `m.retention_at > '${new Date(now - 2 * DAY).toISOString()}'`;
+}
 const APPROVAL_OPERATIONS = ['approve-commit','approve-push','approve-merge','approve-merge-admin'];
 const BRANCH = /^(?!-)(?!.*\.\.)[A-Za-z0-9._/-]{1,200}$/;
 const SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -50,6 +56,7 @@ function availability(value: unknown): string {
 }
 type MessageClass = 'ordinary' | 'coordination' | 'availability';
 export async function send(request: Request, env: Env, machine: string, kind: MessageClass = 'ordinary'): Promise<Response> {
+  const now = Date.now();
   const data = await jsonBody(request);
   if ((kind !== 'coordination' && ('coordination' in data || 'approval' in data)) || (kind !== 'availability' && 'availability' in data)) throw new HttpError(400, 'Use matching message endpoint');
   if (kind !== 'ordinary' && Object.keys(data).some(key => !['id','sender','recipient','repo_id','body','reply_to',kind,...(kind === 'coordination' ? ['approval'] : [])].includes(key))) throw new HttpError(400, 'Invalid typed envelope');
@@ -71,25 +78,30 @@ export async function send(request: Request, env: Env, machine: string, kind: Me
   await grant(env, machine, repo);
   const prior = await env.DB.prepare('SELECT * FROM messages WHERE id=?').bind(id).first<MessageRow>();
   if (prior) {
-    if (prior.sender !== sender || prior.recipient !== recipient || prior.repo_id !== repo || prior.body !== body || prior.reply_to !== reply || prior.coordination !== metadata || prior.availability !== event || prior.approval !== evidence) {
+    if (Date.parse(prior.retention_at) <= now - 14 * DAY) throw new HttpError(403, 'Message not allowed');
+    if (prior.sender !== sender || prior.recipient !== recipient || prior.repo_id !== repo || prior.body !== body || prior.accepted_reply_to !== reply || prior.coordination !== metadata || prior.availability !== event || prior.approval !== evidence) {
       throw new HttpError(409, 'Message ID already used');
     }
-    return Response.json(transportResult(prior));
+    return Response.json(transportResult(prior, now));
   }
-  const result = await env.DB.prepare(`INSERT INTO messages(id,sender,recipient,repo_id,body,reply_to,coordination,availability,approval)
-    SELECT ?,s.address,r.address,?,?,?,?,?,? FROM sessions s JOIN sessions r ON r.address=?
+  const acceptedAt = new Date(now);
+  const sentAt = acceptedAt.toISOString();
+  const reportDeadline = new Date(acceptedAt.getTime() + 14 * 86400_000).toISOString();
+  const result = await env.DB.prepare(`INSERT INTO messages(id,sender,recipient,repo_id,body,reply_to,accepted_reply_to,coordination,availability,approval,sent_at,retention_at,report_expires_at)
+    SELECT ?,s.address,r.address,?,?,?,?,?,?,?,?,?,? FROM sessions s JOIN sessions r ON r.address=?
     JOIN machines rm ON rm.id=r.machine_id AND rm.revoked_at IS NULL
     JOIN repo_grants rg ON rg.machine_id=r.machine_id AND rg.repo_id=r.repo_id
     WHERE s.address=? AND s.repo_id=? AND r.repo_id=? AND r.machine_id<>?
     AND ${ACTIVE_GRANT}
-    AND (? IS NULL OR EXISTS (SELECT 1 FROM messages p WHERE p.id=? AND p.repo_id=?
+    AND NOT EXISTS (SELECT 1 FROM purged_message_ids WHERE id=?)
+    AND (? IS NULL OR EXISTS (SELECT 1 FROM messages p WHERE p.id=? AND p.repo_id=? AND p.retention_at>?
       AND ((p.sender=s.address AND p.recipient=r.address) OR (p.sender=r.address AND p.recipient=s.address))))
     ON CONFLICT(id) DO NOTHING`)
-    .bind(id, repo, body, reply, metadata, event, evidence, recipient, sender, repo, repo, machine, machine, repo, reply, reply, repo).run();
+    .bind(id, repo, body, reply, reply, metadata, event, evidence, sentAt, sentAt, reportDeadline, recipient, sender, repo, repo, machine, machine, repo, id, reply, reply, repo, new Date(now - 14 * DAY).toISOString()).run();
   if (!result.meta.changes) {
     const raced = await env.DB.prepare('SELECT * FROM messages WHERE id=?').bind(id).first<MessageRow>();
-    if (raced && raced.sender === sender && raced.recipient === recipient && raced.body === body && raced.repo_id === repo && raced.reply_to === reply && raced.coordination === metadata && raced.availability === event && raced.approval === evidence) {
-      return Response.json(transportResult(raced));
+    if (raced && Date.parse(raced.retention_at) > now - 14 * DAY && raced.sender === sender && raced.recipient === recipient && raced.body === body && raced.repo_id === repo && raced.accepted_reply_to === reply && raced.coordination === metadata && raced.availability === event && raced.approval === evidence) {
+      return Response.json(transportResult(raced, now));
     }
     throw new HttpError(raced ? 409 : 403, 'Recipient or sender not allowed');
   }
@@ -97,18 +109,20 @@ export async function send(request: Request, env: Env, machine: string, kind: Me
   try { await env.DELIVERY.send(id); } catch { /* durable pending row is the outbox */ }
   const accepted = await env.DB.prepare('SELECT * FROM messages WHERE id=?').bind(id).first<MessageRow>();
   if (!accepted) throw new HttpError(503, 'Message unavailable');
-  return Response.json(transportResult(accepted), {status: 202});
+  return Response.json(transportResult(accepted, now), {status: 202});
 }
-function transportResult(row: MessageRow): {id: string; status: string; report_expires_at: string} {
-  return {id:row.id,status:messageStatus(row),report_expires_at:new Date(Date.parse(row.sent_at) + 30 * 86400_000).toISOString()};
+function transportResult(row: MessageRow, now: number): {id: string; status: string; report_expires_at: string; retention_expires_at: string} {
+  return {id:row.id,status:messageStatus(row, now),report_expires_at:row.report_expires_at ?? new Date(Date.parse(row.sent_at) + 30 * 86400_000).toISOString(),
+    retention_expires_at:new Date(Date.parse(row.retention_at) + 14 * 86400_000).toISOString()};
 }
-function messageStatus(row: MessageRow): string {
+function messageStatus(row: MessageRow, now: number): string {
   if (row.acknowledged_at) return 'acknowledged';
   if (row.received_at) return 'delivered_local';
-  if (Date.parse(row.sent_at) <= Date.now() - 30 * 86400_000) return 'expired';
+  if (Date.parse(row.retention_at) <= now - 2 * DAY) return 'expired';
   return 'accepted_remote';
 }
 export async function inbox(url: URL, env: Env, machine: string, kind: MessageClass = 'ordinary'): Promise<Response> {
+  const now = Date.now();
   const repo = text(url.searchParams.get('repo_id'), ID);
   const after = Number(url.searchParams.get('after') ?? 0);
   if (!Number.isSafeInteger(after) || after < 0) throw new HttpError(400, 'Invalid cursor');
@@ -120,7 +134,7 @@ export async function inbox(url: URL, env: Env, machine: string, kind: MessageCl
     WHERE r.machine_id=? AND m.repo_id=? AND m.sequence>? AND m.ready=1
     AND m.coordination IS ${kind === 'coordination' ? 'NOT NULL' : 'NULL'}
     AND m.availability IS ${kind === 'availability' ? 'NOT NULL' : 'NULL'}
-    AND m.received_at IS NULL AND ${LIVE_MESSAGE} AND ${ACTIVE_GRANT}
+    AND m.received_at IS NULL AND ${deliverableMessage(now)} AND ${ACTIVE_GRANT}
     ORDER BY m.sequence LIMIT ?`)
     .bind(machine, repo, after, machine, repo, BATCH).all<MessageRow>();
   const page: MessageRow[] = [];
@@ -132,41 +146,58 @@ export async function inbox(url: URL, env: Env, machine: string, kind: MessageCl
     page.push(row);
   }
   return Response.json(page.map(row => {
-    const {coordination: metadata, availability: event, approval: evidence, ...ordinary} = row;
-    return {...ordinary, reply_to:row.reply_to ?? undefined, ...(metadata === null ? {} : {coordination:JSON.parse(metadata)}), ...(event === null ? {} : {availability:JSON.parse(event)}), ...(evidence === null ? {} : {approval:JSON.parse(evidence)})};
+    const {coordination: metadata, availability: event, approval: evidence, accepted_reply_to: reply, ...ordinary} = row;
+    return {...ordinary, reply_to:reply ?? undefined, ...(metadata === null ? {} : {coordination:JSON.parse(metadata)}), ...(event === null ? {} : {availability:JSON.parse(event)}), ...(evidence === null ? {} : {approval:JSON.parse(evidence)})};
   }));
 }
 export async function receipt(request: Request, env: Env, machine: string, acknowledge: boolean): Promise<Response> {
+  const now = Date.now();
   const data = await jsonBody(request);
   const id = text(data.id, UUID);
   const column = acknowledge ? 'acknowledged_at' : 'received_at';
-  const result = await env.DB.prepare(`UPDATE messages AS m SET ${column}=COALESCE(${column},strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  const result = await env.DB.prepare(`UPDATE messages AS m SET ${column}=COALESCE(${column},?)
     WHERE m.id=? AND EXISTS (SELECT 1 FROM sessions r JOIN repo_grants g
       ON g.machine_id=r.machine_id AND g.repo_id=m.repo_id JOIN machines d ON d.id=r.machine_id
       WHERE r.address=m.recipient AND r.machine_id=? AND d.revoked_at IS NULL)
     AND EXISTS (SELECT 1 FROM sessions s JOIN repo_grants g
       ON g.machine_id=s.machine_id AND g.repo_id=m.repo_id JOIN machines d ON d.id=s.machine_id
       WHERE s.address=m.sender AND d.revoked_at IS NULL)
-    AND m.ready=1 AND (${acknowledge ? 'm.received_at IS NOT NULL' : LIVE_MESSAGE})`)
-    .bind(id, machine).run();
+    AND m.ready=1 AND ${retainedMessage(now)}
+    AND (${acknowledge ? 'm.received_at IS NOT NULL' : `m.received_at IS NOT NULL OR ${deliverableMessage(now)}`})`)
+    .bind(new Date(now).toISOString(), id, machine).run();
   if (!result.meta.changes) throw new HttpError(403, 'Message not allowed');
   return Response.json({id, status: acknowledge ? 'acknowledged' : 'delivered_local'});
 }
-export async function status(url: URL, env: Env, machine: string): Promise<Response> {
+export async function status(url: URL, env: Env, machine: string, now = Date.now()): Promise<Response> {
   const id = text(url.searchParams.get('id'), UUID);
   const row = await env.DB.prepare(`SELECT m.* FROM messages m JOIN sessions s ON s.address=m.sender
-    WHERE m.id=? AND s.machine_id=? AND ${ACTIVE_GRANT.replace('g.repo_id=?', 'g.repo_id=m.repo_id')}`)
+    WHERE m.id=? AND s.machine_id=? AND ${retainedMessage(now)} AND ${ACTIVE_GRANT.replace('g.repo_id=?', 'g.repo_id=m.repo_id')}`)
     .bind(id, machine, machine).first<MessageRow>();
   if (!row) throw new HttpError(403, 'Message not allowed');
-  return Response.json(transportResult(row));
+  return Response.json(transportResult(row, now));
 }
 export async function dispatch(env: Env, id: string): Promise<void> {
+  const now = Date.now();
   // Mailbox authorization is checked again at fetch time, including token revocation.
-  await env.DB.prepare('UPDATE messages SET ready=1 WHERE id=? AND ready=0').bind(id).run();
+  await env.DB.prepare(`UPDATE messages AS m SET ready=1 WHERE id=? AND ready=0 AND ${deliverableMessage(now)}`).bind(id).run();
 }
 export async function repair(env: Env): Promise<void> {
-  const pending = await env.DB.prepare(`SELECT id FROM messages WHERE ready=0
-    AND sent_at > strftime('%Y-%m-%dT%H:%M:%fZ','now','-30 days') ORDER BY sequence LIMIT ?`)
+  const now = Date.now();
+  await purge(env, now);
+  const pending = await env.DB.prepare(`SELECT id FROM messages m WHERE ready=0
+    AND ${deliverableMessage(now)} ORDER BY sequence LIMIT ?`)
     .bind(BATCH).all<{id: string}>();
   if (pending.results.length) await env.DELIVERY.sendBatch(pending.results.map(row => ({body: row.id})));
+}
+
+export async function purge(env: Env, now = Date.now()): Promise<void> {
+  // D1 batch is atomic: all statements see the same bounded set until its final deletion.
+  const candidates = `SELECT id FROM messages WHERE retention_at<=? ORDER BY retention_at,sequence LIMIT ${BATCH}`;
+  const cutoff = new Date(now - 14 * DAY).toISOString();
+  await env.DB.batch([
+    `INSERT OR IGNORE INTO purged_message_ids(id) ${candidates}`,
+    `UPDATE messages SET reply_to=NULL WHERE reply_to IN (${candidates})`,
+    `DELETE FROM message_reports WHERE message_id IN (${candidates})`,
+    `DELETE FROM messages WHERE id IN (${candidates})`,
+  ].map(sql => env.DB.prepare(sql).bind(cutoff)));
 }
