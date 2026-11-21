@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, final
@@ -205,9 +204,9 @@ class Receiver:
         result = delivery()
         result["sender"] = COORDINATOR
         result["recipient"] = WORKER
-        result["coordination"] = asdict(
-            Direction(1, self.project_id, generation or self.generation, self.grant(), operation)
-        )
+        result["coordination"] = Direction(
+            1, self.project_id, generation or self.generation, self.grant(), operation
+        ).wire()
         result["approval"] = {key: value for key, value in fields.items() if value is not None}
         return result
 

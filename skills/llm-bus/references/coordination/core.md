@@ -53,14 +53,25 @@ your own direct owner join count as the user asked for exactly those gates and
 conditions; stricter repository rules still win. The floor is never
 delegable: force-push, production changes, credential or secret
 changes, and merge with failing or pending CI. Delegation
-specs naming a floor item are rejected. An approval counts only while verified
+specs naming a floor item are rejected. The sole secret exception is one exact
+owner-signed development operation under protected host policy; follow
+[exact development secret consent](https://github.com/wnz99/llm-bus/blob/main/docs/coordination.md#exact-development-secret-consent).
+Unattended mode, project execution, decisions, timed defaults and ordinary
+directions never grant that consent. An approval counts only while verified
 (`coordination.verified: true`, `reason: verified`); other reasons
 (for example `gate_not_delegated`, `target_denied`, `expired`, `wrong_ticket`,
 `invalid_direction`, `revoked`, `wrong_scope`, `stale_generation`)
 leave it historical and unverified. `record_withdrawn` marks a record-bound
-approval whose gate record was rejected, superseded or is not accepted. The bus
-never inspects CI, reviews or branches: the worker checks that evidence live
-(procedures in `gates.md`).
+approval whose gate record was rejected, superseded or is not accepted.
+For guided and legacy approvals, the coordinator and worker verify live CI,
+review and branch evidence; the bus verifies authority. Unattended GitHub
+`gate-merge` and `run-result` also verify the exact repository, PR base, branch
+and head, independent approval on that head, and green required checks.
+`unattended-complete` refreshes still-open reviewed PR proof. The worker's
+action-time duties in `gates.md`, provider permissions and repository protections
+still apply; provider state can change before submission. Follow
+[unattended GitHub merges](auto-merge.md#unattended-github-merges) and
+[run completion](recovery.md#completion-proof).
 
 ## Project execution consent
 

@@ -1,5 +1,8 @@
 """Explicit owner setup and exact native session enrollment."""
 
+# Keep related public coordination command parsing and transactional dispatch together.
+# pylint: disable=too-many-lines
+
 from __future__ import annotations
 
 import argparse
@@ -16,7 +19,11 @@ from llm_bus.coordination import (
     amendments,
     decisions,
     delegation,
+    dev_secrets,
     gate_records,
+    github_merge,
+    recovery,
+    runs,
     stalls,
     store,
     work_state,
@@ -54,6 +61,8 @@ MINUTES_ITEM = "MINUTES"
 MAX_TEXT = 4096
 MAX_REFERENCES = 32
 CONTROL_BOUNDARY = 32
+ROUTINE_HELP = "Resolve routine scope under an active run"
+RUN_RETRY = "run-retry"
 
 
 def add_parsers(  # pylint: disable=too-many-statements
@@ -74,6 +83,8 @@ def add_parsers(  # pylint: disable=too-many-statements
         help="Delegate owner decisions: workers accept coordinator-recorded owner answers",
     )
     _optional_delegation_flags(coordinate)
+    coordinate.add_argument("--unattended", action="store_true")
+    _run_scope_flags(coordinate)
     coordinate.add_argument(
         "--setup",
         action="store_true",
@@ -88,6 +99,9 @@ def add_parsers(  # pylint: disable=too-many-statements
     _decision_parsers(actions.add_parser)
     _instructions_parser(actions.add_parser)
     _stall_parsers(actions.add_parser)
+    _unattended_parsers(actions.add_parser)
+    _secret_parsers(actions.add_parser)
+    _recovery_parsers(actions.add_parser)
     approve = actions.add_parser("approve")
     approve.add_argument("project")
     approve.add_argument("--recipient", required=True)
@@ -98,12 +112,82 @@ def add_parsers(  # pylint: disable=too-many-statements
     approve.add_argument("--pr", type=int)
     approve.add_argument("--head-sha")
     approve.add_argument("--expires-in", default="2h")
+    approve.add_argument("--run-id")
     claim = actions.add_parser("claim")
     claim.add_argument("project")
     claim.add_argument("--ticket", required=True)
     claim.add_argument("--branch", required=True)
+    _lifecycle_parsers(actions.add_parser)
+
+
+def _recovery_parsers(add_action: Callable[..., argparse.ArgumentParser]) -> None:
+    result = add_action("run-result", help="Verify and retain exact-head reviewed green PR proof")
+    result.add_argument("project")
+    result.add_argument("--run-id", required=True)
+    result.add_argument("--record-id", required=True)
+    result.add_argument("--repository", required=True)
+    reconcile = add_action("run-merge-reconcile", help="Confirm a prior merge without replay")
+    reconcile.add_argument("project")
+    reconcile.add_argument("--message-id", required=True, type=int)
+    for name in ("run-checkpoint", RUN_RETRY, "handoff-ready", "run-handoff"):
+        action = add_action(name, help="Reconcile bounded unattended progress and ownership")
+        action.add_argument("project")
+        action.add_argument("--worktree", required=True)
+        action.add_argument("--pr", type=int)
+        action.add_argument("--repository")
+        if name == "run-handoff":
+            action.add_argument("--handoff-id", required=True)
+        else:
+            action.add_argument("--run-id", required=True)
+            action.add_argument("--ticket", required=True)
+        if name in {"run-checkpoint", "run-handoff"}:
+            action.add_argument("--worker", required=True)
+        if name in {"run-checkpoint", RUN_RETRY}:
+            action.add_argument("--revision", type=int, required=True)
+        if name == "run-checkpoint":
+            action.add_argument("--state", choices=recovery.STATES, required=True)
+            action.add_argument("--depends-on", action="append")
+            action.add_argument(
+                "--reason",
+                choices=("none", "dependency", "owner", "provider", "host", "recoverable"),
+                default="none",
+            )
+        elif name == RUN_RETRY:
+            action.add_argument("--read-only", action="store_true")
+        elif name == "handoff-ready":
+            action.add_argument("--no-pending-effects", action="store_true")  # pylint: disable=clean-code-business-policy-literal
+
+
+def _secret_parsers(add_action: Callable[..., argparse.ArgumentParser]) -> None:
+    for name in ("dev-secret-reserve", "dev-secret-check", "dev-secret-outcome"):
+        action = add_action(name, help="Exact owner-signed development secret consent")
+        action.add_argument("project")
+        if name == "dev-secret-reserve":
+            action.add_argument("--receipt-file", required=True)
+            action.add_argument("--signature-file", required=True)
+        else:
+            action.add_argument("--receipt-id", required=True)
+        if name == "dev-secret-outcome":
+            action.add_argument("--status", choices=sorted(dev_secrets.STATUSES), required=True)
+        else:
+            action.add_argument("--plan-file", required=True)
+
+
+def _unattended_parsers(add_action: Callable[..., argparse.ArgumentParser]) -> None:
+    unattended = add_action("unattended", help="Preview or explicitly activate a local run")
+    unattended.add_argument("project")
+    unattended.add_argument("--setup", action="store_true", help="Interactive owner terminal setup")
+    unattended.add_argument("--objective")
+    _run_scope_flags(unattended)
+    for name in ("unattended-revoke", "unattended-complete"):
+        end = add_action(name)
+        end.add_argument("project")
+        end.add_argument("--run-id", required=True)
+
+
+def _lifecycle_parsers(add_action: Callable[..., argparse.ArgumentParser]) -> None:
     for name in ("show", "setup", "grant", "revoke", "replace", "leave", "target"):
-        action = actions.add_parser(name)
+        action = add_action(name)
         action.add_argument("project")
         if name == "setup":
             action.add_argument("--project-id", required=True)
@@ -127,6 +211,21 @@ def add_parsers(  # pylint: disable=too-many-statements
             lifetime = action.add_mutually_exclusive_group(required=True)
             lifetime.add_argument("--expires-at")
             lifetime.add_argument("--until-revoked", action="store_true")
+
+
+def _run_scope_flags(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--ticket", action="append", help="One explicit ticket in the finite run scope"
+    )
+    parser.add_argument("--completion", help="Owner-confirmed completion condition")
+    parser.add_argument(
+        "--completion-proof", choices=("reviewed-pr", "merged-pr"), default="reviewed-pr"
+    )
+    parser.add_argument("--expires-at", help="Finite run deadline (ISO timestamp)")
+    parser.add_argument("--permission", action="append", help="One existing delegation item")
+    parser.add_argument(
+        "--confirm", action="store_true", help="Owner confirms the reviewed run scope"
+    )
 
 
 def _optional_delegation_flags(parser: argparse.ArgumentParser) -> None:
@@ -166,6 +265,10 @@ def _decision_parsers(add_action: Callable[..., argparse.ArgumentParser]) -> Non
     reply.add_argument("project")
     reply.add_argument("--decision-id", required=True)
     reply.add_argument("--answer", required=True)
+    routine = add_action("decision-resolve", help=ROUTINE_HELP)
+    routine.add_argument("project")
+    for name in ("decision-id", "answer", "run-id", "rationale"):
+        routine.add_argument(f"--{name}", required=True)
     show = add_action("decision-show", help="Show a decision and whether you may act on it")
     show.add_argument("project")
     show.add_argument("--decision-id", required=True)
@@ -201,6 +304,7 @@ def _gate_parsers(add_action: Callable[..., argparse.ArgumentParser]) -> None:
     record.add_argument("--pr", type=int, required=True)
     record.add_argument("--review-evidence", action="append", default=[])
     record.add_argument("--required-check", action="append", default=[])
+    record.add_argument("--run-id", help="Bind an observational PR record without granting merge")
     for name in ("gate-accept", "gate-reject"):
         decide = add_action(name)
         decide.add_argument("project")
@@ -208,6 +312,11 @@ def _gate_parsers(add_action: Callable[..., argparse.ArgumentParser]) -> None:
         if name == "gate-accept":
             decide.add_argument("--head-sha", required=True)
             decide.add_argument("--admin", action="store_true")
+            decide.add_argument("--run-id")
+            decide.add_argument("--repository", help="Exact GitHub OWNER/REPO for unattended merge")
+    merge = add_action("gate-merge", help="Verify and merge a run-bound GitHub approval")
+    merge.add_argument("project")
+    merge.add_argument("--message-id", type=int, required=True)
 
 
 def _references(parser: argparse.ArgumentParser, *, required: bool) -> None:
@@ -290,6 +399,25 @@ def run(  # noqa: C901, PLR0912, PLR0915 - owner action dispatch
     action = str(args["command"] if args["command"] != "coordination" else args["action"])
     if action == "stalls":
         return _inspect_stalls(mailbox, scope, label, address, args)
+    if action == "gate-merge":
+        return github_merge.execute(
+            mailbox, scope, label, address, int(str(args["message_id"])), cwd=cwd
+        )
+    if action == "run-merge-reconcile":
+        return github_merge.reconcile(
+            mailbox, scope, label, address, int(str(args["message_id"])), cwd=cwd
+        )
+    if action == "run-result":
+        return github_merge.record_result(mailbox, scope, label, address, args, cwd=cwd)
+    completion_evidence: github_merge.CompletionEvidence = {}
+    if action == "unattended-complete":
+        completion_evidence = github_merge.verify_completion(
+            mailbox, scope, label, address, str(args["run_id"]), cwd=cwd
+        )
+    if action in {"run-checkpoint", RUN_RETRY, "handoff-ready", "run-handoff"}:
+        args["observation"] = recovery.observe(
+            str(args["worktree"]), pr=args.get("pr"), repository=args.get("repository")
+        )
     with mailbox.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
         new_project = False
@@ -306,6 +434,10 @@ def run(  # noqa: C901, PLR0912, PLR0915 - owner action dispatch
             if new_project:
                 _create(db, scope, label, args, address)
         record = store.project(db, scope, label)
+        if action == "unattended-complete":
+            github_merge.validate_completion(
+                db, record, address, str(args["run_id"]), completion_evidence
+            )
         lazy = decisions.apply_due(db, record) if action in LAZY_DEFAULTS else []
         if action in {"coordinate", "join", "grant"} and record["revoked_at"] is not None:
             raise BusError("Project revoked; owner must replace coordinator binding")
@@ -323,12 +455,15 @@ def run(  # noqa: C901, PLR0912, PLR0915 - owner action dispatch
             notice_id = None
         else:
             notice_id = _transition(db, action, record, args, address)
+        runs.reconcile(db, record, now=datetime.now(UTC))
         result = None if outcome is None else outcome[0]
         messages = lazy + ([] if outcome is None else outcome[1])
         if result is None:
             result = store.show(db, store.project(db, scope, label), address)
             if action == "amend":
                 result["rejoin_required"] = delegation.rejoin_required(db, record)
+        if action in {"coordinate", "unattended"}:
+            result["unattended"] = runs.status(db, record, address)
         if remote_notice is not None:
             result["availability"] = remote_notice
     _schedule_default(action, label, result)
@@ -388,6 +523,7 @@ def create_for(  # noqa: PLR0913 - explicit setup inputs
     coordinator: str,
     *,
     current: str | None = None,
+    owner_terminal: bool = False,
 ) -> dict[str, object]:
     """Create a project and its delegation in one transaction without registering a session.
 
@@ -411,7 +547,13 @@ def create_for(  # noqa: PLR0913 - explicit setup inputs
         enrolled = current is not None and current == coordinator
         if enrolled:
             store.enroll(db, record, coordinator, "coordinator")
+        if args.get("unattended"):
+            runs.activate(db, record, args, current, terminal=owner_terminal)
         result = store.show(db, record)
+        if args.get("unattended"):
+            result["unattended"] = (
+                runs.status(db, record, coordinator) if enrolled else {runs.ACTIVE: False}
+            )
     result["enrolled"] = enrolled
     if not enrolled:
         result["next"] = f"Session {coordinator} must run `llm-bus coordinate {label}`"
@@ -461,6 +603,7 @@ def _gate_record(
         head_sha=str(args["head_sha"]),
         evidence=cast("list[str]", args["review_evidence"]),
         checks=cast("list[str]", args["required_check"]),
+        run_id=_optional(args, "run_id"),
         now=datetime.now(UTC),
     )
 
@@ -476,6 +619,8 @@ def _gate_accept(
         head_sha=str(args["head_sha"]),
         admin=bool(args["admin"]),
         now=datetime.now(UTC),
+        run_id=_optional(args, "run_id"),
+        repository=_optional(args, "repository"),
     )
 
 
@@ -526,6 +671,21 @@ def _decision_show(
     )
 
 
+def _decision_resolve(
+    db: Connection, record: dict[str, object], args: dict[str, object], address: str
+) -> ActionResult:
+    return decisions.coordinator_answer(
+        db,
+        record,
+        address,
+        str(args["decision_id"]),
+        str(args["answer"]),
+        run_id=str(args["run_id"]),
+        rationale=str(args["rationale"]),
+        now=datetime.now(UTC),
+    )
+
+
 def _decision_list(
     db: Connection, record: dict[str, object], args: dict[str, object], address: str
 ) -> ActionResult:
@@ -536,6 +696,7 @@ def _show(
     db: Connection, record: dict[str, object], _args: dict[str, object], address: str
 ) -> ActionResult:
     result = store.show(db, record, address)
+    result["unattended"] = runs.status(db, record, address)
     result["project_execution_allowed"] = project_execution_allowed(
         db, record, address, scope=str(record["scope"]), now=datetime.now(UTC)
     )
@@ -589,7 +750,74 @@ def _instructions(
     return None, []
 
 
+def _unattended(
+    db: Connection, record: dict[str, object], args: dict[str, object], address: str
+) -> ActionResult:
+    if address != record["coordinator"] or not store.coordinator_enrolled(db, record, address):
+        raise BusError("Only the enrolled coordinator may configure unattended authority")
+    runs.require_owner_origin(db, address)
+    if not args.get("confirm"):
+        preview = runs.scope_selection(db, record, args, now=datetime.now(UTC))
+        return {"preview": preview, "stored": False}, []
+    return runs.activate(db, record, args, address), []
+
+
+def _unattended_end(
+    db: Connection, record: dict[str, object], args: dict[str, object], address: str
+) -> ActionResult:
+    reason = "completed" if args["action"] == "unattended-complete" else "revoked"
+    if reason == "completed":
+        recovery.complete(db, record, address, str(args["run_id"]))
+    return runs.finish(db, record, address, str(args["run_id"]), reason=reason), []
+
+
+def _secret_action(
+    db: Connection, record: dict[str, object], args: dict[str, object], address: str
+) -> ActionResult:
+    try:
+        if args["action"] == "dev-secret-outcome":
+            return dev_secrets.outcome(
+                db, record, address, str(args["receipt_id"]), str(args["status"])
+            ), []
+        plan = Path(str(args["plan_file"])).read_bytes()
+        if len(plan) > dev_secrets.MAX_PLAN_BYTES:
+            raise BusError(dev_secrets.DENIED)
+        if args["action"] == "dev-secret-check":
+            return dev_secrets.check(db, record, address, str(args["receipt_id"]), plan), []
+        payload = dev_secrets.parse(
+            cast("object", json.loads(Path(str(args["receipt_file"])).read_bytes()))
+        )
+        signature = Path(str(args["signature_file"])).read_text(encoding="ascii")
+        return dev_secrets.reserve(db, record, address, payload, plan, signature), []
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise BusError(dev_secrets.DENIED) from exc
+
+
+def _recovery_action(
+    db: Connection, record: dict[str, object], args: dict[str, object], address: str
+) -> ActionResult:
+    handlers = {
+        "run-checkpoint": recovery.checkpoint,
+        "run-retry": recovery.retry,
+        "handoff-ready": recovery.cancellation,
+        "run-handoff": recovery.handoff,
+    }
+    return handlers[str(args["action"])](
+        db, record, address, args, cast("dict[str, object]", args["observation"])
+    ), []
+
+
 ACTIONS: dict[str, Callable[..., ActionResult]] = {
+    "run-checkpoint": _recovery_action,
+    "run-retry": _recovery_action,
+    "handoff-ready": _recovery_action,
+    "run-handoff": _recovery_action,
+    "dev-secret-reserve": _secret_action,
+    "dev-secret-check": _secret_action,
+    "dev-secret-outcome": _secret_action,
+    "unattended": _unattended,
+    "unattended-revoke": _unattended_end,
+    "unattended-complete": _unattended_end,
     "stall-config": _stall_config,
     "show": _show,
     "instructions": _instructions,
@@ -598,6 +826,7 @@ ACTIONS: dict[str, Callable[..., ActionResult]] = {
     "gate-reject": _gate_reject,
     "decision-ask": _decision_ask,
     "decision-answer": _decision_answer,
+    "decision-resolve": _decision_resolve,
     "decision-show": _decision_show,
     "decision-list": _decision_list,
     "direction-list": _direction_list,
@@ -756,6 +985,8 @@ def _transition(  # noqa: C901, PLR0912 - bounded CLI action dispatch
         if record["coordinator"] != address:
             raise BusError("Different coordinator; owner must use coordination replace")
         store.enroll(db, record, address, "coordinator")
+        if args.get("unattended"):
+            runs.activate(db, record, args, address)
     elif action == "join":
         grant_id = store.join_session(db, record, address)
         delegation.bind(db, record, grant_id, cast("list[str] | None", args.get("narrow")))

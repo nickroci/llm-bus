@@ -58,6 +58,7 @@ def approve(store: Store, args: dict[str, object], sender: SenderContext) -> obj
             "reply_to": None,
             "cross_folder": False,
             "format": args["format"],
+            "run_id": args.get("run_id"),
         },
         sender,
         approval=approval,

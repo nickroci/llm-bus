@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - explicit CLI d
     send.add_argument("--body", help="Message text; otherwise read standard input")
     send.add_argument("--reply-to", type=int, help="Retained local parent message ID")
     send.add_argument("--project", help="Coordination project; requires --direction")
+    send.add_argument("--run-id", help="Bind direction to exact unattended run")
+    send.add_argument("--ticket", help="Current claimed ticket for unattended direction")
     send.add_argument(
         "--direction", choices=("assign", "reprioritize", "clarify", "pause", "cancel", "review")
     )

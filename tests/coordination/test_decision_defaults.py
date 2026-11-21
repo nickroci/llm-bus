@@ -502,7 +502,7 @@ def test_profile_lists_the_decision_flags(tmp_path: Path) -> None:
     out = setup.profile(str(tmp_path))
     flags = cast("list[str]", out["flags"])
     assert flags[-2:] == ["owner-decisions", "decision-defaults"]
-    assert str(out["command"]).endswith("--owner-decisions --decision-defaults 30")
+    assert str(out["command"]).endswith("--owner-decisions --decision-defaults 5")
 
 
 def test_multiline_decision_text_is_allowed_and_other_controls_refused(project: Project) -> None:

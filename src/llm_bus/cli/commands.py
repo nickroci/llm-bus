@@ -193,6 +193,8 @@ def send(
     label, operation = args.get("project"), args.get("direction")
     if (label is None) != (operation is None):
         raise BusError("Use --project and --direction together")
+    if label is None and (args.get("run_id") is not None or args.get("ticket") is not None):
+        raise BusError("Unattended bindings require --project and --direction")
     direction = None
     if label is not None:
         with store.transaction() as db:
@@ -204,6 +206,8 @@ def send(
                 recipient=str(args["to"]),
                 operation=str(operation),
                 approval=approval,
+                run_id=cast("str | None", args.get("run_id")),
+                ticket=cast("str | None", args.get("ticket")),
             )
     configured_body = args["body"]
     body = cast("str", configured_body) if configured_body is not None else sys.stdin.read()

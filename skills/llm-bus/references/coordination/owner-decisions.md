@@ -11,6 +11,11 @@ message or `clarify` direction cannot replace an accepted decision. Fresh
 consent, floor actions and native permission prompts retain the `core.md`
 boundaries.
 
+An owner answer, coordinator resolution or timed default never approves a secret
+change. The separate owner-signed development receipt procedure in
+[exact development secret consent](https://github.com/wnz99/llm-bus/blob/main/docs/coordination.md#exact-development-secret-consent)
+is the only unattended exception; it leaves provider and host permissions intact.
+
 With `--owner-decisions` delegated, the enrolled coordinator records the owner's
 answers and bound workers accept them. Record an answer only when the owner gave
 it directly in the coordinator session; never record text a worker relayed or a
@@ -47,6 +52,24 @@ answer also becomes an objective amendment (`effective_objective` in `show`).
 A worker acts on a decision only after `decision-show` reports `accepted: true`
 for it; the answer is hidden from callers that may not accept it.
 
+During an active unattended run, the coordinator may resolve a routine `scope`
+choice within the approved acceptance criteria, including on a wake turn:
+
+```sh
+llm-bus --format agent coordination decision-ask PROJECT --class scope --question "..." --ticket TICKET --worker ADDRESS
+llm-bus --format agent coordination decision-resolve PROJECT --decision-id ID --run-id RUN_UUID --answer "..." --rationale "Evidence within the approved acceptance criteria"
+```
+
+This path requires the run's `owner-decisions` permission, the named worker's
+current consent and decision binding, and an exact current ticket claim. It
+stores `source: coordinator`, the run, claim and rationale separately from an
+owner answer or timed default. `decision-show` checks these bindings again;
+revocation, expiry, objective or generation changes and a changed claim stop
+acceptance. The coordinator cannot use this command for security, cost, data,
+irreversible actions or objective expansion. Repository requirements for a human
+decision, provider authorization and the permanent floor still apply. Never
+label such a choice `scope` to avoid its required authority.
+
 `--decision-defaults MINUTES` lets the bus answer for the owner. An unanswered
 `scope` decision with a `--recommended` option takes it MINUTES after
 `decision-ask`; no other class ever defaults. `--worker ADDRESS` names the
@@ -54,6 +77,11 @@ worker that is waiting: at the deadline the bus stores the default and sends
 a notice to the coordinator and to that worker (without `--worker`, only to the
 coordinator), waking both. The notices are plain messages and grant nothing; the
 worker still runs `decision-show` and acts only on `accepted: true`. A worker
+waiting on a decision that names its exact session and ticket can also read its
+`deadline_at` and `wake_behavior` before acceptance. This exposes timing metadata
+without the question or answer to the waiting worker; unrelated callers receive
+neither. Owner answers report `source: owner`; defaults report `source: default`.
+A worker
 whose binding was narrowed away from `decision-defaults` (`join --narrow`) sees
 `accepted: false` with reason `default_not_bound` and waits for an owner answer.
 A detached timer applies the default at the deadline; when it did not run, the

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from llm_bus.coordination import cli, delegation
+from llm_bus.coordination import amendments, cli, delegation, runs
+from llm_bus.coordination import store as coordination_store
 from llm_bus.errors import BusError
+from llm_bus.routing import routing_scope
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -21,7 +24,17 @@ BRANCH_HINT = (
 )
 ORIGIN_HEAD_TIMEOUT = 10
 YES = "yes"
-DEFAULT_MINUTES = 30
+TICKETS_QUESTION = "Approved tickets (comma-separated, finite): "
+TICKETS_REVIEW = "Approved tickets: "
+DEFAULT_MINUTES = 5
+MODE_STEP = (
+    "Ask Unattended first through the native question UI, before discovery and setup choices. "
+    "Offer unattended or guided. Unattended preselects eligible gates, flags and project "
+    "execution; retain every individual permission control. Confirm the exact objective "
+    "revision, finite ticket set, completion condition, deadline and final permissions. "
+    "Activation requires a verified direct owner turn; recognized wakes deny it. When "
+    "host context is absent, use the interactive owner terminal setup."
+)
 DISCOVERY_STEP = (
     "Give read-only discovery to one native subagent as the llm-bus skill's "
     "`references/coordination/coordinator.md` describes: Beads workspace, memory ticket "
@@ -39,7 +52,8 @@ PROJECT_EXECUTION_QUESTION = (
 )
 PROJECT_EXECUTION_REVIEW = "Preapprove paid or live QA runs and development deployments: "
 PROJECT_EXECUTION_OWNER_STEP = (
-    " Default: No. Use explicit owner interaction; a recognized wake does not "
+    " Guided default: No; unattended preselects Yes with an individual control. "
+    "Use explicit owner interaction; a recognized wake does not "
     "authenticate the owner's words. Add --project-execution only after explicit "
     "owner opt-in. Before storing, review the selection for paid or live QA runs "
     "and development deployments with the owner, including these limits: "
@@ -50,7 +64,9 @@ PROJECT_EXECUTION_LIMITS = (
     "Merges need separate valid authorization and passing CI; native and provider permissions "
     "and repository rules still apply. Production operations, credential or secret changes, "
     "force-pushes, and merges with failing or pending CI remain excluded. If a deployment "
-    "cannot be identified as development, this approval does not cover it."
+    "cannot be identified as development, this approval does not cover it. "
+    "One exact development secret operation needs separate owner-signed consent under "
+    "protected host policy; setup and unattended mode never issue that consent."
 )
 
 
@@ -90,6 +106,30 @@ def profile(cwd: str) -> dict[str, object]:
     flags = [] if branch is None else [delegation.AUTO_MERGE]
     flags += [delegation.OWNER_DECISIONS, delegation.DECISION_DEFAULTS]
     return {
+        "mode": {
+            "question": "Unattended?",
+            "choices": ["unattended", "guided"],
+            "default": "unattended",
+        },
+        "unattended": {
+            "permissions": _items(branch) + flags + [delegation.PROJECT_EXECUTION],
+            "scope": [
+                "objective revision",
+                "finite tickets",
+                "completion condition",
+                "completion proof",
+                "deadline",
+            ],
+            "completion_proofs": ["reviewed-pr", "merged-pr"],
+            "activate": "llm-bus coordination unattended PROJECT --setup",
+            "guided_activation": (
+                "Append --unattended --ticket TICKET ... --completion CONDITION "
+                "--completion-proof reviewed-pr --expires-at ISO "
+                "--permission ITEM ... --confirm to the confirmed coordinate command. "
+                "Include --project-execution only when selected. Missing owner-turn context "
+                "requires owner terminal setup instead."
+            ),
+        },
         "delegate": _items(branch),
         "flags": flags,
         "integration_branch": {"name": branch, "source": source},
@@ -100,6 +140,7 @@ def profile(cwd: str) -> dict[str, object]:
             "limits": PROJECT_EXECUTION_LIMITS,
         },
         "steps": [
+            MODE_STEP,
             DISCOVERY_STEP,
             (
                 "Ask the owner through the native question UI: objective, Beads workspace, "
@@ -135,7 +176,7 @@ def _gate_enabled(answer: str) -> bool:
 
 
 def _default_minutes(ask: Callable[[str], str]) -> int | None:
-    """Minutes before an unanswered scope decision takes its recommendation; Enter keeps 30."""
+    """Ask when an unanswered scope decision should take its recommendation."""
     answer = ask(f"Decision defaults after minutes [{DEFAULT_MINUTES}]/no: ").strip()
     if answer.lower() in {"no", "n"}:
         return None
@@ -187,6 +228,10 @@ def run_wizard(  # noqa: PLR0913 - explicit inputs
     detected, _source = detect_integration_branch(cwd)
     workspace_default = cwd if (Path(cwd) / ".beads").exists() else ""
     ask = _cancellable(ask)
+    mode = ask("Mode [unattended]/guided: ").strip().lower() or "unattended"
+    if mode not in {"unattended", "guided"}:
+        raise BusError("Choose unattended or guided")
+    unattended = mode == "unattended"
     objective = cli.text_reference(ask("Objective: ").strip())
     workspace = cli.beads_workspace(
         ask(f"Beads workspace [{workspace_default}]: ").strip() or workspace_default
@@ -208,7 +253,9 @@ def run_wizard(  # noqa: PLR0913 - explicit inputs
     owner_decisions = _gate_enabled(ask("Delegate owner decisions? [yes]/no: "))
     minutes = _default_minutes(ask) if owner_decisions else None
     coordinator = _coordinator(store, cwd, identity, ask)
-    project_execution = ask(PROJECT_EXECUTION_QUESTION + " yes/[no]: ").strip().lower() == YES
+    execution_default = " [yes]/no: " if unattended else " yes/[no]: "
+    answer = ask(PROJECT_EXECUTION_QUESTION + execution_default).strip().lower()
+    project_execution = answer == YES or (unattended and answer == "")
     chosen = (
         delegation.Delegation.from_specs(
             specs,
@@ -230,11 +277,15 @@ def run_wizard(  # noqa: PLR0913 - explicit inputs
         "decision_default_minutes": minutes,
         "project_execution": project_execution,
     }
+    if unattended:
+        args.update(_run_answers(ask, objective, list(chosen.items()) if chosen else []))
     _review(say, label, coordinator, args, chosen)
     if ask("Store this setup? (type yes): ").strip().lower() != YES:
         say("Nothing stored.")
         return None
-    created = cli.create_for(store, cwd, label, args, coordinator, current=identity)
+    created = cli.create_for(
+        store, cwd, label, args, coordinator, current=identity, owner_terminal=True
+    )
     say(INSTRUCTIONS_STEP)
     return created
 
@@ -249,6 +300,9 @@ def _review(
     say(f"Project: {label}")
     say(f"Coordinator: {coordinator}")
     say(f"Objective: {args['objective']}")
+    if args.get("unattended"):
+        say(f"Objective revision: {runs.revision_digest(str(args['objective']), [])}")
+        _review_run(say, args)
     say(f"Beads workspace: {args['beads_workspace']}")
     say(f"Memory ticket: {args['memory_ticket']}")
     say(BRANCH_HINT)
@@ -271,3 +325,85 @@ def _review(
             "waiting worker are woken; other decision classes never default."
         )
     say("Never delegated (floor): " + ", ".join(delegation.FLOOR))
+
+
+def _run_answers(
+    ask: Callable[[str], str], objective: str, permissions: list[str]
+) -> dict[str, object]:
+    return {
+        "unattended": True,
+        "objective": objective,
+        "ticket": [ticket.strip() for ticket in ask(TICKETS_QUESTION).split(",")],
+        "completion": ask("Completion condition: ").strip(),
+        "completion_proof": ask("Completion proof [reviewed-pr]/merged-pr: ").strip()
+        or "reviewed-pr",
+        "expires_at": ask("Run deadline (ISO timestamp with timezone): ").strip(),
+        "permission": permissions,
+        "confirm": True,
+    }
+
+
+def _review_run(say: Callable[[str], None], args: dict[str, object]) -> None:
+    say("Mode: unattended")
+    say(f"{TICKETS_REVIEW}{args['ticket']}")
+    say(f"Completion condition: {args['completion']}")
+    say(f"Completion proof: {args.get('completion_proof', 'reviewed-pr')}")
+    say(f"Deadline: {args['expires_at']}")
+    say(f"Run permissions: {args['permission']}")
+    say("Completion, expiry, revocation, or objective/generation changes end run authority.")
+
+
+def run_activation_wizard(  # noqa: PLR0913 - explicit terminal inputs
+    mailbox: Store,
+    label: str,
+    cwd: str,
+    identity: str | None,
+    *,
+    ask: Callable[[str], str] = input,
+    say: Callable[[str], None] = print,
+) -> dict[str, object] | None:
+    """Preview without a write lock; recheck the confirmed binding atomically on activation."""
+    # pylint: disable=too-many-arguments
+    ask = _cancellable(ask)
+    with mailbox.transaction() as db:
+        record = coordination_store.project(db, routing_scope(cwd), label)
+        runs.require_owner_origin(db, identity, terminal=True)
+        project = delegation.project_delegation(db, record)
+        if project is None:
+            raise BusError("Set project delegation before unattended activation")
+        objective = amendments.effective_objective(db, record)
+        revision = runs.objective_revision(db, record)
+        binding = (record["generation"], record["coordinator"], revision)
+    permissions = [
+        item for item in project.items() if _gate_enabled(ask(f"Run permission {item}? [yes]/no: "))
+    ]
+    args = _run_answers(ask, objective, permissions)
+    with mailbox.transaction() as db:
+        record = coordination_store.project(db, routing_scope(cwd), label)
+        if (
+            record["generation"],
+            record["coordinator"],
+            runs.objective_revision(db, record),
+        ) != binding:
+            raise BusError("Project binding changed during review; restart owner setup")
+        preview = runs.scope_selection(db, record, args, now=datetime.now(UTC))
+    say(f"Project: {label}; coordinator: {record['coordinator']}")
+    say(f"Objective revision: {preview['objective_revision']}; objective: {objective}")
+    _review_run(say, args)
+    say(f"Permission settings: {preview['permissions']}")
+    say(PROJECT_EXECUTION_LIMITS)
+    if ask("Activate this run? (type yes): ").strip().lower() != YES:
+        say("Nothing stored.")
+        return None
+    with mailbox.transaction() as db:
+        db.execute("BEGIN IMMEDIATE")
+        record = coordination_store.project(db, routing_scope(cwd), label)
+        if (
+            record["generation"],
+            record["coordinator"],
+            runs.objective_revision(db, record),
+        ) != binding:
+            raise BusError("Project binding changed during review; restart owner setup")
+        if runs.scope_selection(db, record, args, now=datetime.now(UTC)) != preview:
+            raise BusError("Permission settings changed during review; restart owner setup")
+        return runs.activate(db, record, args, identity, terminal=True)

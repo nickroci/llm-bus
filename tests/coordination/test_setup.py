@@ -93,7 +93,19 @@ def answers(  # noqa: PLR0913 - explicit wizard choices
     """
     # pylint: disable=too-many-arguments
     merge = [] if auto_merge is None else [auto_merge]
-    return ["Ship it", str(repo), "bus-1", "", *gates, *merge, *decide, "", execution, confirm]
+    return [
+        "guided",
+        "Ship it",
+        str(repo),
+        "bus-1",
+        "",
+        *gates,
+        *merge,
+        *decide,
+        "",
+        execution,
+        confirm,
+    ]
 
 
 def test_detects_origin_head_without_network(repo: Path, tmp_path: Path) -> None:
@@ -113,9 +125,10 @@ def test_noninteractive_setup_prints_profile_and_stores_nothing(
     assert out["delegate"] == [f"{gate}:develop" for gate in GATES]
     assert out["floor"]
     steps = cast("list[str]", out["steps"])
-    assert steps[0] == DISCOVERY_STEP
-    assert "never runs llm-bus" in steps[0]
-    assert "Confirm the integration branch with the owner" in steps[0]
+    assert "Unattended first" in steps[0]
+    assert steps[1] == DISCOVERY_STEP
+    assert "never runs llm-bus" in steps[1]
+    assert "Confirm the integration branch with the owner" in steps[1]
     assert steps[-1] == INSTRUCTIONS_STEP
     assert "llm-bus" in str(out["command"])
     assert profile(str(repo)) == out
@@ -172,7 +185,7 @@ def test_wizard_changed_target_branch(repo: Path, tmp_path: Path) -> None:
     store = Store(tmp_path / "bus.sqlite3")
     store.register("codex", "owner", str(repo))
     script = answers(repo)
-    script[3] = "release"
+    script[4] = "release"
     ask, _ = scripted(script)
     said: list[str] = []
     assert run_wizard(store, "demo", str(repo), "codex:owner", ask=ask, say=said.append)
@@ -181,7 +194,7 @@ def test_wizard_changed_target_branch(repo: Path, tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("index", "bad", "asked"),
-    [(0, "  ", 1), (1, "/nonexistent-workspace", 2), (2, "", 3)],
+    [(1, "  ", 2), (2, "/nonexistent-workspace", 3), (3, "", 4)],
 )
 def test_wizard_validates_each_answer_at_its_prompt(
     repo: Path, tmp_path: Path, index: int, bad: str, asked: int
@@ -220,7 +233,7 @@ def test_wizard_rejects_globs_before_storing(repo: Path, tmp_path: Path, branch:
     store.register("codex", "owner", str(repo))
     before = counts(store)
     script = answers(repo)
-    script[3] = branch
+    script[4] = branch
     ask, _ = scripted(script)
     with pytest.raises(BusError):
         run_wizard(store, "demo", str(repo), "codex:owner", ask=ask, say=lambda _line: None)
@@ -386,11 +399,11 @@ def test_wizard_without_merge_gate_does_not_ask_about_auto_merge(
 def test_profile_command_names_auto_merge_only_with_the_flag(repo: Path, tmp_path: Path) -> None:
     full = profile(str(repo))
     assert full["flags"] == ["auto-merge", "owner-decisions", "decision-defaults"]
-    assert "--auto-merge --owner-decisions --decision-defaults 30" in str(full["command"])
+    assert "--auto-merge --owner-decisions --decision-defaults 5" in str(full["command"])
     bare = profile(str(tmp_path))
     assert bare["flags"] == ["owner-decisions", "decision-defaults"]
     assert "--auto-merge" not in str(bare["command"])
-    assert str(bare["command"]).endswith("--owner-decisions --decision-defaults 30")
+    assert str(bare["command"]).endswith("--owner-decisions --decision-defaults 5")
 
 
 def test_wizard_always_asks_about_owner_decisions(repo: Path, tmp_path: Path) -> None:
@@ -422,9 +435,7 @@ def test_wizard_decisions_only_delegation_with_default_minutes(repo: Path, tmp_p
     assert "after 45 minutes" in screen
 
 
-@pytest.mark.parametrize(
-    ("answer", "stored"), [("", 30), ("no", None), ("n", None), ("1440", 1440)]
-)
+@pytest.mark.parametrize(("answer", "stored"), [("", 5), ("no", None), ("n", None), ("1440", 1440)])
 def test_wizard_default_minutes_answers(
     repo: Path, tmp_path: Path, answer: str, stored: int | None
 ) -> None:
@@ -483,3 +494,25 @@ def test_terminal_setup_routes_to_wizard(
     assert calls == [("demo", "claude:owner")]
     assert main(["--format", "agent", "coordinate", "other", "--setup"]) == 0
     assert len(calls) == 1
+
+
+def test_terminal_later_activation_routes_to_owner_wizard(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLM_BUS_DB", str(tmp_path / "bus.sqlite3"))
+    monkeypatch.chdir(repo)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    calls: list[str] = []
+
+    def fake_wizard(
+        _store: Store, label: str, _cwd: str, _identity: str | None
+    ) -> dict[str, object]:
+        calls.append(label)
+        return {"wizard": True}
+
+    monkeypatch.setattr("llm_bus.cli.app.run_activation_wizard", fake_wizard)
+    assert main(["coordination", "unattended", "demo", "--setup"]) == 0
+    assert calls == ["demo"]
+    assert main(["--format", "agent", "coordination", "unattended", "demo", "--setup"]) == 1
+    assert calls == ["demo"]

@@ -12,8 +12,9 @@ from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
-from llm_bus.coordination import delegation, delivery
-from llm_bus.coordination.models import Approval
+from llm_bus.coordination import delegation, delivery, run_actions, runs
+from llm_bus.coordination.authority import authorize
+from llm_bus.coordination.models import Approval, Direction
 from llm_bus.errors import BusError
 from llm_bus.mailbox.writes import send_in_transaction
 
@@ -82,6 +83,7 @@ def submit(  # noqa: PLR0913 - explicit gate fields
     evidence: Sequence[str],
     checks: Sequence[str],
     now: datetime,
+    run_id: str | None = None,
 ) -> Result:
     """The claiming worker records its review verdict; the coordinator still must accept."""
     # pylint: disable=too-many-arguments,too-many-locals
@@ -103,12 +105,29 @@ def submit(  # noqa: PLR0913 - explicit gate fields
         raise BusError("Gate record not submitted: wrong_ticket")
     grant_id = _grant_id(db, record, caller)
     granted = None if grant_id is None else delegation.effective(db, record, grant_id, now=now)
-    if (
+    merge_delegated = not (
         grant_id is None
         or granted is None
         or not granted.auto_merge
         or not any(base in granted.targets(gate) for gate in delegation.MERGE_GATES)
-    ):
+    )
+    if run_id is not None:
+        runs.require_active(db, record, str(record["coordinator"]), run_id=run_id, ticket=ticket)
+        if (
+            grant_id is None
+            or not authorize(
+                db,
+                sender=str(record["coordinator"]),
+                recipient=caller,
+                scope=str(record["scope"]),
+                direction=Direction(
+                    1, str(record["project_id"]), str(record["generation"]), grant_id, "clarify"
+                ),
+                now=now,
+            ).verified
+        ):
+            raise BusError("Gate observation requires current worker consent")
+    elif not merge_delegated:
         raise BusError("Gate record not submitted: gate_not_delegated")
     # The branch is the submitter's own claim, so no other worker can supersede this one.
     key = (record["scope"], record["project_id"], record["generation"], pr, branch)
@@ -149,6 +168,7 @@ def submit(  # noqa: PLR0913 - explicit gate fields
             expires_at,
         ),
     )
+    run_actions.bind_gate(db, record, caller, ticket, record_id, run_id=run_id)
     notice = send_in_transaction(
         db,
         caller,
@@ -209,10 +229,16 @@ def accept(  # noqa: PLR0913 - explicit acceptance inputs
     head_sha: str,
     admin: bool,
     now: datetime,
+    run_id: str | None = None,
+    repository: str | None = None,
 ) -> Result:
     """Mark the record accepted and send the worker an ordinary record-bound merge approval."""
-    # pylint: disable=too-many-arguments
+    # pylint: disable=too-many-arguments,too-many-locals
     row = _load(db, record, caller, record_id, "accepted")
+    if run_id is not None:
+        run_actions.require_gate(
+            db, record, str(row["submitted_by"]), str(row["ticket"]), record_id, run_id=run_id
+        )
     reason = None
     if row["status"] != "submitted":
         reason = "not_submitted"
@@ -236,6 +262,7 @@ def accept(  # noqa: PLR0913 - explicit acceptance inputs
         cast("int", row["pr"]),
         str(row["head_sha"]),
         record_id=record_id,
+        repository=repository,
     )
     recipient = str(row["submitted_by"])
     direction = delivery.outgoing(
@@ -246,6 +273,7 @@ def accept(  # noqa: PLR0913 - explicit acceptance inputs
         recipient=recipient,
         operation=operation,
         approval=approval,
+        run_id=run_id,
     )
     message = send_in_transaction(
         db,

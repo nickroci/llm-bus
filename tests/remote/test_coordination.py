@@ -48,7 +48,7 @@ def test_inbox_route_class_rejects_wrong_metadata(
             Availability(1, str(uuid4()), str(uuid4()), str(uuid4()), "joined")
         )
     if metadata in {"coordination", "mixed"}:
-        item["coordination"] = asdict(direction_fixture())
+        item["coordination"] = direction_fixture().wire()
 
     def request(*_args: object) -> object:
         return [item]
@@ -356,7 +356,7 @@ def test_availability_strict_metadata(tmp_path: Path, change: str) -> None:
     item = delivery()
     item["availability"] = availability_fixture(store, config)
     if change == "mixed":
-        item["coordination"] = asdict(direction_fixture())
+        item["coordination"] = direction_fixture().wire()
     else:
         item["availability"][change] = {
             "extra": 1,
@@ -442,7 +442,7 @@ def test_receiver_owns_exact_authority(tmp_path: Path, change: str) -> None:
     direction = direction_fixture()
     enroll(store, config, direction)
     item = delivery()
-    item["coordination"] = asdict(direction)
+    item["coordination"] = direction.wire()
     if change in {"grant_id", "generation"}:
         item["coordination"][change] = str(uuid4())
     elif change == "operation":
@@ -458,7 +458,7 @@ def test_grant_revocation_keeps_history_suppresses_pending(tmp_path: Path) -> No
     direction = direction_fixture()
     enroll(store, config, direction)
     item = delivery()
-    item["coordination"] = asdict(direction)
+    item["coordination"] = direction.wire()
     key = assert_inbox_admission(admit_delivery(store, config, item))
     assert store.pending_allowed(key)
     assert store.inbox("claude:recipient")[0].get("coordination", {})["verified"] is True
@@ -477,7 +477,7 @@ def test_policy_intersection_and_independent_store(tmp_path: Path) -> None:
     store, config = setup_machine(tmp_path, "b")
     enroll(store, config, direction)
     item = delivery()
-    item["coordination"] = asdict(direction)
+    item["coordination"] = direction.wire()
     other = Store(tmp_path / "other.sqlite3")
     enroll(other, config, replace(direction, grant_id=str(uuid4())))
     assert admit_delivery(other, config, item) is None
@@ -505,7 +505,7 @@ def test_old_relay_never_gets_direction_body(
 
     monkeypatch.setattr("llm_bus.remote.http.Relay.request", request)
     item = delivery()
-    item["coordination"] = asdict(direction_fixture())
+    item["coordination"] = direction_fixture().wire()
     with pytest.raises(RelayError) as error:
         upload(Bridge(store, config), item)
     assert error.value.code == "unsupported_coordination"
@@ -516,7 +516,7 @@ def test_denied_versions_do_not_block_scan(tmp_path: Path, monkeypatch: pytest.M
     store, config = setup_machine(tmp_path, "b")
     direction = direction_fixture()
     enroll(store, config, direction)
-    valid = dict(delivery(), sequence=2, coordination=asdict(direction))
+    valid = dict(delivery(), sequence=2, coordination=direction.wire())
     invalid = {**valid, "sequence": 1, "coordination": {"version": 2}}
     receipt_payloads: list[object] = []
 
@@ -548,7 +548,7 @@ def test_monitor_direction_never_enters_pending(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     item = delivery()
-    item["coordination"] = asdict(direction)
+    item["coordination"] = direction.wire()
     assert admit_delivery(store, config, item) == ("monitor", None, True)
     assert store.inbox("claude:recipient") == []
     assert store.pending_count("claude:recipient") == 0
@@ -573,7 +573,7 @@ def test_sender_queue_rechecks_enrollment_and_uses_only_versioned_route(
     sender = SenderContext("codex", "sender", str(tmp_path / "repo"))
     enqueue_remote(store, config, sender, "b/xyz/claude:recipient", "task", direction=direction)
     envelope = RemoteStore(store, config.connection).outgoing()[0][0]
-    assert envelope.get("coordination") == asdict(direction)
+    assert envelope.get("coordination") == direction.wire()
     routes: list[str] = []
 
     def request(_self: object, _method: str, route: str, _data: object = None) -> object:
