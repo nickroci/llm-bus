@@ -9,12 +9,12 @@ it('previews legacy and migrated relay rows without bodies or mutation, and flag
   const ages = [new Date(Date.now()-15*86400_000).toISOString(), new Date(Date.now()-3*86400_000).toISOString()];
   await bindings.DB.prepare('UPDATE messages SET sent_at=? WHERE id=?').bind(ages[0],old.message.id).run();
   await bindings.DB.prepare('UPDATE messages SET sent_at=? WHERE id=?').bind(ages[1],expired.message.id).run();
-  const before = await bindings.DB.prepare('SELECT * FROM messages ORDER BY sequence').all();
+  const before = (await bindings.DB.prepare('SELECT * FROM messages ORDER BY sequence').all()).results;
   const result = await bindings.DB.prepare(sql).first();
   expect(result).toMatchObject({invalid_timestamps:0, expired_delivery_candidates:2,
     oldest_expired_delivery_at:ages[0], deletion_candidates:1, oldest_eligible_at:ages[0]});
   expect(JSON.stringify(result)).not.toContain('hello');
-  expect(await bindings.DB.prepare('SELECT * FROM messages ORDER BY sequence').all()).toEqual(before);
+  expect((await bindings.DB.prepare('SELECT * FROM messages ORDER BY sequence').all()).results).toEqual(before);
   await bindings.DB.batch([
     'DROP INDEX messages_retention', 'ALTER TABLE messages DROP COLUMN retention_at',
     'ALTER TABLE messages DROP COLUMN report_expires_at',
