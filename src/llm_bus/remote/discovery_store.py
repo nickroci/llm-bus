@@ -27,8 +27,16 @@ def sessions(self: RemoteStore) -> list[dict[str, str | int | None]]:
             ).fetchall(),
         )
         result: list[dict[str, str | int | None]] = []
-        for row in rows:
-            address, project, last_seen, ended_at, scope, label, prior_revision, prior_payload = row
+        for (
+            address,
+            project,
+            last_seen,
+            ended_at,
+            scope,
+            label,
+            prior_revision,
+            prior_payload,
+        ) in rows:
             session: dict[str, str | int | None] = {
                 "native_address": address,
                 "project": project,
