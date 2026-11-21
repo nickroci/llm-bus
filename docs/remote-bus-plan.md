@@ -1,6 +1,6 @@
 # Remote bus implementation plan
 
-Historical initial v1 implementation plan. Its repository-wide policy examples describe that original design; use the [current remote guide](remote-bus.md) for version 2 peer policy, monitoring, reports, and migration.
+Historical initial v1 implementation plan. Its repository-wide policy examples and 30-day delivery window describe that original design; use the [current remote guide](remote-bus.md) for version 2 peer policy, monitoring, reports, the 48-hour delivery/14-day retention policy, and migration.
 
 ## Features and effects
 

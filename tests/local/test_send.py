@@ -46,7 +46,8 @@ def test_existing_database_gets_nullable_sender_folder(tmp_path: Path) -> None:
             "body TEXT, sent_at TEXT, acknowledged_at TEXT);"
             "INSERT INTO agents VALUES ('codex:one', 'codex', '/one', 'now');"
             "INSERT INTO agents VALUES ('claude:two', 'claude', '/one', 'now');"
-            "INSERT INTO messages VALUES (1, 'codex:one', 'claude:two', 'old', 'now', NULL);"
+            "INSERT INTO messages VALUES (1, 'codex:one', 'claude:two', 'old', "
+            "strftime('%Y-%m-%dT%H:%M:%fZ','now'), NULL);"
         )
     migrated = Store(path)
     assert migrated.inbox("claude:two")[0]["sender_cwd"] is None

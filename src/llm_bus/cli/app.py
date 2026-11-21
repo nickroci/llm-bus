@@ -126,7 +126,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901, PLR0912 - com
                 )
             )
             return 0
-        store = Store.read_only(default_path()) if command == "status" else Store(default_path())
+        store = (
+            Store.read_only(default_path())
+            if command in {"status", "retention-preview"}
+            else Store(default_path())
+        )
         if command in {"bridge", "hook"}:
             if command == "bridge":
                 run_bridge(

@@ -5,7 +5,7 @@ Let your Claude Code and Codex sessions talk to each other.
 `llm-bus` gives coding agents a shared, durable mailbox. Use it to hand off
 context, ask another session about a change, or coordinate work across
 repositories and Git worktrees. Messages stay pending until the recipient
-acknowledges them, including across restarts.
+acknowledges them or their 14-day retention ends, including across restarts.
 
 Local messaging runs on one machine without a server. Optional features add
 shared-resource locks, coordinated projects, cross-machine messaging, and
