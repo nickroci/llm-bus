@@ -1,9 +1,10 @@
 import { readFileSync } from 'node:fs';
-import { expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { bindings, request, send } from './relay-fixture';
 import { dispatch } from '../src/messages';
 
 const migration = readFileSync(new URL('../migrations/0008_message_retention.sql', import.meta.url), 'utf8');
+afterEach(() => vi.restoreAllMocks());
 
 async function undoRetentionSchema() {
   await bindings.DB.batch([
@@ -17,6 +18,7 @@ async function migrate() {
 }
 
 it('preserves legacy deadlines while normalizing offset ages and keeps new deadlines stable on retries', async () => {
+  vi.spyOn(Date,'now').mockReturnValue(Date.parse('2026-11-10T00:00:00.000Z'));
   const {message} = await send();
   await undoRetentionSchema();
   await bindings.DB.prepare("UPDATE messages SET sent_at='2026-11-01T02:00:00+02:00' WHERE id=?").bind(message.id).run();
@@ -57,4 +59,16 @@ it('rejects purged UUID reuse atomically and cannot dispatch a delayed job into 
   expect(results.map(row=>row.status)).toEqual([403,403]);
   await dispatch(bindings,message.id);
   expect(await bindings.DB.prepare('SELECT COUNT(*) AS count FROM messages').first('count')).toBe(0);
+});
+
+it('seeds immutable reply identity without altering existing accepted replies', async () => {
+  const {message:parent} = await send();
+  const child = {...parent,id:crypto.randomUUID(),body:'reply',reply_to:parent.id};
+  expect((await request('a','messages',child)).status).toBe(202);
+  await bindings.DB.prepare('ALTER TABLE messages DROP COLUMN accepted_reply_to').run();
+  const sql = readFileSync(new URL('../migrations/0009_retained_reply_identity.sql',import.meta.url),'utf8');
+  await bindings.DB.batch(sql.split(';').filter(statement=>statement.trim()).map(statement=>bindings.DB.prepare(statement)));
+  expect(await bindings.DB.prepare('SELECT reply_to,accepted_reply_to FROM messages WHERE id=?').bind(child.id).first())
+    .toEqual({reply_to:parent.id,accepted_reply_to:parent.id});
+  expect((await request('a','messages',child)).status).toBe(200);
 });

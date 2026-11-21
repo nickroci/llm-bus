@@ -81,7 +81,7 @@ it('keeps relay-owned report deadlines stable on retries and refuses expired rep
   expect(accepted.report_expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   expect(await (await request('a','messages',message)).json()).toMatchObject({report_expires_at:accepted.report_expires_at});
   await dispatch(bindings,message.id);await request('b','receipts',{id:message.id});
-  await bindings.DB.prepare("UPDATE messages SET sent_at='2020-01-01T00:00:00.000Z' WHERE id=?").bind(message.id).run();
+  await bindings.DB.prepare("UPDATE messages SET retention_at='2020-01-01T00:00:00.000Z' WHERE id=?").bind(message.id).run();
   expect((await request('a',`reports?message_id=${message.id}`)).status).toBe(403);
   expect((await request('b','reports',{message_id:message.id,expected_revision:0,status:'received',reason:null})).status).toBe(403);
 });

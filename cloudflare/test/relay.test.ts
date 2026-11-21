@@ -208,8 +208,9 @@ describe('durability and receipts', () => {
     const accepted = await response.json() as {report_expires_at:string;retention_expires_at:string};
     await repair(bindings);
     expect(await bindings.DB.prepare('SELECT id FROM messages WHERE ready=0').first()).not.toBeNull();
-    await bindings.DB.prepare("UPDATE messages SET sent_at='2020-01-01T00:00:00.000Z' WHERE id=?").bind(message.id).run();
-    expect(await (await request('a', `status?id=${message.id}`)).json()).toEqual({...accepted,status:'expired'});
+    const age = Date.now()-2*86400_000;
+    await bindings.DB.prepare('UPDATE messages SET retention_at=? WHERE id=?').bind(new Date(age).toISOString(),message.id).run();
+    expect(await (await request('a', `status?id=${message.id}`)).json()).toEqual({...accepted,status:'expired',retention_expires_at:new Date(age+14*86400_000).toISOString()});
     expect(await (await request('b', 'inbox?repo_id=xyz')).json()).toEqual([]);
   });
 });
