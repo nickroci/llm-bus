@@ -16,6 +16,7 @@ from llm_bus.coordination.delivery import outgoing as direction_outgoing
 from llm_bus.coordination.models import Availability, Direction
 from llm_bus.errors import BusError
 from llm_bus.mailbox.models import SenderContext
+from llm_bus.mailbox.retention import purge
 from llm_bus.mailbox.store import Store
 from llm_bus.policy.config import Config
 from llm_bus.remote.bridge import Bridge
@@ -139,6 +140,28 @@ def test_remote_join_retry_and_assignment_grant(
     with store.transaction() as db:
         assert db.execute("SELECT count(*) FROM remote_outbox").fetchone()[0] == 1
         assert db.execute("SELECT count(*) FROM coordination_messages").fetchone()[0] == 0
+
+
+def test_remote_join_dedup_survives_purged_notice(tmp_path: Path) -> None:
+    store, config = setup_machine(tmp_path, "b")
+    enroll(store, config, direction_fixture())
+    args: dict[str, object] = {"command": "join", "project": "demo"}
+    first = cli.run(store, args, "claude:recipient", str(tmp_path / "repo"))
+    notice = cast("dict[str, object]", first["availability"])
+    with store.transaction() as db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("UPDATE messages SET sent_at='2000-01-01T00:00:00Z'")
+        assert purge(db, now=datetime.now(UTC))["messages"] == 1
+    second = cli.run(Store(store.path), args, "claude:recipient", str(tmp_path / "repo"))
+    assert second["availability"] == {
+        "id": notice["id"],
+        "remote_id": notice["remote_id"],
+        "status": "unavailable",
+    }
+    with store.transaction() as db:
+        assert db.execute("SELECT COUNT(*) FROM messages").fetchone() == (0,)
+        assert db.execute("SELECT COUNT(*) FROM remote_outbox").fetchone() == (0,)
+        assert db.execute("SELECT id FROM remote_replay_guard").fetchone() == (notice["remote_id"],)
 
 
 @pytest.mark.parametrize("failure", ["outbox", "dedup", "policy", "missing"])
