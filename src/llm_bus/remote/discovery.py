@@ -44,6 +44,7 @@ def remote_peers(store: Store, config: Config, project: str | None) -> list[Peer
 
 def publish_sessions(self: Bridge) -> int:
     failures = 0
+    published = self.remote.publication_payloads()
     for session in self.remote.sessions():
         repo = self.config.repository_scope(cast("str", session["scope"]))
         if repo is not None:
@@ -58,7 +59,7 @@ def publish_sessions(self: Bridge) -> int:
             }
             key = f"{repo.repo_id}/{session['native_address']}"
             serialized = json.dumps(payload, sort_keys=True)
-            if self.remote.published(key, serialized):
+            if published.get(key) == serialized:
                 continue
             try:
                 self.relay.request(HTTP_POST, "/v1/sessions", payload)

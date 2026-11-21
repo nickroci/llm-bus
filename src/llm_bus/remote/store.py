@@ -83,8 +83,11 @@ class RemoteStore:
     def sessions(self) -> list[dict[str, str | int | None]]:
         return discovery_store.sessions(self)
 
-    def published(self, key: str, payload: str | None = None) -> bool:
-        return discovery_store.published(self, key, payload)
+    def publication_payloads(self) -> dict[str, str]:
+        return discovery_store.publication_payloads(self)
+
+    def published(self, key: str) -> bool:
+        return discovery_store.published(self, key)
 
     def record_publication(self, key: str, payload: str) -> None:
         return discovery_store.record_publication(self, key, payload)
