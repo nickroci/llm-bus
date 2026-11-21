@@ -1,11 +1,12 @@
 # Project State
 
-Last activity: 2026-11-21 - Unattended coordination PR #93 merged as f2273f38 and was verified on all three configured hosts.
+Last activity: 2026-11-21 - Message delivery and retention passed task reviews, plan conformance, and integrated verification. PR review is pending.
 
 ## Registered Work
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261121-mrt | Message delivery and retention | Implementation reviewed and integrated verification passed. PR review pending. | [261121-mrt-message-retention](./quick/261121-mrt-message-retention/) |
 
 ## Quick Tasks Completed
 
