@@ -63,8 +63,15 @@ after live checks and for tickets they hold through `coordination claim`.
 Force-push, production changes, credentials or secrets, and merging with failing
 or pending CI are never delegable. One exact development secret operation has a
 separate owner-signed receipt path below; delegation and project execution
-cannot issue that consent. The bus
-does not check CI. Remote approvals additionally require the receiving owner's
+cannot issue that consent. For guided and legacy approvals, the coordinator and
+worker verify live CI, review and branch evidence; the bus verifies authority.
+Unattended GitHub `gate-merge` and `run-result` also verify the exact repository,
+PR base, branch and head, independent approval on that head, and green required
+checks. `unattended-complete` refreshes still-open reviewed PR proof. These checks
+do not replace the worker's action-time duties, provider permissions or repository
+protections; provider state can change before submission. See the
+[unattended merge procedure](../skills/llm-bus/references/coordination/auto-merge.md#unattended-github-merges).
+Remote approvals additionally require the receiving owner's
 delegation, worker binding, and peer `accept_delegated_gates` policy, as well as
 the coordinator owner's delegation. See the
 [approval tutorial](tutorial.md#6-delegate-approval-gates) and

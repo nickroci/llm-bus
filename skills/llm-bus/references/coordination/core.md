@@ -62,9 +62,16 @@ directions never grant that consent. An approval counts only while verified
 (for example `gate_not_delegated`, `target_denied`, `expired`, `wrong_ticket`,
 `invalid_direction`, `revoked`, `wrong_scope`, `stale_generation`)
 leave it historical and unverified. `record_withdrawn` marks a record-bound
-approval whose gate record was rejected, superseded or is not accepted. The bus
-never inspects CI, reviews or branches: the worker checks that evidence live
-(procedures in `gates.md`).
+approval whose gate record was rejected, superseded or is not accepted.
+For guided and legacy approvals, the coordinator and worker verify live CI,
+review and branch evidence; the bus verifies authority. Unattended GitHub
+`gate-merge` and `run-result` also verify the exact repository, PR base, branch
+and head, independent approval on that head, and green required checks.
+`unattended-complete` refreshes still-open reviewed PR proof. The worker's
+action-time duties in `gates.md`, provider permissions and repository protections
+still apply; provider state can change before submission. Follow
+[unattended GitHub merges](auto-merge.md#unattended-github-merges) and
+[run completion](recovery.md#completion-proof).
 
 ## Project execution consent
 
