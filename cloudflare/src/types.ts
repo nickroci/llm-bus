@@ -20,6 +20,8 @@ export interface MessageRow {
   repo_id: string;
   body: string;
   sent_at: string;
+  retention_at: string;
+  report_expires_at: string | null;
   received_at: string | null;
   acknowledged_at: string | null;
   reply_to: string | null;

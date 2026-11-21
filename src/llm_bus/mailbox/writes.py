@@ -15,6 +15,7 @@ from llm_bus.mailbox.models import (
     Message,
     message_from_row,
 )
+from llm_bus.mailbox.retention_schema import allocate_id
 
 if TYPE_CHECKING:
     import sqlite3
@@ -69,10 +70,12 @@ def send_in_transaction(  # noqa: PLR0913, C901  # pylint: disable=too-many-argu
         )
         if not decision.verified:
             raise BusError(f"Direction denied: {decision.reason}")
-    cursor = db.execute(
-        "INSERT INTO messages(sender, recipient, body, sender_cwd, recipient_cwd, "
-        "sender_scope, recipient_scope, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    message_id = allocate_id(db, "message")
+    db.execute(
+        "INSERT INTO messages(id, sender, recipient, body, sender_cwd, recipient_cwd, "
+        "sender_scope, recipient_scope, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
+            message_id,
             sender,
             recipient,
             body,
@@ -83,9 +86,6 @@ def send_in_transaction(  # noqa: PLR0913, C901  # pylint: disable=too-many-argu
             reply_to,
         ),
     )
-    message_id = cursor.lastrowid
-    if message_id is None:
-        raise RuntimeError("SQLite did not return a message ID")
     if direction is not None:
         persist(db, message_id, direction, approval)
     elif reply_to is not None:
@@ -188,15 +188,14 @@ def deliver_collab(db: sqlite3.Connection, sender: str, recipient: str, body: st
         "ON CONFLICT(address) DO UPDATE SET last_seen = excluded.last_seen",
         (sender,),
     )
-    cursor = db.execute(
-        "INSERT INTO messages(sender, recipient, body, recipient_cwd, recipient_scope) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (sender, recipient, body, recipient_row[0], recipient_row[1]),
+    message_id = allocate_id(db, "message")
+    db.execute(
+        "INSERT INTO messages(id, sender, recipient, body, recipient_cwd, recipient_scope) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (message_id, sender, recipient, body, recipient_row[0], recipient_row[1]),
     )
-    if cursor.lastrowid is None:
-        raise RuntimeError("SQLite did not return a message ID")
     request_dispatch(db, recipient)
-    return cursor.lastrowid
+    return message_id
 
 
 def acknowledge(db: sqlite3.Connection, recipient: str, ids: list[int]) -> int:

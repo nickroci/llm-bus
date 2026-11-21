@@ -13,6 +13,7 @@ from llm_bus.coordination.stalls import observe_message
 from llm_bus.errors import BusError
 from llm_bus.hosts.sessions import require_main_agent
 from llm_bus.mailbox.models import MAX_MESSAGE_BYTES, address
+from llm_bus.mailbox.retention_schema import allocate_id
 from llm_bus.remote.models import Envelope
 from llm_bus.routing import routing_scope
 
@@ -131,15 +132,13 @@ def enqueue_in_transaction(  # noqa: PLR0913, PLR0917 - shared transaction write
         (native, sender.kind, sender.project, scope),
     )
     proxy(db, recipient, repo_id)
-    cursor = db.execute(
-        "INSERT INTO messages(sender,recipient,body,sender_cwd,"
+    local_id = allocate_id(db, "message")
+    db.execute(
+        "INSERT INTO messages(id,sender,recipient,body,sender_cwd,"
         "sender_scope,recipient_scope,reply_to) "
-        "VALUES (?,?,?,?,?,?,?)",
-        (native, recipient, body, sender.project, scope, f"remote:{repo_id}", reply_to),
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (local_id, native, recipient, body, sender.project, scope, f"remote:{repo_id}", reply_to),
     )
-    local_id = cursor.lastrowid
-    if local_id is None:
-        raise RuntimeError("SQLite did not return an outgoing message ID")
     if direction is not None:
         persist(db, local_id, direction)
     db.execute(

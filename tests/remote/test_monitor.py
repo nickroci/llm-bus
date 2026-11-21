@@ -31,8 +31,7 @@ def test_monitor_is_durable_isolated_and_never_promoted(
     path.write_text(original.replace('receive_messages = "inbox"', 'receive_messages = "monitor"'))
     item: Delivery = {
         **delivery(),
-        "body": "hostile\x1b]8;;https://bad\x07\r\u202e",
-        "sent_at": "metadata\x1b[2J\u009b\u202e",
+        "body": "hostile\x1b]8;;https://bad\x07\r\u202e metadata\x1b[2J\u009b\u202e",
     }
     receipts: list[str] = []
 
@@ -86,6 +85,26 @@ def test_monitor_is_durable_isolated_and_never_promoted(
     assert "metadata\\u001b[2J\\u009b\\u202e" in output
     assert not any(character in output for character in ("\x1b", "\x07", "\r", "\u202e"))
     assert [agent["address"] for agent in store.all_agents()] == ["claude:recipient"]
+
+
+def test_monitor_rejects_invalid_age_and_keeps_original_relay_age(tmp_path: Path) -> None:
+    store, config = setup_machine(tmp_path, "b")
+    store.register("claude", "recipient", str(tmp_path / "repo"))
+    path = tmp_path / "config.toml"
+    path.write_text(
+        path.read_text().replace('receive_messages = "inbox"', 'receive_messages = "monitor"')
+    )
+    item = delivery()
+    with pytest.raises(BusError, match="Invalid message retention timestamp"):
+        admit_delivery(store, config, {**item, "sent_at": "private invalid timestamp"})
+    assert RemoteStore.monitor_history(store, repository=None) == []
+    item["sent_at"] = "2026-10-15T02:00:00+02:00"
+    assert admit_delivery(store, config, item) == ("monitor", None, True)
+    with store.transaction() as db:
+        assert db.execute("SELECT retention_at FROM remote_monitor").fetchone() == (
+            "2026-10-15T00:00:00.000Z",
+        )
+    assert RemoteStore.monitor_history(store, repository=None)[0][3] == item
 
 
 def test_inbox_admission_remains_native_when_policy_changes_to_monitor(tmp_path: Path) -> None:

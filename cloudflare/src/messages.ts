@@ -76,16 +76,20 @@ export async function send(request: Request, env: Env, machine: string, kind: Me
     }
     return Response.json(transportResult(prior));
   }
-  const result = await env.DB.prepare(`INSERT INTO messages(id,sender,recipient,repo_id,body,reply_to,coordination,availability,approval)
-    SELECT ?,s.address,r.address,?,?,?,?,?,? FROM sessions s JOIN sessions r ON r.address=?
+  const acceptedAt = new Date();
+  const sentAt = acceptedAt.toISOString();
+  const reportDeadline = new Date(acceptedAt.getTime() + 14 * 86400_000).toISOString();
+  const result = await env.DB.prepare(`INSERT INTO messages(id,sender,recipient,repo_id,body,reply_to,coordination,availability,approval,sent_at,retention_at,report_expires_at)
+    SELECT ?,s.address,r.address,?,?,?,?,?,?,?,?,? FROM sessions s JOIN sessions r ON r.address=?
     JOIN machines rm ON rm.id=r.machine_id AND rm.revoked_at IS NULL
     JOIN repo_grants rg ON rg.machine_id=r.machine_id AND rg.repo_id=r.repo_id
     WHERE s.address=? AND s.repo_id=? AND r.repo_id=? AND r.machine_id<>?
     AND ${ACTIVE_GRANT}
+    AND NOT EXISTS (SELECT 1 FROM purged_message_ids WHERE id=?)
     AND (? IS NULL OR EXISTS (SELECT 1 FROM messages p WHERE p.id=? AND p.repo_id=?
       AND ((p.sender=s.address AND p.recipient=r.address) OR (p.sender=r.address AND p.recipient=s.address))))
     ON CONFLICT(id) DO NOTHING`)
-    .bind(id, repo, body, reply, metadata, event, evidence, recipient, sender, repo, repo, machine, machine, repo, reply, reply, repo).run();
+    .bind(id, repo, body, reply, metadata, event, evidence, sentAt, sentAt, reportDeadline, recipient, sender, repo, repo, machine, machine, repo, id, reply, reply, repo).run();
   if (!result.meta.changes) {
     const raced = await env.DB.prepare('SELECT * FROM messages WHERE id=?').bind(id).first<MessageRow>();
     if (raced && raced.sender === sender && raced.recipient === recipient && raced.body === body && raced.repo_id === repo && raced.reply_to === reply && raced.coordination === metadata && raced.availability === event && raced.approval === evidence) {
@@ -99,8 +103,9 @@ export async function send(request: Request, env: Env, machine: string, kind: Me
   if (!accepted) throw new HttpError(503, 'Message unavailable');
   return Response.json(transportResult(accepted), {status: 202});
 }
-function transportResult(row: MessageRow): {id: string; status: string; report_expires_at: string} {
-  return {id:row.id,status:messageStatus(row),report_expires_at:new Date(Date.parse(row.sent_at) + 30 * 86400_000).toISOString()};
+function transportResult(row: MessageRow): {id: string; status: string; report_expires_at: string; retention_expires_at: string} {
+  return {id:row.id,status:messageStatus(row),report_expires_at:row.report_expires_at ?? new Date(Date.parse(row.sent_at) + 30 * 86400_000).toISOString(),
+    retention_expires_at:new Date(Date.parse(row.retention_at) + 14 * 86400_000).toISOString()};
 }
 function messageStatus(row: MessageRow): string {
   if (row.acknowledged_at) return 'acknowledged';

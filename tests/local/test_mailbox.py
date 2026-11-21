@@ -124,7 +124,7 @@ def test_linked_worktrees_share_routing_scope_but_keep_their_folders(
         )
         db.execute(
             "INSERT INTO messages VALUES (1, 'codex:old-sender', 'codex:old-recipient', "
-            "'old worktree message', ?, ?, 'now', NULL)",
+            "'old worktree message', ?, ?, '2026-11-01T00:00:00.000Z', NULL)",
             (str(nested), str(nested)),
         )
     migrated = Store(legacy_path)

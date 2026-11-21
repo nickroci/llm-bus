@@ -21,6 +21,7 @@ from llm_bus.coordination.models import (
 from llm_bus.coordination.stalls import observe_message
 from llm_bus.errors import BusError
 from llm_bus.hosts.sessions import is_subagent
+from llm_bus.mailbox.retention_schema import allocate_id, normalize_age
 from llm_bus.policy.inbound import receive_mode
 from llm_bus.remote import outbox
 from llm_bus.remote.models import Delivery, validate_reply_uuid
@@ -140,22 +141,28 @@ def admit_message(  # noqa: C901, PLR0911 - explicit transport and authority den
             if prior_mode == "outbox" or prior_payload != payload:
                 raise BusError("Remote message ID was reused with different content")
             return prior_mode, prior_id, False
+        if db.execute("SELECT 1 FROM remote_replay_guard WHERE id=?", (item["id"],)).fetchone():
+            return None
+        age = normalize_age(item["sent_at"])
         parent_id = incoming_parent(self, db, item, scope)
         if "reply_to" in item and parent_id is None:
             return None
         if mode == "monitor":
             db.execute(
-                "INSERT INTO remote_monitor(id,envelope,scope,connection) VALUES (?,?,?,?)",
-                (item["id"], payload, scope, self.connection),
+                "INSERT INTO remote_monitor(monitor_id,id,envelope,scope,connection,retention_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (allocate_id(db, "monitor"), item["id"], payload, scope, self.connection, age),
             )
             return "monitor", None, True
         db.execute("SAVEPOINT availability_admission")
         outbox.proxy(db, item["sender"], item["repo_id"])
-        cursor = db.execute(
-            "INSERT INTO messages(sender,recipient,body,recipient_cwd,"
-            "sender_scope,recipient_scope,sent_at,reply_to) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+        local_id = allocate_id(db, "message")
+        db.execute(
+            "INSERT INTO messages(id,sender,recipient,body,recipient_cwd,"
+            "sender_scope,recipient_scope,sent_at,reply_to,retention_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
+                local_id,
                 item["sender"],
                 native,
                 item["body"],
@@ -164,11 +171,9 @@ def admit_message(  # noqa: C901, PLR0911 - explicit transport and authority den
                 scope,
                 item["sent_at"],
                 parent_id,
+                age,
             ),
         )
-        local_id = cursor.lastrowid
-        if local_id is None:
-            raise RuntimeError("SQLite did not return an imported message ID")
         if event is not None and not accept(
             db,
             sender=item["sender"],

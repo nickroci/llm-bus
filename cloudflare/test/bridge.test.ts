@@ -14,7 +14,7 @@ it('delivers across two Python mailboxes through HTTP and Queue, then synchroniz
   const folder = mkdtempSync(join(tmpdir(), 'llm-bus-e2e-'));
   try {
     const db = await mf.getD1Database('DB');
-    const migration = ['0001_bus.sql','0002_reports.sql','0003_reply_to.sql','0004_coordination.sql','0005_session_labels.sql','0006_coordination_availability.sql','0007_coordination_approvals.sql'].map(name=>readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
+    const migration = ['0001_bus.sql','0002_reports.sql','0003_reply_to.sql','0004_coordination.sql','0005_session_labels.sql','0006_coordination_availability.sql','0007_coordination_approvals.sql','0008_message_retention.sql'].map(name=>readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
     for (const statement of migration.split(';').filter(s=>s.trim())) await db.prepare(statement).run();
     for (const machine of ['a','b']) {
       await db.prepare('INSERT INTO machines(id,token_hash) VALUES (?,?)').bind(machine,await tokenHash(machine.repeat(43))).run();
@@ -36,7 +36,7 @@ it('enforces independent PC/VPS/outsider policies and keeps monitor replay outsi
   const folder = mkdtempSync(join(tmpdir(), 'llm-bus-policy-e2e-'));
   try {
     const db = await mf.getD1Database('DB');
-    const migration = ['0001_bus.sql','0002_reports.sql','0003_reply_to.sql','0004_coordination.sql','0005_session_labels.sql','0006_coordination_availability.sql','0007_coordination_approvals.sql'].map(name=>readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
+    const migration = ['0001_bus.sql','0002_reports.sql','0003_reply_to.sql','0004_coordination.sql','0005_session_labels.sql','0006_coordination_availability.sql','0007_coordination_approvals.sql','0008_message_retention.sql'].map(name=>readFileSync(new URL(`../migrations/${name}`, import.meta.url), 'utf8')).join(';');
     for (const statement of migration.split(';').filter(s=>s.trim())) await db.prepare(statement).run();
     for (const machine of ['pc','vps','outsider']) {
       await db.prepare('INSERT INTO machines(id,token_hash) VALUES (?,?)').bind(machine,await tokenHash(machine[0].repeat(43))).run();
