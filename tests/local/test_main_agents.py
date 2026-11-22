@@ -127,12 +127,14 @@ def test_remote_child_admission_denied_and_advertisement_withdrawn(
     monkeypatch.setattr(bridge.relay, "request", request)
     assert publish_sessions(bridge) == 0
     assert all(not p["ended"] for p in publications)
+    original = next(p for p in publications if p["native_address"] == "codex:child")
     publications.clear()
     mark_child(native_state)
     assert publish_sessions(bridge) == 0
     assert len(publications) == 1
     assert publications[0]["native_address"] == "codex:child"
     assert publications[0]["ended"] is True
+    assert publications[0]["revision"] == cast("int", original["revision"]) + 1
     remote = RemoteStore(store, config.connection)
     item = delivery()
     item["recipient"] = "b/xyz/codex:child"

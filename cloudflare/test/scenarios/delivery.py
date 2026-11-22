@@ -157,3 +157,40 @@ cli.run(stores['b'],{'command':'leave','project':'demo'},'claude:recipient',str(
 assert not [item for item in stores['b'].inbox('claude:recipient') if item['body']=='assigned automatically']
 print('cross-machine delivery and acknowledgement passed')
 print('owner-bound join and automatic assignment passed')
+
+# Repair a withdrawal that a legacy client cached as sent at the old revision.
+import json
+from unittest.mock import patch
+from llm_bus.remote.discovery import publish_sessions
+
+role_address = stores['a'].register('codex', 'role-check', str(repo))
+key = f'xyz/{role_address}'
+publisher = bridge(Store(stores['a'].path), configs['a'])
+observer = bridge(stores['b'], configs['b']).relay
+with patch('llm_bus.remote.discovery.is_subagent', return_value=False):
+    assert publish_sessions(publisher) == 0
+original = json.loads(publisher.remote.publication_payloads()[key])
+withdrawal = {**original, 'ended': True}
+publisher.relay.request('POST', '/v1/sessions', withdrawal)
+publisher.remote.record_publication(key, json.dumps(withdrawal, sort_keys=True))
+with stores['a'].transaction() as db:
+    db.execute("UPDATE session_publications SET payload = json_remove(payload, '$.native_child') "
+               "WHERE address = ?", (role_address,))
+
+
+def advertised():
+    return [row for row in observer.request('GET', '/v1/sessions?repo_id=xyz')
+            if row['native_address'] == role_address]
+
+
+assert advertised(), 'same-revision withdrawal should have been ignored by the relay'
+with patch('llm_bus.remote.discovery.is_subagent', side_effect=lambda address: address == role_address):
+    publisher = bridge(Store(stores['a'].path), configs['a'])
+    assert publish_sessions(publisher) == 0
+assert not advertised(), 'the upgraded bridge must withdraw the legacy child advertisement'
+publisher.relay.request('POST', '/v1/sessions', original)
+assert not advertised(), 'a delayed older revision must not resurrect the advertisement'
+with patch('llm_bus.remote.discovery.is_subagent', return_value=False):
+    assert publish_sessions(publisher) == 0
+assert advertised()[0]['revision'] > original['revision']
+print('versioned Codex role withdrawal and recovery passed')
