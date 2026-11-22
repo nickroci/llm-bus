@@ -86,11 +86,11 @@ bunx wrangler d1 execute llm-bus --remote --config wrangler.local.jsonc --comman
 bunx wrangler d1 execute llm-bus --remote --config wrangler.local.jsonc --command "INSERT INTO repo_grants(machine_id,repo_id) VALUES ('whitenoise','xyz');"
 ```
 
-Repeat with a different token for `herdr-dev-1`, granting it `xyz` too. Shared repository IDs are operator-assigned; choosing the same name in a local file cannot create a server grant. There is no public enrollment or permission-administration endpoint.
+Repeat with a different token for `example-dev-vps`, granting it `xyz` too. Shared repository IDs are operator-assigned; choosing the same name in a local file cannot create a server grant. There is no public enrollment or permission-administration endpoint.
 
 ## Configure each machine
 
-Update/install the Python CLI from this checkout using the [normal installation procedure](installation.md#install-and-verify). Create `~/.config/llm-bus/config.toml`. These complementary examples connect a personal PC named `whitenoise` to a VPS named `herdr-dev-1`. Names carry no special privileges. Provision both machine tokens and the `xyz` grants first, as above.
+Update/install the Python CLI from this checkout using the [normal installation procedure](installation.md#install-and-verify). Create `~/.config/llm-bus/config.toml`. These complementary examples connect a personal PC named `whitenoise` to a VPS named `example-dev-vps`. Names carry no special privileges. Provision both machine tokens and the `xyz` grants first, as above.
 
 On the PC, permit outbound tasks and built-in reports back, while denying all normal incoming text:
 
@@ -107,7 +107,7 @@ path = "/Users/alice/Projects/xyz"
 repo_id = "xyz"
 
 [[repositories.peers]]
-machine_id = "herdr-dev-1"
+machine_id = "example-dev-vps"
 send_messages = true
 receive_messages = "deny"
 send_reports = []
@@ -121,8 +121,8 @@ policy_version = 2
 
 [remote]
 url = "https://bus.example.com"
-machine_id = "herdr-dev-1"
-credential_file = "/absolute/private/herdr-dev-1.token"
+machine_id = "example-dev-vps"
+credential_file = "/absolute/private/example-dev-vps.token"
 
 [[repositories]]
 path = "/home/alice/xyz"
@@ -143,7 +143,7 @@ send_reports = []
 receive_reports = []
 ```
 
-The teammate needs its own token, relay grant, and local `send_messages = true` permission for `herdr-dev-1` to send tasks. Its policy cannot override PC reception. A VPS forwarding teammate text to the PC is still a normal message from that VPS, which the PC denies. Putting arbitrary text in report fields is rejected. A valid but false report remains untrusted data.
+The teammate needs its own token, relay grant, and local `send_messages = true` permission for `example-dev-vps` to send tasks. Its policy cannot override PC reception. A VPS forwarding teammate text to the PC is still a normal message from that VPS, which the PC denies. Putting arbitrary text in report fields is rejected. A valid but false report remains untrusted data.
 
 Capabilities apply only to the exact `machine_id` under that repository:
 
@@ -187,7 +187,7 @@ Within an agent session:
 
 ```sh
 llm-bus list
-llm-bus send herdr-dev-1/xyz/claude:SESSION_ID --body "Migration is ready for review"
+llm-bus send example-dev-vps/xyz/claude:SESSION_ID --body "Migration is ready for review"
 llm-bus remote-status
 llm-bus inbox
 llm-bus ack 123
@@ -263,7 +263,7 @@ Success prints a durable queued intent containing `message_id` (the original UUI
 {
   "id": 42,
   "remote_id": "c5664d2a-3ab9-4bb2-948e-933f3d059a8f",
-  "recipient": "herdr-dev-1/xyz/codex:SESSION_ID",
+  "recipient": "example-dev-vps/xyz/codex:SESSION_ID",
   "status": "acknowledged",
   "work_report": {
     "message_id": "c5664d2a-3ab9-4bb2-948e-933f3d059a8f",
