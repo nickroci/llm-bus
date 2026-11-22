@@ -43,7 +43,7 @@ configuration. Each machine retains owner-controlled policy.
 |---|---|---|---|---|
 | whitenoise Mac | davidfava | 3.14.8 | collab | Running, original configuration/cwd retained |
 | home.wnz.sh (London) | whitenoise | 3.13.5 | core | Remains inactive; remote configuration remains unconfigured |
-| herdr-dev-1 | david | 3.13.16 | core | Active, original configuration/cwd retained |
+| herdr-dev-1 (retired) | david | 3.13.16 | core | Active at the time of rollout, original configuration/cwd retained |
 | herdr-dev-2-lightsail | david | 3.13.17 | core | Active, original configuration/cwd retained |
 
 All four passed checks of six canonical hook entries, three staged skill files,

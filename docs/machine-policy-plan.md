@@ -124,7 +124,7 @@ path = "/path/to/starnet-observer"
 repo_id = "starnet-observer"
 
 [[repositories.peers]]
-machine_id = "herdr-dev-1"
+machine_id = "example-dev-vps"
 send_messages = true
 receive_messages = "deny"
 send_reports = []
