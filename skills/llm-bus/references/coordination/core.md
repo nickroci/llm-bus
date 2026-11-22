@@ -1,4 +1,4 @@
-<!-- llm-bus guidance-version: 13 -->
+<!-- llm-bus guidance-version: 14 -->
 # Coordination core rules
 
 Every coordination session loads this file first, in either role. It holds the
@@ -199,9 +199,18 @@ the rewrite procedure.
 
 ## Returning control
 
-After handling relevant events, return control. Never busy-poll or promise an
-always-running agent. Use durable notices and supported native wakes; resume
-manually when wake support is unavailable.
+Continue authorized work after handling a bus event. When a native child owns
+a required step, use supported native waits, collect its result and advance
+through the existing workflow gates. After a wait times out, recheck on a
+meaningful event or use another bounded native wait. Avoid polling the bus in
+a loop.
+
+Return control when work is complete, interrupted, blocked on an external
+dependency with no other work ready, or constrained by host or resource limits.
+Before yielding with unfinished work, record the blocker, owner, next action
+and resume condition. State when manual resume is required. A requested wake
+means a wake request was submitted. Verify that execution resumed before
+reporting continuation.
 
 ## Delegated reads
 

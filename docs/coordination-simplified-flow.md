@@ -33,8 +33,10 @@ or manual grant/target exchange belongs in the normal owner-directed path.
 The coordinator discovers the objective, owner limits, existing readable Beads
 workspace and project memory. It asks only for materially missing facts. It must
 not silently initialize Beads or invent an objective. Once ready, it waits for
-workers to join. Waiting is event-driven: yield between relevant events, with
-no busy polling or promise of an always-running service.
+workers to join. When authorized work is ready, await required native children,
+collect their results and advance through the existing workflow gates. When work
+is blocked, yield for a supported host wake or state when manual resume is needed.
+Use bounded waits and avoid busy polling.
 
 Successful join records consent and establishes the exact worker's
 grant, enrollment and coordinator target reference automatically. It supplies

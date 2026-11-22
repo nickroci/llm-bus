@@ -20,10 +20,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 WORKER_DUTIES = (
-    "return control",
+    "Return control when complete",
     "start every accepted direction that is no longer blocked",
     "llm-bus report ID --status",
     "a cancelled direction needs no report",
+    "Continue authorized work after handling bus events",
+    "with bounded native waits",
+    "advance within existing gates",
+    "State when manual resume is required",
 )
 
 
@@ -60,7 +64,7 @@ def test_coordination_references_are_data_and_coordinator_state_is_current(
     assert "DO NOT INJECT OBJECTIVE" not in full
     assert str(record["project_id"]) in full
     assert "Persist bounded assignments" in full
-    assert "return control" in full
+    assert "Return control when complete" in full
     assert "coordination direction-list PROJECT --open" in full
     assert "clarify direction" in full
     assert '"state": "out_of_scope"' in guidance(
