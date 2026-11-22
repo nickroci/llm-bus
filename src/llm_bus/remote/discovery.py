@@ -44,20 +44,24 @@ def remote_peers(store: Store, config: Config, project: str | None) -> list[Peer
 
 def publish_sessions(self: Bridge) -> int:
     failures = 0
+    repositories = {repo.scope: repo.repo_id for repo in self.config.repositories}
+    sessions = self.remote.sessions(repositories)
+    if not sessions:
+        return 0
     published = self.remote.publication_payloads()
-    for session in self.remote.sessions():
-        repo = self.config.repository_scope(cast("str", session["scope"]))
-        if repo is not None:
+    for session in sessions:
+        repo_id = repositories.get(cast("str", session["scope"]))
+        if repo_id is not None:
             payload = {
                 "native_address": session["native_address"],
-                "repo_id": repo.repo_id,
+                "repo_id": repo_id,
                 "last_seen": session["last_seen"],
                 "ended": session["ended_at"] is not None
                 or is_subagent(str(session["native_address"])),
                 "label": session["label"],
                 "revision": session["revision"],
             }
-            key = f"{repo.repo_id}/{session['native_address']}"
+            key = f"{repo_id}/{session['native_address']}"
             serialized = json.dumps(payload, sort_keys=True)
             if published.get(key) == serialized:
                 continue
