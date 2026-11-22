@@ -80,8 +80,10 @@ class RemoteStore:
         if row[0] != self.connection:
             raise BusError("This mailbox is bound to another relay/machine; use another LLM_BUS_DB")
 
-    def sessions(self) -> list[dict[str, str | int | None]]:
-        return discovery_store.sessions(self)
+    def sessions(
+        self, repositories: dict[str, str] | None = None
+    ) -> list[dict[str, str | int | None]]:
+        return discovery_store.sessions(self, repositories)
 
     def publication_payloads(self) -> dict[str, str]:
         return discovery_store.publication_payloads(self)

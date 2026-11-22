@@ -12,18 +12,53 @@ if TYPE_CHECKING:
     from llm_bus.remote.store import RemoteStore
 
 
-def sessions(self: RemoteStore) -> list[dict[str, str | int | None]]:
+SESSION_ROWS = """
+    WITH roster AS (
+        SELECT a.address, a.project, a.last_seen, a.ended_at, a.scope,
+               CASE WHEN a.ended_at IS NULL THEN l.label END AS label,
+               p.revision, p.payload, repo.value AS repo_id
+        FROM agents a
+        LEFT JOIN agent_labels l ON l.address = a.address
+        LEFT JOIN session_publications p ON p.address = a.address
+        LEFT JOIN json_each(:repositories) repo ON repo.key = a.scope
+        WHERE a.address NOT IN (SELECT address FROM remote_proxies)
+    ), revisions AS (
+        SELECT *, revision IS NULL
+               OR json_extract(payload, '$.project') IS NOT project
+               OR json_extract(payload, '$.last_seen') IS NOT last_seen
+               OR json_extract(payload, '$.ended_at') IS NOT ended_at
+               OR json_extract(payload, '$.scope') IS NOT scope
+               OR json_extract(payload, '$.label') IS NOT label AS changed
+        FROM roster
+    )
+    SELECT r.address, r.project, r.last_seen, r.ended_at, r.scope, r.label,
+           r.revision, r.changed
+    FROM revisions r
+    LEFT JOIN remote_publications sent ON sent.address = r.repo_id || '/' || r.address
+    WHERE :repositories IS NULL OR r.changed OR (
+        r.repo_id IS NOT NULL AND (
+            json_extract(sent.payload, '$.revision') IS NOT r.revision
+            OR (r.ended_at IS NULL AND substr(r.address, 1, 6) = 'codex:')
+        )
+    )
+"""
+
+
+def sessions(
+    self: RemoteStore, repositories: dict[str, str] | None
+) -> list[dict[str, str | int | None]]:
+    """Keep all revisions current and select publications still needed by the bridge.
+
+    Active Codex sessions can change role independently of the saved mailbox revision.
+    """
     with self.store.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
         expire_idle_agents(db)
         rows = cast(
-            "list[tuple[str, str, str, str | None, str, str | None, int | None, str | None]]",
+            "list[tuple[str, str, str, str | None, str, str | None, int | None, int]]",
             db.execute(
-                "SELECT a.address, a.project, a.last_seen, a.ended_at, a.scope, l.label, "
-                "p.revision, p.payload "
-                "FROM agents a LEFT JOIN agent_labels l ON l.address=a.address "
-                "LEFT JOIN session_publications p ON p.address=a.address "
-                "WHERE a.address NOT IN (SELECT address FROM remote_proxies)"
+                SESSION_ROWS,
+                {"repositories": None if repositories is None else json.dumps(repositories)},
             ).fetchall(),
         )
         result: list[dict[str, str | int | None]] = []
@@ -35,7 +70,7 @@ def sessions(self: RemoteStore) -> list[dict[str, str | int | None]]:
             scope,
             label,
             prior_revision,
-            prior_payload,
+            changed,
         ) in rows:
             session: dict[str, str | int | None] = {
                 "native_address": address,
@@ -43,18 +78,17 @@ def sessions(self: RemoteStore) -> list[dict[str, str | int | None]]:
                 "last_seen": last_seen,
                 "ended_at": ended_at,
                 "scope": scope,
-                "label": label if ended_at is None else None,
+                "label": label,
             }
-            payload = json.dumps(session, sort_keys=True)
             revision = 1 if prior_revision is None else prior_revision
-            if payload != prior_payload:
+            if changed:
                 if prior_revision is not None:
                     revision = prior_revision + 1
                 db.execute(
                     "INSERT INTO session_publications(address,revision,payload) VALUES (?,?,?) "
                     "ON CONFLICT(address) DO UPDATE SET "
                     "revision=excluded.revision,payload=excluded.payload",
-                    (address, revision, payload),
+                    (address, revision, json.dumps(session, sort_keys=True)),
                 )
             session["revision"] = revision
             result.append(session)

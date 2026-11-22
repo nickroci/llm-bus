@@ -3,6 +3,7 @@
 import io
 import json
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -179,6 +180,39 @@ def test_idle_roster_poll_bounds_database_connections(
     monkeypatch.setattr(connection, "connect", count_connection)
     assert publish_sessions(bridge) == 0
     assert connections <= 4
+    assert bridge.remote.sessions({config.repositories[0].scope: "xyz"}) == []
+
+
+def test_roster_retries_and_publishes_to_remapped_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("LLM_BUS_CONFIG", str(tmp_path / "config.toml"))
+    store, config = setup_machine(tmp_path, "b")
+    folder = str(tmp_path / "repo")
+    store.register("claude", "worker", folder)
+    store.end_session("claude", "worker")
+    bridge = Bridge(store, config)
+    publications: list[object] = []
+
+    def request(_method: str, _path: str, payload: object = None) -> object:
+        publications.append(payload)
+        if len(publications) == 1:
+            raise BusError("temporary failure")
+        return {}
+
+    monkeypatch.setattr(bridge.relay, "request", request)
+    assert publish_sessions(bridge) == 1
+    assert publish_sessions(bridge) == 0
+    assert publications[0] == publications[1]
+    assert publish_sessions(bridge) == 0
+    assert len(publications) == 2
+
+    bridge.config = replace(config, repositories=(replace(config.repositories[0], repo_id="new"),))
+    assert publish_sessions(bridge) == 0
+    assert publications[2] == {
+        **cast("dict[str, object]", publications[1]),
+        "repo_id": "new",
+    }
 
 
 @pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "SessionEnd"])
