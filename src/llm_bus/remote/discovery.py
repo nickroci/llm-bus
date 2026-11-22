@@ -51,25 +51,36 @@ def publish_sessions(self: Bridge) -> int:
     published = self.remote.publication_payloads()
     for session in sessions:
         repo_id = repositories.get(cast("str", session["scope"]))
-        if repo_id is not None:
-            payload = {
-                "native_address": session["native_address"],
-                "repo_id": repo_id,
-                "last_seen": session["last_seen"],
-                "ended": session["ended_at"] is not None
-                or is_subagent(str(session["native_address"])),
-                "label": session["label"],
-                "revision": session["revision"],
-            }
-            key = f"{repo_id}/{session['native_address']}"
-            serialized = json.dumps(payload, sort_keys=True)
-            if published.get(key) == serialized:
-                continue
-            try:
-                self.relay.request(HTTP_POST, "/v1/sessions", payload)
-                self.remote.record_publication(key, serialized)
-            except BusError:
-                failures += 1
+        if repo_id is None:
+            continue
+        address = cast("str", session["native_address"])
+        revision = cast("int", session["revision"])
+        ended = session["ended_at"] is not None
+        if not ended and address.startswith("codex:"):
+            ended = is_subagent(address)
+            # A missing role marks a legacy publication that may need relay repair.
+            if session["native_child"] != ended:
+                updated = self.remote.record_session_role(address, revision, child=ended)
+                if updated is None:
+                    continue
+                revision = updated
+        payload = {
+            "native_address": address,
+            "repo_id": repo_id,
+            "last_seen": session["last_seen"],
+            "ended": ended,
+            "label": session["label"],
+            "revision": revision,
+        }
+        key = f"{repo_id}/{address}"
+        serialized = json.dumps(payload, sort_keys=True)
+        if published.get(key) == serialized:
+            continue
+        try:
+            self.relay.request(HTTP_POST, "/v1/sessions", payload)
+            self.remote.record_publication(key, serialized)
+        except BusError:
+            failures += 1
     return failures
 
 

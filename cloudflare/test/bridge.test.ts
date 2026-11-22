@@ -27,6 +27,7 @@ it('delivers across two Python mailboxes through HTTP and Queue, then synchroniz
     });
     expect(result.stdout).toContain('cross-machine delivery and acknowledgement passed');
     expect(result.stdout).toContain('owner-bound join and automatic assignment passed');
+    expect(result.stdout).toContain('versioned Codex role withdrawal and recovery passed');
   } finally { await mf.dispose(); rmSync(folder,{recursive:true,force:true}); }
 },40000);
 

@@ -32,7 +32,7 @@ SESSION_ROWS = """
         FROM roster
     )
     SELECT r.address, r.project, r.last_seen, r.ended_at, r.scope, r.label,
-           r.revision, r.changed
+           r.revision, r.changed, json_extract(r.payload, '$.native_child')
     FROM revisions r
     LEFT JOIN remote_publications sent ON sent.address = r.repo_id || '/' || r.address
     WHERE :repositories IS NULL OR r.changed OR (
@@ -54,13 +54,6 @@ def sessions(
     with self.store.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
         expire_idle_agents(db)
-        rows = cast(
-            "list[tuple[str, str, str, str | None, str, str | None, int | None, int]]",
-            db.execute(
-                SESSION_ROWS,
-                {"repositories": None if repositories is None else json.dumps(repositories)},
-            ).fetchall(),
-        )
         result: list[dict[str, str | int | None]] = []
         for (
             address,
@@ -71,7 +64,14 @@ def sessions(
             label,
             prior_revision,
             changed,
-        ) in rows:
+            native_child,
+        ) in cast(
+            "list[tuple[str, str, str, str | None, str, str | None, int | None, int, int | None]]",
+            db.execute(
+                SESSION_ROWS,
+                {"repositories": None if repositories is None else json.dumps(repositories)},
+            ).fetchall(),
+        ):
             session: dict[str, str | int | None] = {
                 "native_address": address,
                 "project": project,
@@ -79,6 +79,7 @@ def sessions(
                 "ended_at": ended_at,
                 "scope": scope,
                 "label": label,
+                "native_child": native_child,
             }
             revision = 1 if prior_revision is None else prior_revision
             if changed:
@@ -93,6 +94,23 @@ def sessions(
             session["revision"] = revision
             result.append(session)
     return result
+
+
+def record_session_role(
+    self: RemoteStore, address: str, revision: int, *, child: bool
+) -> int | None:
+    """Version a native role observation before sending it to the relay."""
+    with self.store.transaction() as db:
+        row = cast(
+            "tuple[int] | None",
+            db.execute(
+                "UPDATE session_publications SET revision = revision + 1, "
+                "payload = json_set(payload, '$.native_child', ?) "
+                "WHERE address = ? AND revision = ? RETURNING revision",
+                (int(child), address, revision),
+            ).fetchone(),
+        )
+    return row[0] if row is not None else None
 
 
 def publication_payloads(self: RemoteStore) -> dict[str, str]:

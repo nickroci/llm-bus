@@ -88,6 +88,9 @@ class RemoteStore:
     def publication_payloads(self) -> dict[str, str]:
         return discovery_store.publication_payloads(self)
 
+    def record_session_role(self, address: str, revision: int, *, child: bool) -> int | None:
+        return discovery_store.record_session_role(self, address, revision, child=child)
+
     def published(self, key: str) -> bool:
         return discovery_store.published(self, key)
 
