@@ -39,7 +39,7 @@ REMOTE_GUIDANCE = (
 )
 
 
-GUIDANCE_VERSION = 13
+GUIDANCE_VERSION = 14
 WORKER_DUTIES = (
     "Before returning control, start every accepted direction that is no longer blocked. "
     "When a direction's state changes, record it with `llm-bus report ID --status STATUS` "
@@ -434,8 +434,11 @@ def _coordination(store: Store, address: str, folder: str, view: _View) -> str:
             else "Use your own worktree, accept only current receiver-verified assignments, "
             "persist task progress in Beads. " + WORKER_DUTIES
         )
-        + "After handling events, return control. Never busy-poll or promise an always-running "
-        "agent. Durable notices rely on supported host wakes; resume manually when unavailable. "
+        + "Continue authorized work after handling bus events. Await required children "
+        "with bounded native waits, collect results and advance within existing gates. "
+        "Return control when complete, paused, blocked with no ready work, or host-limited. "
+        "Before yielding, record the blocker, owner, next action and resume condition. "
+        "State when manual resume is required. Never busy-poll. "
         + rules
         + (RECOVERY_LINE if view.full else "Full references: `llm-bus guidance`. ")
         + standing
