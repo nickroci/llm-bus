@@ -17,7 +17,6 @@ from llm_bus.cli.hooks import claude_socket, hook
 from llm_bus.cli.installation import configure_host_hooks
 from llm_bus.cli.output import serialize
 from llm_bus.cli.parser import build_parser
-from llm_bus.cli.upgrade import upgrade
 from llm_bus.collab.models import CollabError
 from llm_bus.coordination import approvals
 from llm_bus.coordination.setup import profile, run_activation_wizard, run_wizard
@@ -98,15 +97,15 @@ def _setup(store: Store, args: dict[str, object]) -> dict[str, object] | None:
     return profile(cwd)
 
 
-def _skills_dir(args: dict[str, object]) -> Path | None:
-    value = args.get("skills_dir")
-    return value.expanduser() if isinstance(value, Path) else None
-
-
 def _unattended_setup(command: object, args: dict[str, object]) -> bool:
     return (
         command == "coordination" and args.get("action") == "unattended" and bool(args.get("setup"))
     )
+
+
+def _require_application_command(command: object) -> None:
+    if command in {"upgrade", "reinstall"}:
+        raise BusError("Use the public llm-bus entrypoint for managed installation commands")
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901, PLR0912 - command dispatch
@@ -115,12 +114,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901, PLR0912 - com
     args = cast("dict[str, object]", vars(build_parser().parse_args(argv)))
     command = args["command"]
     try:
-        if command in {"install", "uninstall", "upgrade"}:
+        _require_application_command(command)
+        if command in {"install", "uninstall"}:
             print(
                 serialize(
-                    upgrade(Path.cwd(), Path.home(), _skills_dir(args))
-                    if command == "upgrade"
-                    else configure_host_hooks(install=command == "install"),
+                    configure_host_hooks(install=command == "install"),
                     str(command),
                     str(args["format"]),
                 )

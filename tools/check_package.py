@@ -21,6 +21,7 @@ COLLAB_EXTRA_MODULES = frozenset(
 )
 BUS_DB_ENV = "LLM_BUS_DB"
 BUS_CONFIG_ENV = "LLM_BUS_CONFIG"
+HOME_ENV = "HOME"
 CODEX_THREAD_ENV = "CODEX_THREAD_ID"
 GUIDANCE_MISSING = "Installed wake/resume guidance omits the active run or recovery reference"
 
@@ -142,6 +143,7 @@ def main() -> None:
         environment.pop(key, None)
     with tempfile.TemporaryDirectory(prefix="llm-bus-package-") as temporary:
         sandbox = Path(temporary)
+        environment[HOME_ENV] = str(sandbox)
         wheels = sandbox / "dist"
         subprocess.run(  # noqa: S603 - resolved executable and fixed argv, no shell
             [uv, "build", "--out-dir", str(wheels)],

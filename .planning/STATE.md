@@ -1,6 +1,6 @@
 # Project State
 
-Last activity: 2026-11-21 - Message delivery and retention PR #96 passed independent review and CI on the reviewed head. Final tracking validation and merge are pending.
+Last activity: 2026-11-24 - Maintenance upgrade PR #101 passed independent review and both quality jobs on the implementation revision.
 
 ## Registered Work
 
@@ -11,6 +11,7 @@ Last activity: 2026-11-21 - Message delivery and retention PR #96 passed indepen
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261123-mup | Maintenance-aware llm-bus upgrade — PR #101 | Independent review and CI passed on fc3ea851. Final tracking validation and merge pending. | [261123-mup-maintenance-aware-llm-bus-upgrade](./quick/261123-mup-maintenance-aware-llm-bus-upgrade/) |
 | 261121-mrt | Message delivery and retention — PR #96 | Independent review and reviewed-head CI passed. Final tracking validation and merge pending. Production rollout requires separate authorization. | [261121-mrt-message-retention](./quick/261121-mrt-message-retention/) |
 | 261121-unc | Unattended coordination — PR #93 | Merged after final-head CI. Release f2273f38 verified on all three configured hosts. | [261121-unc-unattended-coordination](./quick/261121-unc-unattended-coordination/) |
 | 261120-pap | Project action preapproval — PR #92 | Implementation review and CI passed. Merge pending final tracking validation. | [261120-pap-project-action-preapproval](./quick/261120-pap-project-action-preapproval/) |

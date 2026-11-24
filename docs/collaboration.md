@@ -8,8 +8,10 @@ relays forwarding only ciphertext when a direct connection is unavailable.
 
 ## Set up a connection
 
-1. From the repository checkout, install the extra with
-   `uv tool install --force '.[collab]'`. Run `llm-bus collab setup --github-user YOU`
+1. Follow [Install and verify](installation.md#install-and-verify), including the
+   `collab` extra in the retained wheel installation. Existing managed installs
+   preserve their recorded extras on upgrade/reinstall; do not force-install over
+   public launchers to change extras. Run `llm-bus collab setup --github-user YOU`
    and follow its `next_steps` to create and publish a signing key.
 2. Run `llm-bus collab daemon`, one per identity. It serves your private owner
    page on `127.0.0.1`.

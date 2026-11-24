@@ -18,6 +18,37 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+def test_settings_retry_syncs_visible_ancestors_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "custom/nested/hooks.json"
+    ancestor = tmp_path / "custom"
+    synced: list[Path] = []
+    actual_sync = files.sync_directory
+    fail = True
+
+    def sync_directory(directory: Path) -> None:
+        synced.append(directory)
+        if fail and directory == ancestor:
+            raise OSError("settings ancestor sync failed")
+        actual_sync(directory)
+
+    monkeypatch.setattr(files, "sync_directory", sync_directory)
+    for _ in range(2):
+        with pytest.raises(OSError, match="settings ancestor sync failed"):
+            files.atomic_write(path, b"{}", 0o600, None)
+        assert path.parent.is_dir()
+        assert not path.exists()
+        assert not list(path.parent.iterdir())
+        assert synced[-1] == ancestor
+
+    fail = False
+    synced.clear()
+    files.atomic_write(path, b"{}", 0o600, None)
+    assert synced == [*reversed(path.parents), path.parent]
+    assert path.read_bytes() == b"{}"
+
+
 def test_failed_native_binding_write_restores_hook_settings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -24,28 +24,28 @@ guidance-version marker that must match the CLI's `guidance_version`.
 
 ## Installation and rollback
 
-Follow the repository [installation guide](https://github.com/wnz99/llm-bus#install-and-verify).
-CLI installation, host hooks, shared skill copying and standing instructions are
-separate actions. Discover the shared skill directory (normally
-`~/.agents/skills/llm-bus/`) and copy the whole skill directory. Install the
+Follow the repository [installation guide](https://github.com/wnz99/llm-bus/blob/main/docs/installation.md).
+Managed installation verifies the CLI, hooks and whole skill directory from one
+accepted revision. Record the real shared skill parent (normally
+`~/.agents/skills/`); later upgrade/reinstall refresh it. Install the
 official Beads skill separately; optional caveman separately. Ask project/global
 instruction destination before edits, then follow the
 [agent instruction install guide](https://github.com/wnz99/llm-bus/blob/main/examples/agent-instructions.md). Preserve settings; never auto-trust hooks
-or relax host/remote permissions. Install hooks per machine and custom host home,
-restart hosts, and let the owner review/trust native hooks.
+or relax host/remote permissions. Configure each machine and custom host home;
+restart individual hosts when needed to load/trust changed hooks, after release.
 
 Before removing recovery tooling, revoke relevant grants/projects on each
-machine. `llm-bus uninstall` removes bus hooks, Claude allow rule and uv tool;
-mailbox, grants and native-home bindings remain. Remove copied skills, rule files
-and pointer blocks separately only on owner request. Stop bridges and back up before client rollback:
-schema 18 mailboxes reject clients that support only earlier schemas, and old
-transports cannot carry directions. This version upgrades the mailbox to
-schema version 18 on database access. Schema 17 added local unattended run
-history; schema 18 adds decision-to-run bindings and decision handoff lineage.
-Migration does not enable unattended authority or launch helpers. No relay upgrade
-is required for this feature. Older binaries then refuse the mailbox, so
-upgrade every llm-bus installation that shares the mailbox (`uv run llm-bus
-upgrade` from a checkout) before any session uses it.
-There is no supported in-place downgrade: an older binary requires restoring
-a pre-upgrade backup with explicit owner approval. Never lower `user_version`
-or delete retained state to bypass schema validation.
+machine. Managed `llm-bus uninstall` removes owned launchers, uv registrations,
+hooks, the Claude allow rule and the verified skill copy. Mailbox, grants,
+native-home bindings and held recovery evidence remain. Remove rule files and
+pointer blocks separately only on owner request. Upgrade every installation
+sharing a mailbox through the local maintenance hold before activation.
+Current schema is 21; older binaries must stay off activated mailboxes.
+Schema 17 added unattended run history and schema 18 added decision-to-run
+bindings and handoff lineage; migration grants no unattended authority.
+The [offline retention cutover](https://github.com/wnz99/llm-bus/blob/main/docs/remote-bus.md#offline-retention-cutover)
+owns relay drain, backup, migration, first-deletion approval and replay/high-water
+reconciliation. There is no supported in-place downgrade. Restore backups only
+offline with separate owner approval, then apply compatible migrations and
+reconciliation before release. Never lower `user_version` or delete retained
+state to bypass compatibility validation.

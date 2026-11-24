@@ -12,9 +12,11 @@ claiming owner approval.
 
 ## Prerequisites
 
-`llm-bus collab --help` must work. Daemon needs optional extra:
-`uv tool install --force '.[collab]'` from llm-bus checkout (ask owner first;
-installs software). Fork responders need Claude Code (`claude` on PATH).
+`llm-bus collab --help` must work. The daemon needs the optional `collab` extra;
+use the owner-authorized [installation procedure](https://github.com/wnz99/llm-bus/blob/main/docs/installation.md#install-and-verify)
+to include it in the initial retained wheel installation. Managed upgrades keep
+recorded extras; do not force-install over stable launchers. Fork responders
+need Claude Code (`claude` on PATH).
 
 ## Set up identity (once per GitHub account)
 
