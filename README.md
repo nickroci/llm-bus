@@ -19,22 +19,15 @@ user who runs the agents.
 
 ### 1. Install the CLI and hooks
 
-Clone this repository. Close your running agents, then run these commands from
-the checkout in your own terminal:
+Clone this repository and follow [Install and verify](docs/installation.md#install-and-verify)
+in your own terminal. Setup uses a retained wheel, stable launchers, an explicit
+owner access inventory, and compatibility verification before opening access.
+It installs the CLI, user-level hooks and the skill from one accepted revision.
+Standing instructions and project coordination have separate setup steps.
 
-```sh
-uv tool install .
-llm-bus install
-```
-
-If your shell cannot find `llm-bus`, run `uv tool update-shell` and open a new
-shell. The first command installs the CLI; the second installs user-level hooks
-for both hosts. Skills, standing agent instructions, and project coordination
-have separate setup steps.
-
-Restart the agents. In Codex, open `/hooks` and review and trust the bus hooks.
-For custom configuration directories, permissions, upgrades, or hook errors,
-see [Installation and maintenance](docs/installation.md).
+Start the agents after setup releases the hold. In Codex, open `/hooks` and
+review and trust the bus hooks. For later changes, use the
+[maintenance-aware upgrade procedure](docs/installation.md#upgrade).
 
 ### 2. Find two sessions
 

@@ -73,17 +73,16 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - explicit CLI d
     acknowledge.add_argument("ids", type=int, nargs="+")
     hook = commands.add_parser("hook", help="Register session and notify agent at turn boundary")
     hook.add_argument("kind", choices=("claude", "codex"))
-    commands.add_parser("install", help="Activate user-level Codex and Claude hooks")
+    commands.add_parser(
+        "install", help="Establish managed CLI, skill and host integration"
+    ).add_argument("--skills-dir", type=Path, help="Real parent of the installed llm-bus skill")
     commands.add_parser("uninstall", help="Remove hooks and uninstall the uv tool")
     commands.add_parser(
-        "upgrade",
-        help="Build this checkout's HEAD, reinstall the uv tool, then delete older packages",
-    ).add_argument(
-        "--skills-dir",
-        type=Path,
-        help="Also replace DIR/llm-bus with this checkout's skills/llm-bus from HEAD, "
-        "for example ~/.agents/skills",
-    )
+        "upgrade", help="Verify a managed generation from this checkout's HEAD"
+    ).add_argument("--skills-dir", type=Path, help="Override the recorded real skill parent")
+    commands.add_parser(
+        "reinstall", help="Repair this checkout's HEAD in a fresh managed generation"
+    ).add_argument("--skills-dir", type=Path, help="Override the recorded real skill parent")
     bridge = commands.add_parser(
         "bridge", help="Synchronize remote messages without a host session"
     )

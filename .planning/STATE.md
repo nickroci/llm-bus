@@ -1,11 +1,12 @@
 # Project State
 
-Last activity: 2026-11-21 - Message delivery and retention PR #96 passed independent review and CI on the reviewed head. Final tracking validation and merge are pending.
+Last activity: 2026-11-24 - Reviewed generation installation, recovery, and uninstall. Operator documentation and aggregate verification began.
 
 ## Registered Work
 
 | # | Description | Status | Directory |
 |---|-------------|--------|-----------|
+| 261123-mup | Maintenance-aware llm-bus upgrade | T1–T3 reviewed. T4 in progress. | [261123-mup-maintenance-aware-llm-bus-upgrade](./quick/261123-mup-maintenance-aware-llm-bus-upgrade/) |
 
 ## Quick Tasks Completed
 

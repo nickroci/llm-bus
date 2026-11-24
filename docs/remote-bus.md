@@ -426,8 +426,8 @@ upgrade across the retention compatibility floor.
 For an existing installation, stop every remote bridge before changing clients or policy. Back up the local SQLite mailboxes, existing configuration, and D1 using Cloudflare's backup facilities. Keep tokens private and outside repositories.
 
 1. The relay operator applies additive `0002_reports.sql` and `0003_reply_to.sql` migrations after `0001_bus.sql`, then deploys the matching Worker, using the [relay commands](#deploy-the-relay). Keep the existing machine credentials, grants, messages, and session data. Upgrading the relay does not select local peers or activate a bridge.
-2. On each machine, close the agents and update the CLI from the checkout root with `uv run llm-bus upgrade` (see the [upgrade bootstrap](installation.md#first-upgrade-from-a-directory-install) for a directory install), then follow the [hook installation procedure](installation.md#install-and-verify). Preserve `[remote]`, local repository paths, and shared IDs. Add top-level `policy_version = 2`, remove repository `send_to` and `receive_from`, and choose explicit `[[repositories.peers]]` capabilities. Old repository-wide permissions cannot be translated into an allow-all peer list. Review both endpoints independently against the [examples](#configure-each-machine).
-3. Verify `llm-bus status --help`, `llm-bus send --help`, `llm-bus history --help`, `llm-bus bridge --help`, `llm-bus guidance --help`, `llm-bus report --help`, and `llm-bus monitor --help` on the updated client. With the reviewed policy in place, use `llm-bus bridge --once` on each machine, inspect errors and `remote-status`, then start each supervised bridge. This pass performs real transfers; it is not a dry run. A nonzero exit leaves durable state for correction and retry.
+2. On each machine, establish the [local maintenance hold](installation.md#owner-inventory-and-hold) and update the CLI from the clean accepted checkout with `llm-bus upgrade` (older installations first need the [standalone bootstrap](installation.md#first-upgrade-from-a-directory-install)). This refreshes hooks and the recorded skill copy while retaining the hold. Keep local access stopped until the retention cutover permits release. Preserve `[remote]`, local repository paths, and shared IDs. Add top-level `policy_version = 2`, remove repository `send_to` and `receive_from`, and choose explicit `[[repositories.peers]]` capabilities. Old repository-wide permissions cannot be translated into an allow-all peer list. Review both endpoints independently against the [examples](#configure-each-machine).
+3. After completing the offline retention cutover and releasing each local hold, verify `llm-bus status --help`, `llm-bus send --help`, `llm-bus history --help`, `llm-bus bridge --help`, `llm-bus guidance --help`, `llm-bus report --help`, and `llm-bus monitor --help` on the updated client. With the reviewed policy in place, use `llm-bus bridge --once` on each machine, inspect errors and `remote-status`, then start each supervised bridge. This pass performs real transfers; it is not a dry run. A nonzero exit leaves durable state for correction and retry.
 
 Old or mixed configuration fails closed; there is no legacy permissive fallback. Local-only commands still work. New SQLite tables initialize additively on use. Deploying a new Worker before its required migration can break report requests. Updating the client before a compatible relay preserves ordinary transport when expiry metadata is omitted, but work-report polling remains unavailable until a compatible response supplies a valid deadline. An earlier acknowledged message without a saved deadline is not automatically backfilled. Do not fabricate an acceptance date from the local enqueue timestamp or resend an original to recover reports.
 
@@ -459,8 +459,10 @@ Read-only `status` and `retention-preview` never migrate or purge data.
 This procedure is for relay operators and each machine owner. Production
 deployment and the first deletion require separate owner authorization after
 implementation and verification finish. Do not use a production mailbox for a
-rehearsal. There is no permanent maintenance switch or automatic version lock:
-the operator must stop access using the host and provider's existing controls.
+rehearsal. The [local maintenance controller](installation.md#upgrade) gates
+recorded entrypoints and verifies local stopped access; it neither controls the
+relay nor establishes remote-owner approval. Provider controls, complete local
+caller/restart inventories and exact release identities remain required.
 
 1. Record the exact compatible release before deployment: the accepted Git
    commit, Python wheel filename and SHA-256 digest, installed executable paths
@@ -476,24 +478,29 @@ the operator must stop access using the host and provider's existing controls.
    including alternate domains and `workers.dev`. Pause all associated Queue
    consumers and cron using provider controls. Drain or terminate
    in-flight HTTP, Queue, and scheduled invocations and verify their completion.
-   Keep queued UUID jobs for the compatible Worker. Stop bridges, agents and
-   hooks, collaboration daemons that deliver into the main mailbox, timers,
-   viewers, and other mailbox readers/writers on each machine. Disable supervisor
-   and host automatic restarts. Verify process exits and open database handles;
+   Keep queued UUID jobs for the compatible Worker. On each machine, bootstrap
+   legacy entrypoints if needed, then establish `maintenance begin --inventory FILE`
+   with the [complete owner inventory](installation.md#owner-inventory-and-hold).
+   Stop bridges, collaboration daemons that deliver into the main mailbox,
+   timers, viewers and other raw mailbox readers/writers. Gate agents and hooks;
+   close individual hosts whose captured paths cannot be gated. Disable supervisor
+   and host automatic restarts for stopped callers. Verify process exits and open database handles;
    replacing an executable does not stop an already-open `Store`. Disconnect
    endpoints that cannot meet the floor. Unknown process/version state blocks
    activation.
 3. With access stopped, back up D1, SQLite, policy, and deployment configuration.
    Use SQLite's backup facility or a clean stopped/checkpointed copy, accounting
    for WAL files. Keep backup identities and restricted storage locations in the
-   cutover record. Run the compatible preview executable without starting normal
-   commands. For each local database:
+   cutover record. Install the compatible candidate under the local hold without
+   starting normal commands. Use its fixed private preview for each exact
+   recorded local database:
 
    ```sh
-   LLM_BUS_DB=/absolute/path/to/bus.sqlite3 llm-bus retention-preview
+   llm-bus maintenance preview --mailbox /absolute/path/to/bus.sqlite3
    ```
 
-   The JSON returns one captured UTC `as_of`, `retention_cutoff`, and `messages`
+   The result wraps the preview JSON in `output`; the preview returns one
+   captured UTC `as_of`, `retention_cutoff`, and `messages`
    and `monitors` objects containing only `candidates` and `oldest_eligible_at`.
    It streams timestamp metadata for legacy validation and reads no message body
    into the client. A missing database fails without creating it. Any invalid
@@ -513,20 +520,22 @@ the operator must stop access using the host and provider's existing controls.
    `0008` and after `0009`; its timestamp-only scan validates the whole backlog.
 5. Apply D1 migrations using the deployment commands above while ingress,
    consumers, and cron remain stopped. Install the compatible Python artifact
-   and update hook executable paths without starting agents. Migrate each local
+   and refresh gated hook paths without reopening access. Migrate each local
    mailbox separately from purge:
 
    ```sh
-   LLM_BUS_DB=/absolute/path/to/bus.sqlite3 uv run python -c 'from llm_bus.mailbox.connection import default_path; from llm_bus.mailbox.store import Store; Store(default_path())'
+   llm-bus maintenance migrate --mailbox /absolute/path/to/bus.sqlite3
+   llm-bus maintenance verify --mailbox /absolute/path/to/bus.sqlite3
    ```
 
-   Run this command from the accepted checkout/environment, not an older
-   installation. Construction migrates only; do not call `transaction()`,
+   These fixed operations use only the recorded accepted candidate and mailbox.
+   Construction migrates only; do not call `transaction()`,
    `bridge --once`, `whoami`, or other normal writable commands yet. Deploy the
    compatible Worker with routes, Queue consumption, and cron still blocked.
    Repeat both previews, record counts/cutoffs, and run
    `PRAGMA foreign_key_check` on both databases. Run `PRAGMA integrity_check`
-   on local SQLite; D1 rejects that pragma, so use the provider's available
+   on local SQLite (`maintenance verify` performs both local checks); D1 rejects
+   that pragma, so use the provider's available
    database health and backup verification controls. Confirm local
    `PRAGMA user_version` is 21 and applied D1 migrations include `0009`.
 6. Review the actual backlog and obtain first-deletion authorization. Only then
@@ -535,7 +544,14 @@ the operator must stop access using the host and provider's existing controls.
    relay cron removes up to 100 messages per pass. Large backlogs take multiple
    passes, but exposure checks apply immediately. Resume HTTP, Queue, cron,
    hooks, and supervisors only after confirming every accessing process meets
-   the recorded floor. Keep unupgraded machines disconnected until their local
+   the recorded floor. Each owner releases the local hold with
+   `maintenance resume --evidence FILE`, using the exact operation, candidate
+   digest, mailbox schemas, compatible floor and true cutover confirmations
+   described in [compatibility verification and resume](installation.md#compatibility-verification-and-resume).
+   This records the separately obtained approval and drain evidence; it does
+   not infer them from relay responses. Dispatch reopens before restart
+   restoration finishes; inspect pending native/assisted actions and complete
+   their separate acknowledgement before another hold. Keep unupgraded machines disconnected until their local
    cutover finishes. Check body-free counts, integrity, and compatible delayed
    jobs/retries; never resend expired directions to bypass expiry.
 
@@ -543,7 +559,11 @@ the operator must stop access using the host and provider's existing controls.
 
 If migration, purge, integrity, or version verification fails, keep or return
 the system to the stopped state before diagnosis: block HTTP, pause consumers
-and cron, stop local delivery/uploads/wakes/maintenance, and disable restarts.
+and cron, hold local delivery/uploads/wakes/writable activity, and disable restarts.
+Inspect `maintenance status`; repair or recover only a verified compatible
+generation through the [local recovery procedure](installation.md#recovery-and-uv-discovery).
+Keep the journal and retained artifacts. Recovery does not restore a backup or
+grant permission to resume.
 Migration failure rolls back its transaction; purge failure rolls back the
 bounded batch, including replay and reply changes. Earlier successful batches
 remain committed. Re-run previews and integrity checks after correcting the

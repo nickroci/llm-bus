@@ -21,13 +21,11 @@ so no old copy stays loaded.
 Do this once per machine, as the operating-system user who runs the agents.
 [Install and verify](../docs/installation.md#install-and-verify) explains each step.
 
-1. Install the CLI from a clone of this repository: `uv tool install .`
-   For [collaboration with another person](../docs/collaboration.md),
-   use `uv tool install --force '.[collab]'` instead.
-   Later updates use `uv run llm-bus upgrade`, which cannot restore a
-   directory install; before the first upgrade, run the one-time bootstrap in
-   [Upgrade](../docs/installation.md#upgrade).
-2. Close Codex and Claude Code, then install the host hooks: `llm-bus install`.
+1. Follow [Install and verify](../docs/installation.md#install-and-verify) from
+   a clean accepted checkout, including the retained wheel, owner inventory,
+   initialization/compatibility checks and explicit resume. Include the `collab`
+   extra in that initial wheel installation when needed.
+2. Managed `llm-bus install` configures the host hooks during that procedure.
    It adds user-level `SessionStart`, `UserPromptSubmit` and `SessionEnd`
    hooks to `hooks.json` in the Codex home and `settings.json` in the Claude
    configuration directory, plus a Claude Code allow rule for bus commands.
@@ -37,15 +35,15 @@ Do this once per machine, as the operating-system user who runs the agents.
      bus needs to recognize Codex sub-agents.
    - Remove older project-level copies of the bus hooks, or agents get
      duplicate notices.
-   - Run `llm-bus install` again after upgrading or moving the CLI.
-3. Restart Codex, open `/hooks`, and trust the llm-bus hooks. Untrusted hooks
+   - Upgrade/reinstall refreshes recorded hooks and the skill together.
+3. After release, start Codex, open `/hooks`, and trust the llm-bus hooks. Untrusted hooks
    do not run. So that agent-run `llm-bus` commands can write the mailbox
    under the Codex sandbox, add a rule such as
    `prefix_rule(pattern=["llm-bus"], decision="allow")` to a
    `~/.codex/rules/*.rules` file, or a `writable_roots` entry (in the
    `[sandbox_workspace_write]` table of `config.toml`) for the mailbox
    folder; see [Storage and permissions](../docs/installation.md#storage-and-permissions).
-4. Restart Claude Code (v2.1.224 or later for automatic wakes through its
+4. Start Claude Code (v2.1.224 or later for automatic wakes through its
    inbox socket). For wakes without a per-message approval dialog, set
    **Messages from your other sessions: accept** in `/config`, or
    `"crossSessionInbound": "accept"` in the user-level `settings.json`.
@@ -55,8 +53,7 @@ Do this once per machine, as the operating-system user who runs the agents.
    (`uv tool dir --bin`) on `PATH`, and that sessions that wake Codex have
    `codex` on `PATH`. Changing only `.zshrc` may not affect GUI-launched
    agents.
-6. Copy the whole `skills/llm-bus/` directory into the skill directory each
-   host discovers, normally the shared `~/.agents/skills/llm-bus/`; check that
+6. Check the managed skill destination, normally `~/.agents/skills/llm-bus/`, and verify that
    both Codex and Claude Code list the skill. It is optional for local-only
    messaging and required for remote messaging, collaboration and
    coordination, which the rule files delegate to its references.
@@ -160,15 +157,16 @@ first.
 
 ## Update or remove
 
-To update, run `uv run llm-bus upgrade` from a clean checkout of the new
-version (see [Upgrade](../docs/installation.md#upgrade)), close both hosts, rerun
-`llm-bus install`, copy the new skill directory and rule files over the old
-ones, and replace the pointer block between its markers. Upgrade all of them
-together; mixed versions can disagree. Restart any running `llm-bus bridge`
-and check its log. Then restart both hosts, review and trust the changed hooks in
-Codex `/hooks` (untrusted hooks stop running), and confirm `llm-bus whoami`
-in each host so Claude Code re-registers its inbox socket.
+To update, follow [Upgrade](../docs/installation.md#upgrade) from a clean accepted
+checkout. The local hold gates captured paths and drains mailbox users;
+upgrade/reinstall refreshes hooks and the recorded skill copy. Copy updated
+rule files separately and replace the pointer block between its markers.
+Keep versions aligned. Resume only after compatibility/cutover checks, restore
+supervisors and check bridge logs. Restart individual hosts when needed to load
+or trust changed hooks; open Codex `/hooks` to review them. Confirm `llm-bus whoami`
+after release so Claude Code re-registers its inbox socket.
 
 To remove, delete the pointer block and the copied rule files. `llm-bus
-uninstall` removes the hooks, the Claude allow rule and the uv tool, but not
-instruction files, rule files or skills.
+uninstall` removes owned launchers, generation registrations, hooks, the Claude
+allow rule and the verified managed skill copy. It retains mailbox/history and
+held recovery evidence. Instruction and rule files need separate removal.

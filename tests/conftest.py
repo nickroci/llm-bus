@@ -1,5 +1,7 @@
 """Shared test isolation from the agent host running the suite."""
 
+from pathlib import Path
+
 import pytest
 
 HOST_ENVIRONMENT = (
@@ -12,10 +14,12 @@ HOST_ENVIRONMENT = (
 
 
 @pytest.fixture(autouse=True)
-def isolate_host_session(monkeypatch: pytest.MonkeyPatch) -> None:
+def isolate_host_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep host identity and wake sockets out of tests; tests set the ones they need."""
     for name in HOST_ENVIRONMENT:
         monkeypatch.delenv(name, raising=False)
+    # Public entrypoints must never consult the running owner's maintenance journal.
+    monkeypatch.setenv("HOME", str(tmp_path))
     # The suite's own ancestors may include a live claude or codex process.
     monkeypatch.setattr("llm_bus.cli.app.host_process", _no_host)
     monkeypatch.setattr("llm_bus.cli.hooks.host_process", _no_host)

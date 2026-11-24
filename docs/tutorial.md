@@ -61,14 +61,12 @@ Setting `CLAUDE_CODE_SESSION_ID` by hand only simulates an agent. Do not do it n
 
 **Goal:** a working CLI and hooks on one machine.
 
-From a clone of this repository, install the CLI, then the host hooks:
-
-```sh
-uv tool install .
-llm-bus install
-```
-
-The first command installs the `llm-bus` tool. The second adds user-level `SessionStart`, `UserPromptSubmit` and `SessionEnd` hooks for both hosts and a Claude Code allow rule for direct bus commands. Close both agents before running `llm-bus install`, then restart them. In Codex, open `/hooks` and trust the bus hooks; untrusted hooks do not run.
+From a clean accepted clone, follow [Install and verify](installation.md#install-and-verify).
+That procedure installs a retained wheel, prepares stable launchers, requires
+an owner access inventory, and verifies/initializes mailboxes before release.
+Managed installation refreshes the CLI, user-level hooks, Claude allow rule and
+whole skill directory from one accepted revision. Start hosts after release.
+In Codex, open `/hooks` and trust the bus hooks; untrusted hooks do not run.
 
 **Check:** inside each agent's shell tool, run `llm-bus whoami`. It prints the session's address:
 
@@ -80,26 +78,32 @@ If your shell cannot find `llm-bus`, run `uv tool update-shell` and open a new s
 
 ### Upgrade
 
-From a checkout with no uncommitted tracked changes:
+From a clean accepted checkout, after preparing the complete owner inventory:
 
 ```sh
-uv run llm-bus upgrade
+llm-bus maintenance begin --inventory /absolute/private/access.json
+llm-bus upgrade
+llm-bus maintenance status
 ```
 
-The command builds a wheel from `HEAD`, reinstalls the tool, verifies it and only then deletes older packages. It does not touch hooks or bridges, so finish with these steps:
+This keeps the hold while a verified generation and integrations are installed.
+`reinstall` creates a fresh generation even at the same revision. Previous
+artifacts remain; automatic pruning and old-wheel rollback are not performed.
+Follow [Upgrade](installation.md#upgrade) for legacy bootstrap, exact retry
+behavior, compatibility checks, release evidence, restart restoration and
+generation-scoped uv discovery. Hosts may stay open only when their captured
+paths are gated and raw callers/restarts are controlled.
 
-1. Close both agents.
-2. Run `llm-bus install`.
-3. Restart the agents.
-4. Restart any running `llm-bus bridge` and check its log.
-
-A first install or a directory install (`uv tool install .`) needs a one-time bootstrap before `upgrade` can work; see [Upgrade](installation.md#upgrade).
-
-> **Upgrade every installation together.** Database access by a current client migrates the mailbox to schema version 18, and binaries supporting earlier schemas then refuse that mailbox. Upgrade every `llm-bus` installation that shares a mailbox before any session uses it. Upgrade the copied skill and rule files at the same time, or agents follow stale rules. There is no supported in-place schema downgrade; an older binary requires an owner-approved restoration of a pre-upgrade backup.
+> **Upgrade every installation together.** Current mailbox schema is 21.
+> Before activation, complete the [offline retention cutover](remote-bus.md#offline-retention-cutover)
+> for every local or remote installation sharing a mailbox. Older binaries must
+> stay off activated mailboxes. There is no supported in-place downgrade;
+> owner-approved offline restoration also requires compatible migration and
+> replay/high-water reconciliation before release.
 
 ### Teach agents when to use the bus
 
-Hooks tell an agent its address and pending-message count, but not when to use the bus. Follow [Install agent instructions](../examples/agent-instructions.md) to add a short pointer block and rule files, and copy the [llm-bus skill](../skills/llm-bus/SKILL.md) into your shared skill directory. The skill is optional for local messaging and required for remote messaging, coordination and collaboration.
+Hooks tell an agent its address and pending-message count, but not when to use the bus. Follow [Install agent instructions](../examples/agent-instructions.md) to add a short pointer block and rule files, and verify the managed [llm-bus skill](../skills/llm-bus/SKILL.md) is discoverable in its recorded shared destination. The skill is optional for local messaging and required for remote messaging, coordination and collaboration.
 
 ## 3. Messages between local sessions
 
@@ -813,18 +817,18 @@ Gate records, auto-merge, owner decisions and standing instructions stay on the 
 
 ### Upgrade order
 
-Upgrade in this order, or new features stay queued with codes such as `unsupported_coordination` or `unsupported_approvals`:
-
-1. Stop every bridge and back up the mailboxes, configuration and D1.
-2. The operator applies all relay migrations (through `0007_coordination_approvals.sql`), then deploys the matching Worker. Deploying a Worker before its migration can break requests.
-3. Each machine owner runs `uv run llm-bus upgrade`, `llm-bus install` and restarts the agents.
-4. Each owner runs `llm-bus bridge --once`, checks `errors` and `remote-status`, then restarts the supervised bridge.
+Follow the [offline retention cutover](remote-bus.md#offline-retention-cutover)
+before any compatible writable activity. It owns relay HTTP/Queue/cron drain,
+backups, migrations through `0009_retained_reply_identity.sql`, local holds,
+previews, first-deletion approval and release. A local upgrade does not deploy
+or drain the relay. After authorized release, inspect a real `bridge --once`
+pass, `errors`, `remote-status` and supervised bridge logs.
 
 Never strip `--project` or `--direction` and resend a queued item as ordinary text to get around an old relay. The full procedure, including rollback, is in [Migration and rollback](remote-bus.md#migration-and-rollback).
 
 ## 11. Collaborate with another person (experimental)
 
-`llm-bus collab` connects your agents with another person's agents for one repository, point to point, without the Cloudflare relay. Each person proves a GitHub identity with an SSH signing key. Install the optional extra with `uv tool install --force '.[collab]'`, then:
+`llm-bus collab` connects your agents with another person's agents for one repository, point to point, without the Cloudflare relay. Each person proves a GitHub identity with an SSH signing key. Include the optional `collab` extra using [Install and verify](installation.md#install-and-verify), then:
 
 ```sh
 llm-bus collab setup --github-user YOUR_GITHUB_USER
@@ -858,7 +862,8 @@ For each collaborator, you choose on your private owner page what their messages
 | --- | --- |
 | `~/.local/share/llm-bus/bus.sqlite3` | The mailbox: messages, sessions, locks and coordination records. |
 | `~/.local/share/llm-bus/native-hosts.json` | Codex homes recorded by `llm-bus install`. |
-| `~/.local/share/llm-bus/packages/`, `~/.local/state/llm-bus/releases/` | Wheels managed by `llm-bus upgrade`. |
+| `~/.local/share/llm-bus/packages/` | Retained bootstrap/legacy wheel evidence. |
+| `~/.local/share/llm-bus/maintenance/`, `~/.local/state/llm-bus/maintenance/` | Stable runtime, immutable generations and owner-only operation journal. |
 | `~/.config/llm-bus/config.toml` | Remote policy (chapter 10). |
 | `~/.codex/hooks.json`, `~/.claude/settings.json` | Hooks written by `llm-bus install`. |
 
@@ -880,7 +885,7 @@ For each collaborator, you choose on your private owner page what their messages
 | Decisions | `coordination decision-ask`, `decision-answer`, `decision-show`, `decision-list [--defaulted]` | [9](#9-owner-decisions-and-timed-defaults) |
 | Remote | `bridge [--once] [--refresh-status]`, `remote-status`, `report ID --status S [--reason R]`, `monitor [--repository P \| --all] [--before ID] [--limit N]`, `coordination setup` | [10](#10-connect-other-machines) |
 | Collaboration | `collab setup\|daemon\|invite\|join\|send\|status` | [11](#11-collaborate-with-another-person-experimental) |
-| Installation | `install`, `uninstall`, `upgrade` | [2](#2-install-upgrade-and-verify) |
+| Installation | `install`, `uninstall`, `upgrade`, `reinstall`, `maintenance begin\|status\|resume\|recover\|preview\|migrate\|verify` | [2](#2-install-upgrade-and-verify) |
 
 Run `llm-bus COMMAND --help` for the exact syntax installed on your machine.
 
