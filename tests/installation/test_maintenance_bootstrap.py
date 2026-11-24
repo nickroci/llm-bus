@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -255,6 +256,58 @@ def test_interrupted_bootstrap_recovers_every_durable_switch(
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["phase"] == "preparing"
     assert runtime.read()["aliases_installed"] is True
+    for executable in (legacy.public, legacy.cached, legacy.actual):
+        response = legacy.invoke(executable, "list")
+        assert (response.returncode, response.stdout) == (75, APPROVED_MESSAGE)
+    assert not legacy.mailbox.exists()
+
+
+@pytest.mark.parametrize("boundary", ["alias", "runtime.py", "launcher", "ancestor"])
+def test_bootstrap_retries_visible_entries_until_fsync_succeeds(
+    legacy: Legacy, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    runtime = maintenance.Runtime(legacy.home)
+    target = {
+        "alias": legacy.public,
+        "runtime.py": runtime.root / "runtime.py",
+        "launcher": runtime.root / "launcher",
+        "ancestor": runtime.state_root,
+    }[boundary]
+    parent = target.parent if boundary != "ancestor" else legacy.home
+    actual_sync = os.fsync
+    failures = 0
+    committed = False
+
+    def interrupt(descriptor: int) -> None:
+        nonlocal failures, committed
+        info = os.fstat(descriptor)
+        if target.exists() and not target.is_symlink() and stat.S_ISDIR(info.st_mode):
+            expected = parent.stat()
+            if (info.st_dev, info.st_ino) == (expected.st_dev, expected.st_ino):
+                if failures < 3:
+                    failures += 1
+                    raise OSError("injected visible-entry fsync failure")
+                committed = True
+        actual_sync(descriptor)
+
+    def publish(state: dict[str, object]) -> None:
+        if state.get("aliases_installed") is True:
+            assert committed, "bootstrap published completion before the failed barrier succeeded"
+        maintenance.Runtime.write(runtime, state)
+
+    monkeypatch.setattr(os, "fsync", interrupt)
+    monkeypatch.setattr(runtime, "write", publish)
+    for attempt in range(3):
+        with pytest.raises(OSError, match="visible-entry fsync failure"):
+            maintenance.bootstrap_begin(runtime, legacy.receipt, legacy.home / "skills")
+        assert failures == attempt + 1
+        assert target.exists()
+        assert not target.is_symlink()
+        if runtime.journal.exists():
+            assert runtime.read()["aliases_installed"] is False
+    state = maintenance.bootstrap_begin(runtime, legacy.receipt, legacy.home / "skills")
+    assert committed
+    assert state["aliases_installed"] is True
     for executable in (legacy.public, legacy.cached, legacy.actual):
         response = legacy.invoke(executable, "list")
         assert (response.returncode, response.stdout) == (75, APPROVED_MESSAGE)

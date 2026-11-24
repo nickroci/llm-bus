@@ -66,15 +66,9 @@ def private_directory(path: Path) -> None:
     if any(parent.is_symlink() for parent in (path, *path.parents)):
         raise MaintenanceError(f"Symlinked maintenance ancestor: {path}")
     if not path.exists() and not path.is_symlink():
-        missing: list[Path] = []
-        parent = path
-        while not parent.exists():
-            missing.append(parent)
-            parent = parent.parent
         path.mkdir(mode=0o700, parents=True)
-        for created in reversed(missing):
-            sync_directory(created.parent)
     owned(path, directory=True)
+    sync_entry(path)
 
 
 def sync_directory(path: Path) -> None:
@@ -83,6 +77,21 @@ def sync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def sync_entry(path: Path) -> None:
+    """Commit accepted maintenance bytes and ancestors, including after failed writes.
+
+    Visible files and directories may survive a failed fsync. Maintenance writers
+    repeat this barrier before certifying them; ordinary admission only validates.
+    """
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    for parent in path.parents:
+        sync_directory(parent)
 
 
 def durable_write(path: Path, content: bytes, mode: int = 0o600) -> None:
@@ -1192,15 +1201,18 @@ def launcher_bytes(runtime: Runtime, python: Path) -> bytes:
 def install_aliases(runtime: Runtime, state: dict[str, object]) -> dict[str, object]:
     """Complete journaled alias replacements idempotently after a partial failure."""
     runtime.verify_runtime(state)
+    for name in ("runtime.py", "launcher"):
+        sync_entry(runtime.root / name)
     launcher = (runtime.root / "launcher").read_bytes()
     records = cast("list[dict[str, object]]", state["originals"])
     for record in records:
         path = Path(str(record["path"]))
-        if not path.is_symlink() and path.read_bytes() == launcher:
-            continue
-        if _alias_snapshot(path) != record:
-            raise MaintenanceError(f"Alias changed since intent was recorded: {path}")
-        durable_write(path, launcher, 0o700)
+        if path.is_symlink() or path.read_bytes() != launcher:
+            if _alias_snapshot(path) != record:
+                raise MaintenanceError(f"Alias changed since intent was recorded: {path}")
+            durable_write(path, launcher, 0o700)
+        owned(path)
+        sync_entry(path)
     for name in cast("list[str]", state.get("created_aliases", [])):
         path = Path(name)
         if path != runtime.root / "llm-bus":
@@ -1209,6 +1221,8 @@ def install_aliases(runtime: Runtime, state: dict[str, object]) -> dict[str, obj
             raise MaintenanceError("Managed hook alias changed")
         if not path.exists():
             durable_write(path, launcher, 0o700)
+        owned(path)
+        sync_entry(path)
     installed = {**state, "aliases_installed": True}
     runtime.write(installed)
     return installed
