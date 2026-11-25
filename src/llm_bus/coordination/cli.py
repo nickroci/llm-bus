@@ -63,6 +63,7 @@ MAX_REFERENCES = 32
 CONTROL_BOUNDARY = 32
 ROUTINE_HELP = "Resolve routine scope under an active run"
 RUN_RETRY = "run-retry"
+RUN_RETRY_HELP = "Count a read-only retry for the current ticket claim"
 
 
 def add_parsers(  # pylint: disable=too-many-statements
@@ -129,32 +130,24 @@ def _recovery_parsers(add_action: Callable[..., argparse.ArgumentParser]) -> Non
     reconcile = add_action("run-merge-reconcile", help="Confirm a prior merge without replay")
     reconcile.add_argument("project")
     reconcile.add_argument("--message-id", required=True, type=int)
-    for name in ("run-checkpoint", RUN_RETRY, "handoff-ready", "run-handoff"):
-        action = add_action(name, help="Reconcile bounded unattended progress and ownership")
+    retry = add_action(RUN_RETRY, help=RUN_RETRY_HELP)
+    retry.add_argument("project")
+    retry.add_argument("--run-id", required=True)
+    retry.add_argument("--ticket", required=True)
+    retry.add_argument("--worker", required=True)
+    retry.add_argument("--read-only", action="store_true")
+    for name in ("handoff-ready", "run-handoff"):
+        action = add_action(name, help="Reconcile an unattended ticket handoff")
         action.add_argument("project")
         action.add_argument("--worktree", required=True)
         action.add_argument("--pr", type=int)
         action.add_argument("--repository")
         if name == "run-handoff":
             action.add_argument("--handoff-id", required=True)
+            action.add_argument("--worker", required=True)
         else:
             action.add_argument("--run-id", required=True)
             action.add_argument("--ticket", required=True)
-        if name in {"run-checkpoint", "run-handoff"}:
-            action.add_argument("--worker", required=True)
-        if name in {"run-checkpoint", RUN_RETRY}:
-            action.add_argument("--revision", type=int, required=True)
-        if name == "run-checkpoint":
-            action.add_argument("--state", choices=recovery.STATES, required=True)
-            action.add_argument("--depends-on", action="append")
-            action.add_argument(
-                "--reason",
-                choices=("none", "dependency", "owner", "provider", "host", "recoverable"),
-                default="none",
-            )
-        elif name == RUN_RETRY:
-            action.add_argument("--read-only", action="store_true")
-        elif name == "handoff-ready":
             action.add_argument("--no-pending-effects", action="store_true")  # pylint: disable=clean-code-business-policy-literal
 
 
@@ -414,7 +407,7 @@ def run(  # noqa: C901, PLR0912, PLR0915 - owner action dispatch
         completion_evidence = github_merge.verify_completion(
             mailbox, scope, label, address, str(args["run_id"]), cwd=cwd
         )
-    if action in {"run-checkpoint", RUN_RETRY, "handoff-ready", "run-handoff"}:
+    if action in {"handoff-ready", "run-handoff"}:
         args["observation"] = recovery.observe(
             str(args["worktree"]), pr=args.get("pr"), repository=args.get("repository")
         )
@@ -796,9 +789,9 @@ def _secret_action(
 def _recovery_action(
     db: Connection, record: dict[str, object], args: dict[str, object], address: str
 ) -> ActionResult:
+    if args["action"] == RUN_RETRY:
+        return recovery.retry(db, record, address, args), []
     handlers = {
-        "run-checkpoint": recovery.checkpoint,
-        "run-retry": recovery.retry,
         "handoff-ready": recovery.cancellation,
         "run-handoff": recovery.handoff,
     }
@@ -808,8 +801,7 @@ def _recovery_action(
 
 
 ACTIONS: dict[str, Callable[..., ActionResult]] = {
-    "run-checkpoint": _recovery_action,
-    "run-retry": _recovery_action,
+    RUN_RETRY: _recovery_action,
     "handoff-ready": _recovery_action,
     "run-handoff": _recovery_action,
     "dev-secret-reserve": _secret_action,

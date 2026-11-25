@@ -39,7 +39,7 @@ REMOTE_GUIDANCE = (
 )
 
 
-GUIDANCE_VERSION = 14
+GUIDANCE_VERSION = 15
 WORKER_DUTIES = (
     "Before returning control, start every accepted direction that is no longer blocked. "
     "When a direction's state changes, record it with `llm-bus report ID --status STATUS` "
@@ -55,8 +55,9 @@ WORKER_DUTIES = (
 )
 COORDINATOR_DUTIES = (
     "Within a current unattended run, resolve eligible routine scope choices through "
-    "decision-resolve and reconcile ready tickets and blockers through coordination show; "
-    "continue independent ready work and preserve required owner-only decisions. "
+    "decision-resolve. Review PR results through coordination show and use Beads and current "
+    "assignments to check dependencies before scheduling independent work. "
+    "Preserve required owner-only decisions. "
     "Expect same-step linked blocker/decision requests, phase changes and immediate main-parent "
     "reports of observed native-child failures; fixed-code reports are silent. "
     "Collect worker questions, approval requests and manual-action requests; ask the user "
@@ -371,8 +372,7 @@ def _run_notice(
     return {
         "run_id": latest["run_id"],
         runs.ACTIVE: unattended[runs.ACTIVE],
-        "ready": progress["ready"],
-        "blockers": progress["blockers"],
+        "complete": progress["complete"],
         "end_reason": latest["end_reason"],
     }
 

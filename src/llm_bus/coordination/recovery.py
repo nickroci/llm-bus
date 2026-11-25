@@ -1,7 +1,6 @@
-"""Run checkpoints and cancellation handoffs, not a task or scheduling service.
+"""Bounded retries, verified handoffs and PR outcomes for unattended runs.
 
-Beads remains the task history. These local records bind reconciliation to exact
-claims and retain bounded outcomes. Callers serialize writes with BEGIN IMMEDIATE.
+Callers serialize writes with BEGIN IMMEDIATE. Beads owns task history.
 """
 
 # ruff: noqa: ISC004 - adjacent SQL fragments form table definitions
@@ -17,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
-from llm_bus.coordination import decisions, run_actions, runs
+from llm_bus.coordination import decisions, run_actions, runs, work_state
 from llm_bus.coordination.authority import authorize
 from llm_bus.coordination.models import REPOSITORY, Approval, Direction
 from llm_bus.errors import BusError
@@ -27,15 +26,12 @@ if TYPE_CHECKING:
     from sqlite3 import Connection
 
 MAX_RETRIES = 2
-FAILED = "failed"
 OPEN = "OPEN"
 GIT_HEAD = "HEAD"
 NO_PENDING_EFFECTS = "no_pending_effects"
-STATES = ("ready", "running", "blocked", FAILED)
-DENIED = "Recovery denied: stale claim, evidence or checkpoint"
-DEPENDENCY_DENIED = "Recovery dependency outside approved tickets"
+DENIED = "Handoff denied: stale claim, cancellation or evidence"
 RETRY_EXHAUSTED = "Recovery retry unavailable or exhausted"
-RETRY_EVIDENCE = "Recovery retry requires unchanged evidence and a read-only operation"
+RETRY_READ_ONLY = "Recovery retry requires a read-only operation"
 PRIOR_SUBMISSION = "Reconcile prior provider submission; no automatic retry"
 NO_CANCELLATION = "Handoff needs explicit cancellation and no pending effects"
 PRIOR_ATTEMPT = "Prior merge attempt exists; reconcile provider outcome before retry"
@@ -44,9 +40,6 @@ COMPLETION_DENIED = "Completion denied: every approved ticket needs its confirme
 
 def create_tables(db: Connection) -> None:
     for statement in (
-        "CREATE TABLE IF NOT EXISTS coordination_run_checkpoints ("
-        "run_id TEXT NOT NULL,ticket TEXT NOT NULL,revision INTEGER NOT NULL,"
-        "payload TEXT NOT NULL,PRIMARY KEY(run_id,ticket))",
         "CREATE TABLE IF NOT EXISTS coordination_run_handoffs ("
         "handoff_id TEXT PRIMARY KEY,run_id TEXT NOT NULL,ticket TEXT NOT NULL,"
         "prior_worker TEXT NOT NULL,branch TEXT NOT NULL,claimed_at TEXT NOT NULL,"
@@ -108,74 +101,26 @@ def _location(record: dict[str, object], branch: str, evidence: dict[str, object
         raise BusError("Recovery requires the exact claimed branch and repository")
 
 
-def checkpoint(
-    db: Connection,
-    record: dict[str, object],
-    caller: str,
-    args: dict[str, object],
-    evidence: dict[str, object],
-) -> dict[str, object]:
-    """CAS progress. Reordered wakes cannot overwrite a newer checkpoint."""
-    # pylint: disable=too-many-locals
-    create_tables(db)
-    run_id, ticket = str(args["run_id"]), str(args["ticket"])
-    active = runs.require_active(db, record, caller, run_id=run_id, ticket=ticket)
-    worker = str(args["worker"])
-    branch, claimed_at = run_actions.claim(db, record, worker, ticket)
-    _location(record, branch, evidence)
-    revision = int(str(args["revision"]))
-    prior = _checkpoint(db, run_id, ticket)
-    if revision != (0 if prior is None else prior["revision"]):
-        raise BusError(DENIED)
-    dependencies = cast("list[str]", args.get("depends_on") or [])
-    if ticket in dependencies or any(
-        item not in cast("list[str]", active["tickets"]) for item in dependencies
-    ):
-        raise BusError(DEPENDENCY_DENIED)
-    state = str(args["state"])
-    if state not in STATES:
-        raise BusError("Invalid recovery state")
-    if state == "ready":
-        _evidence(record, branch, evidence)
-    payload: dict[str, object] = {
-        "worker": worker,
-        "branch": branch,
-        "claimed_at": claimed_at,
-        "state": state,
-        "dependencies": dependencies,
-        "evidence": evidence,
-        "attempts": 0 if prior is None else prior["attempts"],
-        "reason": str(args.get("reason") or "none"),
-        "updated_at": datetime.now(UTC).isoformat(),
-    }
-    _save(db, run_id, ticket, revision + 1, payload)
-    return {"ticket": ticket, "revision": revision + 1, **payload}
-
-
-def _checkpoint(db: Connection, run_id: str, ticket: str) -> dict[str, object] | None:
-    row = cast(
-        "tuple[int, str] | None",
-        db.execute(
-            "SELECT revision,payload FROM coordination_run_checkpoints WHERE run_id=? AND ticket=?",
-            (run_id, ticket),
-        ).fetchone(),
-    )
-    return (
-        None
-        if row is None
-        else {"revision": row[0], **cast("dict[str, object]", json.loads(row[1]))}
-    )
-
-
-def _save(
-    db: Connection, run_id: str, ticket: str, revision: int, payload: dict[str, object]
-) -> None:
+def _ensure_retry_counts(db: Connection) -> None:
+    """Import valid legacy counts once. Leave other legacy data inert for rollback."""
+    tables = work_state.table_names(db)
+    if "coordination_run_retries" in tables:
+        return
     db.execute(
-        "INSERT INTO coordination_run_checkpoints VALUES (?,?,?,?) "
-        "ON CONFLICT(run_id,ticket) DO UPDATE SET "
-        "revision=excluded.revision,payload=excluded.payload",
-        (run_id, ticket, revision, json.dumps(payload)),
+        "CREATE TABLE coordination_run_retries ("
+        "run_id TEXT NOT NULL,ticket TEXT NOT NULL,attempts INTEGER NOT NULL,"
+        "PRIMARY KEY(run_id,ticket))"
     )
+    if "coordination_run_checkpoints" in tables:
+        db.execute(
+            "INSERT INTO coordination_run_retries "
+            "SELECT run_id,ticket,min(attempts,?) FROM ("
+            "SELECT run_id,ticket,CASE WHEN json_valid(payload) "
+            "THEN json_extract(payload,'$.attempts') END AS attempts "
+            "FROM coordination_run_checkpoints) "
+            "WHERE typeof(attempts)='integer' AND attempts>0",
+            (MAX_RETRIES,),
+        )
 
 
 def retry(
@@ -183,25 +128,14 @@ def retry(
     record: dict[str, object],
     caller: str,
     args: dict[str, object],
-    evidence: dict[str, object],
 ) -> dict[str, object]:
-    """Authorize only a bounded read-only retry; never replay an external mutation."""
+    """Count a read-only retry for the current claim without performing the operation."""
     create_tables(db)
     run_id, ticket = str(args["run_id"]), str(args["ticket"])
     runs.require_active(db, record, caller, run_id=run_id, ticket=ticket)
-    prior = _checkpoint(db, run_id, ticket)
-    if prior is None or prior["revision"] != int(str(args["revision"])):
-        raise BusError(DENIED)
-    if prior["state"] != FAILED or int(str(prior["attempts"])) >= MAX_RETRIES:
-        raise BusError(RETRY_EXHAUSTED)
-    if run_actions.claim(db, record, str(prior["worker"]), ticket) != (
-        prior["branch"],
-        prior["claimed_at"],
-    ):
-        raise BusError(DENIED)
-    _evidence(record, str(prior["branch"]), evidence)
-    if evidence != prior["evidence"] or args.get("read_only") is not True:
-        raise BusError(RETRY_EVIDENCE)
+    run_actions.claim(db, record, str(args["worker"]), ticket)
+    if args.get("read_only") is not True:
+        raise BusError(RETRY_READ_ONLY)
     # A prior submission, even an unconfirmed one, excludes automatic retry.
     if (
         db.execute(
@@ -210,11 +144,19 @@ def retry(
         is not None
     ):
         raise BusError(PRIOR_SUBMISSION)
-    prior["attempts"] = int(str(prior["attempts"])) + 1
-    prior["state"] = "ready"
-    revision = int(str(prior.pop("revision"))) + 1
-    _save(db, run_id, ticket, revision, prior)
-    return {"ticket": ticket, "revision": revision, **prior, "replay_authority": "read-only"}
+    _ensure_retry_counts(db)
+    row = cast(
+        "tuple[int] | None",
+        db.execute(
+            "INSERT INTO coordination_run_retries VALUES (?,?,1) "
+            "ON CONFLICT(run_id,ticket) DO UPDATE SET attempts=attempts+1 "
+            "WHERE attempts<? RETURNING attempts",
+            (run_id, ticket, MAX_RETRIES),
+        ).fetchone(),
+    )
+    if row is None:
+        raise BusError(RETRY_EXHAUSTED)
+    return {"ticket": ticket, "attempts": row[0], "replay_authority": "read-only"}
 
 
 def cancellation(
@@ -248,15 +190,8 @@ def _pending_effects(db: Connection, run_id: str, ticket: str) -> None:
         (run_id, ticket),
     ).fetchone():
         raise BusError("Handoff blocked by unknown provider outcome")
-    tables = {
-        row[0]
-        for row in cast(
-            "list[tuple[str]]",
-            db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall(),
-        )
-    }
     if (
-        "coordination_dev_secrets" in tables
+        "coordination_dev_secrets" in work_state.table_names(db)
         and db.execute(
             "SELECT 1 FROM coordination_dev_secrets WHERE json_extract(payload,'$.run_id')=? "
             "AND json_extract(payload,'$.ticket')=? AND status='unknown'",
@@ -393,13 +328,6 @@ def handoff(
         "UPDATE coordination_run_handoffs SET replacement=?,transferred_at=? WHERE handoff_id=?",
         (replacement, now, args["handoff_id"]),
     )
-    checkpointed = _checkpoint(db, run_id, ticket)
-    if checkpointed is not None:
-        revision = int(str(checkpointed.pop("revision"))) + 1
-        checkpointed.update(
-            worker=replacement, claimed_at=now, state="blocked", reason="fresh_gates_required"
-        )
-        _save(db, run_id, ticket, revision, checkpointed)
     return {
         "handoff_id": args["handoff_id"],
         "worker": replacement,
@@ -409,7 +337,7 @@ def handoff(
 
 
 def summary(db: Connection, record: dict[str, object], run: dict[str, object]) -> dict[str, object]:
-    """Reconcile durable metadata with current claims and reports, without external IO."""
+    """Summarize retained PR proofs, handoffs and decisions without external IO."""
     # pylint: disable=too-many-locals
     create_tables(db)
     run_id = str(run["run_id"])
@@ -446,34 +374,6 @@ def summary(db: Connection, record: dict[str, object], run: dict[str, object]) -
         if result["status"] == "succeeded"
         or (kind == "reviewed-pr" and result["status"] == "reviewed")
     }
-    checkpoints: list[dict[str, object]] = []
-    ready: list[str] = []
-    blockers: list[dict[str, object]] = []
-    for ticket in cast("list[str]", run["tickets"]):
-        prior = _checkpoint(db, run_id, ticket)
-        if ticket in completed_tickets:
-            continue
-        if prior is None:
-            blockers.append({"ticket": ticket, "reason": "checkpoint_required"})
-            continue
-        reason = None
-        try:
-            if run_actions.claim(db, record, str(prior["worker"]), ticket) != (
-                prior["branch"],
-                prior["claimed_at"],
-            ):
-                reason = "stale_claim"
-        except BusError:
-            reason = "stale_claim"
-        if not set(cast("list[str]", prior["dependencies"])) <= completed_tickets:
-            reason = reason or "dependencies"
-        if prior["state"] in {"blocked", FAILED}:
-            reason = reason or str(prior["reason"])
-        if reason:
-            blockers.append({"ticket": ticket, "reason": reason})
-        elif prior["state"] == "ready" and run.get(runs.ACTIVE):
-            ready.append(ticket)
-        checkpoints.append({"ticket": ticket, **prior})
     handoffs = [
         dict(
             zip(
@@ -495,14 +395,11 @@ def summary(db: Connection, record: dict[str, object], run: dict[str, object]) -
         "beads_workspace": record["beads_workspace"],
         "memory_ticket": record["memory_ticket"],
         "results": results,
-        "checkpoints": checkpoints,
-        "ready": ready,
-        "blockers": blockers,
         "handoffs": handoffs,
         "decisions": decisions.run_history(db, record, run_id),
         "end_reason": run.get("end_reason"),
         "completion_proof": kind,
-        "complete": len(completed_tickets) == len(cast("list[str]", run["tickets"])),
+        "complete": set(cast("list[str]", run["tickets"])) <= completed_tickets,
     }
 
 

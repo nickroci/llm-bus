@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from llm_bus.cli.guidance import guidance
-from llm_bus.coordination import decisions, delivery, github_merge, recovery, store
+from llm_bus.coordination import decisions, delivery, github_merge, recovery, store, work_state
 from llm_bus.errors import BusError
 from llm_bus.mailbox.models import SenderContext
 from llm_bus.routing import routing_scope
@@ -333,67 +333,46 @@ def observation_fixture(project: Project, monkeypatch: pytest.MonkeyPatch) -> di
     return observed
 
 
-def progress(
-    project: Project, run_id: str, revision: int, state: str, *extra: str
-) -> dict[str, object]:
+def retry(project: Project, run_id: str, *extra: str, worker: str = WORKER) -> dict[str, object]:
     return command(
         project,
-        "run-checkpoint",
+        "run-retry",
         "--run-id",
         run_id,
         "--ticket",
         TICKET,
         "--worker",
-        WORKER,
-        "--worktree",
-        str(project.path),
-        "--revision",
-        str(revision),
-        "--state",
-        state,
+        worker,
         *extra,
     )
 
 
-def test_reordered_wakes_do_not_overwrite_progress_and_retries_are_bounded(
-    project: Project, observation: dict[str, object]
-) -> None:
+def test_concurrent_read_only_retries_are_bounded_per_run_ticket(project: Project) -> None:
     run_id = activate(project)
-    assert progress(project, run_id, 0, "failed", "--reason", "recoverable")["revision"] == 1
-    with pytest.raises(BusError, match="checkpoint"):
-        progress(project, run_id, 0, "ready")
-    for revision in (1, 3):
-        retried = command(
-            project,
-            "run-retry",
-            "--run-id",
-            run_id,
-            "--ticket",
-            TICKET,
-            "--worktree",
-            str(project.path),
-            "--revision",
-            str(revision),
-            "--read-only",
-        )
-        assert retried["attempts"] == (revision + 1) // 2
-        progress(project, run_id, revision + 1, "failed", "--reason", "recoverable")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [pool.submit(retry, project, run_id, "--read-only") for _ in range(2)]
+        attempts = [cast("int", future.result()["attempts"]) for future in results]
+    assert sorted(attempts) == [1, 2]
     with pytest.raises(BusError, match="exhausted"):
-        command(
-            project,
-            "run-retry",
-            "--run-id",
-            run_id,
-            "--ticket",
-            TICKET,
-            "--worktree",
-            str(project.path),
-            "--revision",
-            "5",
-            "--read-only",
+        retry(project, run_id, "--read-only")
+
+
+def test_retry_preserves_legacy_attempts_without_using_legacy_progress(project: Project) -> None:
+    run_id = activate(project)
+    with project.store.transaction() as db:
+        assert "coordination_run_checkpoints" not in work_state.table_names(db)
+        db.execute(
+            "CREATE TABLE coordination_run_checkpoints ("
+            "run_id TEXT NOT NULL,ticket TEXT NOT NULL,revision INTEGER NOT NULL,"
+            "payload TEXT NOT NULL,PRIMARY KEY(run_id,ticket))"
         )
-    observation["head_sha"] = "b" * 40
-    assert cast("dict[str, object]", command(project, "show")["unattended"])["active"] is True
+        db.execute(
+            "INSERT INTO coordination_run_checkpoints VALUES (?,?,?,?)",
+            (run_id, TICKET, 3, json.dumps({"attempts": 1, "state": "blocked"})),
+        )
+    assert retry(project, run_id, "--read-only")["attempts"] == 2
+    with pytest.raises(BusError, match="exhausted"):
+        retry(project, run_id, "--read-only")
 
 
 def replacement(project: Project) -> str:
@@ -462,7 +441,7 @@ def test_handoff_carries_provenance_and_denies_old_worker_and_duplicate_transfer
     assert shown["source_session"] == ("default" if source == "default" else OWNER)
     assert show(project, original)["accepted"] is False
     assert show(project, copied)["accepted"] is False
-    with pytest.raises(BusError, match="checkpoint"):
+    with pytest.raises(BusError, match="Handoff denied"):
         move(project, handoff_id, worker)
     with pytest.raises(BusError, match="already claimed"):
         project.claim(WORKER, TICKET, "roam-22m-login")
@@ -703,59 +682,16 @@ def test_ended_merge_reconciliation_preserves_original_bindings(
     assert len(cast("list[object]", github["merge"])) == 1
 
 
-def test_ready_work_remains_actionable_alongside_independent_blocker(
-    project: Project, observation: dict[str, object]
-) -> None:
-    decisions.record_turn(project.store, OWNER)
-    run_id = str(
-        command(
-            project,
-            "unattended",
-            "--objective",
-            "Build safely",
-            "--ticket",
-            TICKET,
-            "--ticket",
-            "blocked-2",
-            "--completion",
-            "PRs ready",
-            "--expires-at",
-            "2099-01-01T00:00:00Z",
-            "--permission",
-            "owner-decisions",
-            "--confirm",
-        )["run_id"]
-    )
-    progress(project, run_id, 0, "ready")
-    other = replacement(project)
-    project.claim(other, "blocked-2", "blocked-branch")
-    observation["branch"] = "blocked-branch"
-    command(
-        project,
-        "run-checkpoint",
-        "--run-id",
-        run_id,
-        "--ticket",
-        "blocked-2",
-        "--worker",
-        other,
-        "--worktree",
-        str(project.path),
-        "--revision",
-        "0",
-        "--state",
-        "blocked",
-        "--reason",
-        "owner",
-    )
+def test_unstarted_ticket_needs_no_checkpoint_in_show_or_guidance(project: Project) -> None:
+    run_id = activate(project, "--ticket", "unstarted-2")
     shown = cast("dict[str, object]", command(project, "show")["unattended"])
     summary = cast("dict[str, object]", cast("dict[str, object]", shown["run"])["summary"])
-    assert summary["ready"] == [TICKET]
-    assert summary["blockers"] == [{"ticket": "blocked-2", "reason": "owner"}]
+    assert {"ready", "blockers", "checkpoints"}.isdisjoint(summary)
+    assert summary["results"] == []
     assert summary["complete"] is False
     notice = guidance(project.store, OWNER, str(project.path), full=False)
     assert run_id in notice
-    assert '"ready": ["roam-22m"]' in notice
+    assert '"complete": false' in notice
 
 
 @pytest.mark.usefixtures("observation")
@@ -792,36 +728,21 @@ def test_late_unknown_effect_blocks_handoff_without_changing_claim(project: Proj
         assert db.execute("SELECT address FROM coordination_claims").fetchall() == [(WORKER,)]
 
 
-def test_retry_requires_read_only_and_unchanged_side_effect_evidence(
-    project: Project, observation: dict[str, object]
+def test_retry_requires_read_only_and_current_claim_and_denies_prior_submission(
+    project: Project,
 ) -> None:
     run_id = activate(project)
-    progress(project, run_id, 0, "failed")
-    retry = (
-        "--run-id",
-        run_id,
-        "--ticket",
-        TICKET,
-        "--worktree",
-        str(project.path),
-        "--revision",
-        "1",
-    )
     with pytest.raises(BusError, match="read-only"):
-        command(project, "run-retry", *retry)
-    observation["head_sha"] = "b" * 40
-    with pytest.raises(BusError, match="unchanged"):
-        command(project, "run-retry", *retry, "--read-only")
-
-
-def test_dirty_work_is_retained_as_blocker_without_becoming_ready(
-    project: Project, observation: dict[str, object]
-) -> None:
-    run_id = activate(project)
-    observation["clean"] = False
-    assert progress(project, run_id, 0, "blocked", "--reason", "host")["revision"] == 1
-    with pytest.raises(BusError, match="clean worktree"):
-        progress(project, run_id, 1, "ready")
+        retry(project, run_id)
+    with pytest.raises(BusError, match="current local worker claim"):
+        retry(project, run_id, "--read-only", worker=replacement(project))
+    with project.store.transaction() as db:
+        db.execute(
+            "INSERT INTO coordination_run_merges VALUES (1,?,?,?,'unknown')",
+            (run_id, TICKET, json.dumps({"ticket": TICKET})),
+        )
+    with pytest.raises(BusError, match="prior provider submission"):
+        retry(project, run_id, "--read-only")
 
 
 @pytest.mark.usefixtures("github")
@@ -858,7 +779,7 @@ def test_handoff_requires_current_pr_evidence_from_the_worktree_repository(
     handoff_id = cancelled(project, run_id)
     worker = replacement(project)
     cast("dict[str, object]", observation["pr"])["headRefOid"] = "b" * 40
-    with pytest.raises(BusError, match="checkpoint"):
+    with pytest.raises(BusError, match="Handoff denied"):
         move(project, handoff_id, worker)
     with pytest.raises(BusError, match="wrong GitHub repository"):
         github_merge.observe_pr(str(project.path), "other/repository", 42)

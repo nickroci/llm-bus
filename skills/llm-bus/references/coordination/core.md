@@ -1,4 +1,4 @@
-<!-- llm-bus guidance-version: 14 -->
+<!-- llm-bus guidance-version: 15 -->
 # Coordination core rules
 
 Every coordination session loads this file first, in either role. It holds the

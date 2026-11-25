@@ -112,7 +112,7 @@ llm-bus --format agent coordination unattended-complete PROJECT --run-id RUN_UUI
 
 Completion requires every ticket's confirmed PR proof. Use `run-result` for a
 reviewed green PR without merging, or reconcile an authorized merge with
-`run-merge-reconcile`. See `recovery.md` for checkpoints, bounded read-only
+`run-merge-reconcile`. See `recovery.md` for bounded read-only
 retries, explicit cancellation handoffs and retained outcome summaries.
 Ending a run keeps history and does not revoke independent manual permissions.
 Worker joins, grants, claims, machine policy, host/provider permissions and
