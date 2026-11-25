@@ -135,7 +135,7 @@ def test_both_forms_carry_version_and_files(
         expected = [role if name == "{role}" else name for name in everything]
         for full in (True, False):
             data = data_of(guidance(project.store, address, str(tmp_path), full=full))
-            assert data["guidance_version"] == GUIDANCE_VERSION == 14
+            assert data["guidance_version"] == GUIDANCE_VERSION == 15
             full_form_only = [RECOVERY] if full else []
             assert data["guidance_files"] == [*expected, *full_form_only]
 

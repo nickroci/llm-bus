@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, cast
 import pytest
 
 from llm_bus.cli.app import main
-from llm_bus.coordination import recovery
 from llm_bus.errors import BusError
 from llm_bus.mailbox.models import SenderContext
 from llm_bus.mailbox.store import Store
@@ -29,7 +28,6 @@ from tests.coordination.test_unattended_actions import (
     no_timers,
     observation_fixture,
     pending,
-    progress,
     project_fixture,
     replacement,
     resolve,
@@ -69,52 +67,25 @@ def run_command(
     return command(project, action, "--run-id", run_id, *flags, *options)
 
 
-def checkpoint(project: Project, run_id: str, worker: str, revision: str, state: str) -> None:
-    run_command(
-        project,
-        "run-checkpoint",
-        run_id,
-        ticket="blocked-2",
-        worker=worker,
-        worktree=str(project.path),
-        revision=revision,
-        state=state,
-        reason="owner" if state == "blocked" else "none",
-    )
-
-
 def reviewed(project: Project, run_id: str, record_id: str) -> dict[str, object]:
     return run_command(
         project, "run-result", run_id, record_id=record_id, repository="owner/repository"
     )
 
 
+@pytest.mark.usefixtures("observation")
 def test_offline_acceptance_resumes_wake_handoff_and_reviewed_completion(  # noqa: PLR0915
     project: Project,
     github: dict[str, object],
-    observation: dict[str, object],
     public: Callable[..., object],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The host callback is real; native queue delivery and provider responses are fixtures."""
     # pylint: disable=too-many-locals,too-many-statements
-    observed = observation.copy()
-
-    def read(*_args: object, **_kwargs: object) -> dict[str, object]:
-        return dict(observed)
-
-    monkeypatch.setattr(recovery, "observe", read)
     profile = cast("dict[str, object]", public("coordinate", "demo", "--setup"))
     assert cast("dict[str, object]", profile["mode"])["choices"] == ["unattended", "guided"]
     assert cast("dict[str, object]", command(project, "show")["unattended"])["active"] is False
     run_id = activate(project, "--ticket", "blocked-2")
     original = pending(project)
-    blocker = replacement(project)
-    project.claim(blocker, "blocked-2", "blocked-branch")
-    observed["branch"] = "blocked-branch"
-    checkpoint(project, run_id, blocker, "0", "blocked")
-    observed["branch"] = "roam-22m-login"
-    progress(project, run_id, 0, "failed", "--reason", "recoverable")
 
     # A fresh Store and the normal app entrypoint reopen the persisted mailbox.
     project.store = Store(project.path / "bus.db")
@@ -153,15 +124,13 @@ def test_offline_acceptance_resumes_wake_handoff_and_reviewed_completion(  # noq
         run_id,
         "--read-only",
         ticket=TICKET,
-        worktree=str(project.path),
-        revision="1",
+        worker=WORKER,
     )
     assert retried["attempts"] == 1
-    progress(project, run_id, 2, "ready")
     shown = cast("dict[str, object]", command(project, "show")["unattended"])
     summary = cast("dict[str, object]", cast("dict[str, object]", shown["run"])["summary"])
-    assert summary["ready"] == [TICKET]
-    assert summary["blockers"] == [{"ticket": "blocked-2", "reason": "owner"}]
+    assert summary["results"] == []
+    assert summary["complete"] is False
 
     successor = "claude:successor"
     project.store.register("claude", "successor", str(project.path))
@@ -182,9 +151,9 @@ def test_offline_acceptance_resumes_wake_handoff_and_reviewed_completion(  # noq
     with pytest.raises(BusError, match="Completion denied"):
         command(project, "unattended-complete", "--run-id", run_id)
 
-    # Resolve the independent blocker only after the first ticket has a reviewed result.
-    observed["branch"] = "blocked-branch"
-    checkpoint(project, run_id, blocker, "1", "ready")
+    # The second ticket may start after the first one has a reviewed result.
+    second_worker = replacement(project)
+    project.claim(second_worker, "blocked-2", "blocked-branch")
     cast("dict[str, object]", github["other_prs"])["43"] = {
         **cast("dict[str, object]", github["pr"]),
         "headRefName": "blocked-branch",
@@ -192,7 +161,7 @@ def test_offline_acceptance_resumes_wake_handoff_and_reviewed_completion(  # noq
     second = str(
         submit(
             project,
-            address=blocker,
+            address=second_worker,
             ticket="blocked-2",
             branch="blocked-branch",
             pr=43,

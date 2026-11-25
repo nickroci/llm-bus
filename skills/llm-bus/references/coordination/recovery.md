@@ -86,44 +86,27 @@ If a host wake fails or is unsupported, resume the coordinator manually and
 read its durable inbox. Do not resend a stored notice or treat it as permission
 to retry work. Revoked or ended authority stops new detection; history remains.
 
-### Unattended checkpoints and outcomes
+### Unattended recovery and retries
 
 On activation, each supported wake, and resume, read `coordination show PROJECT`
-and the latest `unattended` summary. Guidance carries its run ID, ready tickets,
-blockers and end reason. Reconcile those references with Beads history, current
-directions and reports, the actual worktree and provider evidence before acting.
-The bus does not execute Beads, launch workers or schedule parallel tasks. Continue
-independent ready tickets while a blocked ticket waits; a blocker does not grant
-permission to expand the confirmed scope.
+and the latest `unattended` summary. Guidance carries the run ID, run state,
+completion status and end reason. Use Beads for ticket progress and dependencies.
+Check current assignments, worker reports, the worktree and provider evidence
+before continuing tickets within the confirmed scope.
 
-The coordinator records a bounded checkpoint after checking a worker's current
-claim and worktree. Ready checkpoints require a clean worktree; running, failed
-and blocked checkpoints may preserve unfinished changes:
+After a recoverable read-only failure, inspect the previous direction,
+reports and provider effects. The coordinator can then count a retry against
+the current worker's claim.
 
 ```sh
-llm-bus coordination run-checkpoint PROJECT --run-id RUN_UUID --ticket TICKET --worker claude:WORKER_ID --worktree /absolute/worktree --revision 0 --state ready
+llm-bus coordination run-retry PROJECT --run-id RUN_UUID --ticket TICKET --worker claude:WORKER_ID --read-only
 ```
 
-Use the returned revision for the next update. A duplicate or reordered update
-with an old revision fails rather than replacing newer progress. States are
-`ready`, `running`, `blocked` and `failed`. Add repeated `--depends-on TICKET`
-for dependencies within the approved run, and a fixed `--reason` of `dependency`,
-`owner`, `provider`, `host` or `recoverable` when needed. Keep detailed evidence
-in the existing ticket history. Checkpoints supplement that history and retain
-the worker, claim, branch, head, dependencies and retry count.
-
-After a recoverable read-only failure, compare the current worktree with the
-checkpoint, inspect previous directions, reports and provider effects, then run:
-
-```sh
-llm-bus coordination run-retry PROJECT --run-id RUN_UUID --ticket TICKET --worktree /absolute/worktree --revision REVISION --read-only
-```
-
-The bus permits at most two read-only retries with an unchanged claim and clean
-worktree. This command marks work ready; it does not send a direction or repeat
-a provider operation. Changed evidence or a prior merge submission denies retry.
-Mutations, including secret operations, require their existing action-time gates
-and reconciliation; this retry flag never authorizes them.
+Each ticket gets up to two read-only retries per run. The command records the
+attempt and returns the count. Existing retry counts carry forward on upgrade.
+For a prior merge submission, use `run-merge-reconcile` to inspect the result.
+For any mutation, use the existing action-time gates and reconcile the outcome
+through the provider.
 
 ### Verified worker handoff
 
@@ -189,8 +172,8 @@ llm-bus coordination unattended-complete PROJECT --run-id RUN_UUID
 Every approved ticket needs the confirmed proof before completion. Arbitrary
 prose and non-PR completion conditions are not machine-verified by this path;
 preserve their blocker for owner-directed reconciliation. Status and resume
-retain results, PRs, heads, required checks, decisions, handoffs, checkpoints,
-blockers and the end reason. Expiry or a coordinator generation change stops
+retain results, PRs, heads, required checks, decisions, handoffs and the end
+reason. Expiry or a coordinator generation change stops
 new authority and requires fresh owner activation. A sleeping machine or
 unsupported wake delays work until a supported entry point runs.
 
