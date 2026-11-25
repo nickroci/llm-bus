@@ -115,7 +115,7 @@ def resolve(project: Project, decision_id: str, run_id: str) -> dict[str, object
 def test_wake_resolution_has_distinct_provenance_and_exact_claim(project: Project) -> None:
     run_id = activate(project)
     decision_id = pending(project)
-    decisions.record_turn(project.store, OWNER, wake=True)
+    decisions.record_turn(project.store, OWNER, owner_started=False)
     assert resolve(project, decision_id, run_id)["source"] == "coordinator"
     shown = show(project, decision_id)
     assert shown["accepted"] is True

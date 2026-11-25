@@ -82,16 +82,20 @@ def hook(store: Store, kind: str) -> None:
     agent_address = store.register(
         kind, session_id, project, messaging_socket=claude_socket(kind), host=host_process(kind)
     )
+    prompt = hook_data.get("prompt")
     if event == "UserPromptSubmit":
         # A prompt containing a complete bus wake notice (hosts may wrap it) marks the turn as
         # not owner-started; see decisions.record_turn.
-        record_turn(store, agent_address, wake=contains_wake_notice(hook_data.get("prompt")))
+        owner_started = (
+            not contains_wake_notice(prompt) if isinstance(prompt, str) and prompt.strip() else None
+        )
+        record_turn(store, agent_address, owner_started=owner_started)
     count = store.pending_count(agent_address, limit=HOOK_COUNT_LIMIT)
     if (
         kind == "codex"
         and event == "UserPromptSubmit"
         and count == 0
-        and _acknowledged_wake(store, agent_address, hook_data.get("prompt"))
+        and _acknowledged_wake(store, agent_address, prompt)
     ):
         print(
             json.dumps(

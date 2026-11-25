@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 OWNER = "codex:owner"
-WORKER = "claude:worker"
 WAKE = "llm-bus message #9 from claude:worker. Read and handle it with `llm-bus inbox`."
 
 
@@ -68,13 +67,11 @@ def test_wake_turn_refuses_answers_until_the_next_owner_turn(project: Project) -
     decisions.record_turn(project.store, OWNER)
     decisions.record_turn(project.store, OWNER)
     pending = ask(project)["decision_id"]
-    decisions.record_turn(project.store, OWNER, wake=True)
+    decisions.record_turn(project.store, OWNER, owner_started=False)
     assert turn(project) == -2
     with pytest.raises(BusError, match=decisions.WAKE_TURN) as refused:
         answer(project, pending)
-    assert str(refused.value).startswith(
-        "Decision answers must come from an owner turn, not a bus wake"
-    )
+    assert str(refused.value).startswith("Decision answers require a direct owner prompt")
     assert "new prompt" in str(refused.value)
     with pytest.raises(BusError, match=decisions.WAKE_TURN):
         ask(project, "--answer", "Yes")
@@ -85,18 +82,12 @@ def test_wake_turn_refuses_answers_until_the_next_owner_turn(project: Project) -
 
 
 def test_wake_before_any_owner_turn_refuses(project: Project) -> None:
-    decisions.record_turn(project.store, OWNER, wake=True)
+    decisions.record_turn(project.store, OWNER, owner_started=False)
     assert turn(project) == 0
     with pytest.raises(BusError, match=decisions.WAKE_TURN):
         ask(project, "--answer", "Yes")
     decisions.record_turn(project.store, OWNER)
     assert turn(project) == 1
-
-
-def test_wake_marks_only_an_enrolled_coordinator(project: Project) -> None:
-    decisions.record_turn(project.store, WORKER, wake=True)
-    with project.store.transaction() as db:
-        assert db.execute("SELECT * FROM coordination_owner_turns").fetchall() == []
 
 
 def test_prompt_hook_marks_a_bus_wake_turn(

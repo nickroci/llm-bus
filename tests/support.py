@@ -23,4 +23,11 @@ def assert_wake_coverage(store: Store) -> None:
 
 
 def prompt_input(session_id: str, cwd: str) -> io.StringIO:
-    return hook_input({"session_id": session_id, "hook_event_name": "UserPromptSubmit", "cwd": cwd})
+    return hook_input(
+        {
+            "session_id": session_id,
+            "hook_event_name": "UserPromptSubmit",
+            "cwd": cwd,
+            "prompt": "Continue work",
+        }
+    )

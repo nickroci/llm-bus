@@ -274,8 +274,8 @@ def test_rejected_objective_answer_stores_no_amendment(project: Project) -> None
     assert "amendments" not in run(project, "show")
 
 
-def test_turn_counter_counts_only_an_enrolled_coordinator(project: Project) -> None:
-    for address in (WORKER, "codex:stranger", "claude:nobody"):
+def test_turn_counter_ignores_unregistered_addresses(project: Project) -> None:
+    for address in ("codex:stranger", "claude:nobody"):
         decisions.record_turn(project.store, address)
     assert turns(project) == []
     decisions.record_turn(project.store, OWNER)
@@ -283,7 +283,7 @@ def test_turn_counter_counts_only_an_enrolled_coordinator(project: Project) -> N
     assert turns(project) == [(OWNER, 2)]
 
 
-def test_prompt_hook_counts_coordinator_turns_only(
+def test_prompt_hook_tracks_each_registered_main_session(
     project: Project, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("LLM_BUS_DB", str(project.path / "bus.db"))
@@ -292,13 +292,13 @@ def test_prompt_hook_counts_coordinator_turns_only(
         monkeypatch.setattr("sys.stdin", prompt_input(session, folder))
         assert main(["hook", kind]) == 0
         assert capsys.readouterr().out
-    assert turns(project) == [(OWNER, 1)]
+    assert dict(turns(project)) == {WORKER: 1, "codex:stranger": 1, OWNER: 1}
     monkeypatch.setattr(
         "sys.stdin",
         prompt_input("owner", folder),
     )
     assert main(["hook", "codex"]) == 0
-    assert turns(project) == [(OWNER, 2)]
+    assert dict(turns(project)) == {WORKER: 1, "codex:stranger": 1, OWNER: 2}
     answered = str(
         ask(project, "--class", "scope", "--question", "Q?", "--answer", "Yes")["decision_id"]
     )
