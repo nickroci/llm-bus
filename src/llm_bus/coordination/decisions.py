@@ -69,13 +69,13 @@ def _require_coordinator(db: Connection, record: dict[str, object], caller: str)
         raise BusError("Only the enrolled coordinator may record or list decisions")
 
 
-def record_turn(mailbox: Store, address: str, *, owner_started: bool = True) -> None:
+def record_turn(mailbox: Store, address: str, *, owner_started: bool | None = True) -> None:
     """Record one prompt turn for a registered main session, including before enrollment.
 
     ``coordination_owner_turns.turn`` holds the owner-turn count N. A positive value means the
-    latest prompt was an owner turn. A bus wake or an unavailable prompt stores ``-N``
-    (``0`` before any owner turn), and the next owner turn stores ``N + 1``.
-    ``at`` is the latest owner turn's time.
+    latest prompt was an owner turn. A bus wake stores ``-N`` (``0`` before any owner turn).
+    An unavailable prompt (``None``) invalidates an existing record without creating one.
+    The next owner turn stores ``N + 1``. ``at`` is the latest owner turn's time.
     """
     with mailbox.transaction() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -87,6 +87,11 @@ def record_turn(mailbox: Store, address: str, *, owner_started: bool = True) -> 
             ).fetchone(),
         )
         if registered is None:
+            return
+        if owner_started is None:
+            db.execute(
+                "UPDATE coordination_owner_turns SET turn=-abs(turn) WHERE address=?", (address,)
+            )
             return
         if not owner_started:
             db.execute(

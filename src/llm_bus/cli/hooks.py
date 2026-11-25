@@ -87,7 +87,7 @@ def hook(store: Store, kind: str) -> None:
         # A prompt containing a complete bus wake notice (hosts may wrap it) marks the turn as
         # not owner-started; see decisions.record_turn.
         owner_started = (
-            isinstance(prompt, str) and bool(prompt.strip()) and not contains_wake_notice(prompt)
+            not contains_wake_notice(prompt) if isinstance(prompt, str) and prompt.strip() else None
         )
         record_turn(store, agent_address, owner_started=owner_started)
     count = store.pending_count(agent_address, limit=HOOK_COUNT_LIMIT)
