@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
 OWNER = "codex:owner"
 WORKER = "claude:worker"
+OWNER_PROMPT = "Create the project and activate the reviewed unattended run."
 DEADLINE = "2099-01-01T00:00:00+00:00"
 SCOPE: tuple[str, ...] = (
     "--objective",
@@ -81,7 +82,7 @@ def test_activation_requires_verified_owner_origin_and_confirmation(project: Pro
     preview = command(project, "unattended", *SCOPE)
     assert preview["stored"] is False
     assert command(project, "show")["unattended"] == {"active": False, "run": None, "history": []}
-    decisions.record_turn(project.store, OWNER, wake=True)
+    decisions.record_turn(project.store, OWNER, owner_started=False)
     with pytest.raises(BusError, match="recognized wake"):
         command(project, "unattended", *SCOPE, "--confirm")
     with pytest.raises(BusError, match="recognized wake"):
@@ -92,34 +93,40 @@ def test_activation_requires_verified_owner_origin_and_confirmation(project: Pro
 
 
 @pytest.mark.parametrize(
-    ("prompt", "denial"),
+    ("prompts", "denial"),
     [
-        ("Create the project and activate the reviewed unattended run.", None),
+        ((OWNER_PROMPT,), None),
         (
-            "llm-bus message #9 from claude:worker. Read and handle it with `llm-bus inbox`.",
+            ("llm-bus message #9 from claude:worker. Read and handle it with `llm-bus inbox`.",),
             "recognized wake",
         ),
-        (None, "needs a verified owner turn"),
+        ((None,), "needs a verified owner turn"),
+        ((OWNER_PROMPT, None), "needs a verified owner turn"),
+        ((OWNER_PROMPT, None, OWNER_PROMPT), None),
     ],
 )
 def test_fresh_unattended_creation_uses_first_prompt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompt: str | None, denial: str | None
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prompts: tuple[str | None, ...],
+    denial: str | None,
 ) -> None:
     (tmp_path / ".beads").mkdir()
     path = tmp_path / "bus.db"
     monkeypatch.setenv("LLM_BUS_DB", str(path))
-    monkeypatch.setattr(
-        "sys.stdin",
-        hook_input(
-            {
-                "session_id": "owner",
-                "hook_event_name": "UserPromptSubmit",
-                "cwd": str(tmp_path),
-                "prompt": prompt,
-            }
-        ),
-    )
-    assert main(["hook", "codex"]) == 0
+    for prompt in prompts:
+        monkeypatch.setattr(
+            "sys.stdin",
+            hook_input(
+                {
+                    "session_id": "owner",
+                    "hook_event_name": "UserPromptSubmit",
+                    "cwd": str(tmp_path),
+                    "prompt": prompt,
+                }
+            ),
+        )
+        assert main(["hook", "codex"]) == 0
     mailbox = Store(path)
     args = (
         "coordinate",
@@ -188,7 +195,7 @@ def test_terminal_confirmation_rechecks_changes_without_holding_write_lock(
         elif change == "generation":
             command(project, "replace", "--generation", str(uuid4()), "--coordinator", OWNER)
         elif change == "wake":
-            decisions.record_turn(project.store, OWNER, wake=True)
+            decisions.record_turn(project.store, OWNER, owner_started=False)
         else:
             command(project, "amend", "--delegate", "push:develop")
         return "yes"

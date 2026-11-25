@@ -161,8 +161,8 @@ def test_prompt_hook_wake_turn_tolerates_host_wrapper(
     monkeypatch.setenv("LLM_BUS_DB", str(tmp_path / "bus.sqlite3"))
     wakes: list[bool] = []
 
-    def record_turn(_store: Store, _address: str, *, wake: bool) -> None:
-        wakes.append(wake)
+    def record_turn(_store: Store, _address: str, *, owner_started: bool) -> None:
+        wakes.append(not owner_started)
 
     monkeypatch.setattr("llm_bus.cli.hooks.record_turn", record_turn)
 
