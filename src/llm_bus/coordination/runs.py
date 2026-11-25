@@ -30,6 +30,12 @@ ACTIVE = "active"
 NO_ACTIVE_RUN = "Unattended authority denied: no active run"
 TICKET_OUTSIDE_SCOPE = "Unattended authority denied: ticket outside approved scope"
 PERMISSION_OUTSIDE_SCOPE = "Unattended authority denied: permission outside approved scope"
+NO_VERIFIED_OWNER_TURN = (
+    "Unattended activation needs a verified owner turn. Retry after a direct owner "
+    "prompt, or use owner terminal setup: `llm-bus coordinate PROJECT --setup` for "
+    "a new project or `llm-bus coordination unattended PROJECT --setup` for an "
+    "existing project."
+)
 COLUMNS = (
     "run_id,scope,project_id,generation,coordinator,objective_revision,objective,"
     "tickets_json,completion,expires_at,permissions_json,started_at,ended_at,end_reason"
@@ -93,8 +99,8 @@ def require_owner_origin(db: Connection, caller: str | None, *, terminal: bool =
     )
     if row is not None and row[0] <= 0:
         raise BusError("Unattended activation denied in a recognized wake turn")
-    if not terminal and (row is None or row[0] <= 0):
-        raise BusError("Unattended activation needs owner terminal setup: no verified owner turn")
+    if not terminal and row is None:
+        raise BusError(NO_VERIFIED_OWNER_TURN)
 
 
 def _local_coordinator(db: Connection, record: dict[str, object], *, enrolled: bool) -> bool:

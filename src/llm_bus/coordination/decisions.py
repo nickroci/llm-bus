@@ -71,23 +71,23 @@ def _require_coordinator(db: Connection, record: dict[str, object], caller: str)
 
 
 def record_turn(mailbox: Store, address: str, *, wake: bool = False) -> None:
-    """Record one prompt turn for an enrolled coordinator; any other address writes nothing.
+    """Record one prompt turn for a registered main session, including before enrollment.
 
     ``coordination_owner_turns.turn`` holds the owner-turn count N. A positive value means the
     latest prompt was an owner turn; a bus-wake prompt stores ``-N`` (``0`` before any owner
     turn), and the next owner turn stores ``N + 1``. ``at`` is the latest owner turn's time.
     """
     with mailbox.transaction() as db:
-        enrolled = cast(
+        db.execute("BEGIN IMMEDIATE")
+        registered = cast(
             "tuple[int] | None",
             db.execute(
-                "SELECT 1 FROM coordination_enrollments WHERE address=? AND role='coordinator'",
+                "SELECT 1 FROM agents WHERE address=? AND ended_at IS NULL",
                 (address,),
             ).fetchone(),
         )
-        if enrolled is None:
+        if registered is None:
             return
-        db.execute("BEGIN IMMEDIATE")
         if wake:
             db.execute(
                 "INSERT INTO coordination_owner_turns VALUES (?,0,?) "
@@ -117,7 +117,7 @@ def _require_owner_turn(db: Connection, caller: str) -> None:
     """Refuse an answer in a turn that a recognized bus wake started.
 
     This proves turn origin only, not that the answer repeats the owner's words. A caller
-    without any turn record passes (no hook installed, or enrolled in this very turn).
+    without any turn record passes (for example, when no hook is installed).
     """
     turn = _source_turn(db, caller)
     if turn is not None and turn <= 0:

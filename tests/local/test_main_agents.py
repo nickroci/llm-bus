@@ -243,7 +243,14 @@ def test_child_hook_cannot_change_parent_lifecycle(
     monkeypatch.setattr(
         "sys.stdin",
         io.StringIO(
-            json.dumps({"session_id": "parent", "agent_id": "child", "hook_event_name": event})
+            json.dumps(
+                {
+                    "session_id": "parent",
+                    "agent_id": "child",
+                    "hook_event_name": event,
+                    "prompt": "Continue work",
+                }
+            )
         ),
     )
     assert main(["hook", kind]) == 0

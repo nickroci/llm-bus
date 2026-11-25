@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 OWNER = "codex:owner"
-WORKER = "claude:worker"
 WAKE = "llm-bus message #9 from claude:worker. Read and handle it with `llm-bus inbox`."
 
 
@@ -91,12 +90,6 @@ def test_wake_before_any_owner_turn_refuses(project: Project) -> None:
         ask(project, "--answer", "Yes")
     decisions.record_turn(project.store, OWNER)
     assert turn(project) == 1
-
-
-def test_wake_marks_only_an_enrolled_coordinator(project: Project) -> None:
-    decisions.record_turn(project.store, WORKER, wake=True)
-    with project.store.transaction() as db:
-        assert db.execute("SELECT * FROM coordination_owner_turns").fetchall() == []
 
 
 def test_prompt_hook_marks_a_bus_wake_turn(

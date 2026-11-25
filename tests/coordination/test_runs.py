@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 
+from llm_bus.cli.app import main
 from llm_bus.coordination import decisions, delegation, runs, setup, store
 from llm_bus.errors import BusError
 from llm_bus.mailbox.schema import SCHEMA_VERSION
@@ -18,6 +19,7 @@ from llm_bus.mailbox.store import Store
 from llm_bus.routing import routing_scope
 from tests.coordination.test_approvals import DELEGATION, Project
 from tests.coordination.test_enrollment import invoke
+from tests.support import hook_input
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -87,6 +89,59 @@ def test_activation_requires_verified_owner_origin_and_confirmation(project: Pro
     approved = activate(project)
     assert approved["active"] is True
     assert approved["tickets"] == ["roam-22m"]
+
+
+@pytest.mark.parametrize(
+    ("prompt", "denial"),
+    [
+        ("Create the project and activate the reviewed unattended run.", None),
+        (
+            "llm-bus message #9 from claude:worker. Read and handle it with `llm-bus inbox`.",
+            "recognized wake",
+        ),
+        (None, "needs a verified owner turn"),
+    ],
+)
+def test_fresh_unattended_creation_uses_first_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prompt: str | None, denial: str | None
+) -> None:
+    (tmp_path / ".beads").mkdir()
+    path = tmp_path / "bus.db"
+    monkeypatch.setenv("LLM_BUS_DB", str(path))
+    monkeypatch.setattr(
+        "sys.stdin",
+        hook_input(
+            {
+                "session_id": "owner",
+                "hook_event_name": "UserPromptSubmit",
+                "cwd": str(tmp_path),
+                "prompt": prompt,
+            }
+        ),
+    )
+    assert main(["hook", "codex"]) == 0
+    mailbox = Store(path)
+    args = (
+        "coordinate",
+        "demo",
+        "--beads-workspace",
+        str(tmp_path),
+        "--memory-ticket",
+        "bus-1",
+        *DELEGATION,
+        "--unattended",
+        *SCOPE,
+        "--confirm",
+    )
+    if denial is not None:
+        with pytest.raises(BusError, match=denial):
+            invoke(mailbox, tmp_path, *args)
+        with mailbox.transaction() as db:
+            assert db.execute("SELECT label FROM coordination_projects").fetchall() == []
+    else:
+        result = invoke(mailbox, tmp_path, *args)
+        unattended = cast("dict[str, object]", result["unattended"])
+        assert unattended["active"] is True
 
 
 def test_later_terminal_activation_previews_scope_and_can_cancel(project: Project) -> None:
