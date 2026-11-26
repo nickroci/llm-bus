@@ -45,6 +45,12 @@ settings files; use your dotfile manager to edit their targets.
 | --- | --- | --- |
 | Codex | `~/.codex/hooks.json` | Set `CODEX_HOME` before installation and before starting Codex. |
 | Claude Code | `~/.claude/settings.json` | Set `CLAUDE_CONFIG_DIR` before installation and before starting Claude Code. |
+| Gemini CLI | `~/.gemini/settings.json` | Set `GEMINI_CLI_HOME` before installation and before starting Gemini CLI. |
+
+Gemini CLI hooks are installed only when Gemini's `.gemini` folder already
+exists; the installer never creates it. If you start using Gemini CLI after
+installing the bus, run `reinstall`. Gemini hooks run SessionStart, BeforeAgent
+(Gemini's prompt-submission event) and SessionEnd.
 
 The installer discovers `llm-bus` on its process's `PATH` and writes an absolute,
 shell-quoted executable path. These paths belong to that machine; do not copy
@@ -64,9 +70,14 @@ that `/hooks` marks modified. See the [Codex](https://learn.chatgpt.com/docs/hoo
 and [Claude Code](https://code.claude.com/docs/en/hooks) hook guides.
 
 Inside each main agent's shell tool, run `llm-bus whoami`. It returns an address
-such as `codex:SESSION_ID` or `claude:SESSION_ID`; use the actual address when
-sending. Claude registers at launch; a new Codex session may register only on
-its first turn.
+such as `codex:SESSION_ID`, `claude:SESSION_ID` or `gemini:SESSION_ID`; use the
+actual address when sending. Claude and Gemini register at launch; a new Codex
+session may register only on its first turn.
+
+Gemini CLI gives its shell tool no session ID. Its SessionStart hook records the
+session against the Gemini process, and a bus command run from Gemini's shell
+uses the session registered for its nearest Gemini ancestor process. A command
+run before that hook has registered the session fails rather than guessing.
 
 ### Custom Codex homes
 
@@ -449,6 +460,20 @@ responses; delivery takes precedence over unreceived expiry.
 Claude's installed allow rule covers direct bus commands. Pipelines and other
 commands may still prompt, and managed or explicit deny rules can override it.
 See [Claude Code permissions](https://code.claude.com/docs/en/permissions).
+
+Gemini CLI asks before running each shell command unless a rule allows it. The
+installer adds none, because Gemini deprecates `tools.allowed`. To allow bus
+commands, add a Policy Engine rule such as this to `~/.gemini/policies/llm-bus.toml`:
+
+```toml
+[[rule]]
+toolName = "run_shell_command"
+commandPrefix = "llm-bus"
+decision = "allow"
+priority = 100
+```
+
+See [Gemini CLI policy engine](https://geminicli.com/docs/core/policy-engine/).
 
 For Codex, an allow rule in `~/.codex/rules/*.rules` can use
 `prefix_rule(pattern=["llm-bus"], decision="allow")`. Without that rule or a

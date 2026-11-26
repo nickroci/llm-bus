@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, cast
 import llm_bus.collab.cli
 import llm_bus.coordination.cli
 from llm_bus.cli.commands import human_command, owner_force_release, registered_command, send
-from llm_bus.cli.hooks import claude_socket, hook
+from llm_bus.cli.hooks import hook, native_endpoint
 from llm_bus.cli.installation import configure_host_hooks
 from llm_bus.cli.output import serialize
 from llm_bus.cli.parser import build_parser
@@ -21,7 +21,7 @@ from llm_bus.collab.models import CollabError
 from llm_bus.coordination import approvals
 from llm_bus.coordination.setup import profile, run_activation_wizard, run_wizard
 from llm_bus.errors import BusError
-from llm_bus.hosts.processes import host_process
+from llm_bus.hosts.processes import GEMINI, host_process, nearest_host
 from llm_bus.hosts.sessions import require_main_agent
 from llm_bus.mailbox.connection import default_path
 from llm_bus.mailbox.models import SenderContext
@@ -30,6 +30,8 @@ from llm_bus.remote.bridge import run_bridge
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from llm_bus.hosts.processes import HostProcess
 
 CLAUDE_SESSION_ENV = "CLAUDE_CODE_SESSION_ID"
 
@@ -40,12 +42,28 @@ CODEX_THREAD_ENV = "CODEX_THREAD_ID"
 CODEX_SESSION_ENV = "CODEX_SESSION_ID"
 
 
+# Gemini CLI sets this in its shell tool's environment but exposes no session ID there.
+GEMINI_CLI_ENV = "GEMINI_CLI"
+GEMINI_UNREGISTERED = (
+    "This Gemini session is not registered; run `llm-bus install`, restart Gemini CLI, then retry"
+)
+
+
 # Queued, not holding: `lock acquire NAME && use-resource` must not run the second command.
 LOCK_WAITING_EXIT = 3
 
 
-def host_identity(environment: dict[str, str]) -> tuple[str, str]:
-    """Read native session identity from Claude or Codex shell tools."""
+def host_identity(environment: dict[str, str], store: Store | None = None) -> tuple[str, str]:
+    """Read native session identity from Claude, Codex or Gemini shell tools.
+
+    Gemini's shell tool carries no session ID, and it inherits any ID of the session that
+    started Gemini. When the nearest host ancestor is Gemini, the session is the one its own
+    hook registered for that exact Gemini process.
+    """
+    if environment.get(GEMINI_CLI_ENV):
+        nearest = nearest_host()
+        if nearest is not None and nearest[0] == GEMINI:
+            return GEMINI, _gemini_session(store, nearest[1])
     claude_id = environment.get(CLAUDE_SESSION_ENV)
     codex_id = environment.get(CODEX_THREAD_ENV) or environment.get(CODEX_SESSION_ENV)
     if claude_id and codex_id:
@@ -54,7 +72,18 @@ def host_identity(environment: dict[str, str]) -> tuple[str, str]:
         return "claude", claude_id
     if codex_id:
         return "codex", codex_id
-    raise BusError("No host session ID found; run inside a Claude Code or Codex agent session")
+    raise BusError(
+        "No host session ID found; run inside a Claude Code, Codex or Gemini CLI agent session"
+    )
+
+
+def _gemini_session(store: Store | None, host: HostProcess) -> str:
+    path = default_path()
+    reader = store if store is not None else Store.read_only(path) if path.exists() else None
+    found = reader.host_session(GEMINI, host) if reader is not None else None
+    if found is None:
+        raise BusError(GEMINI_UNREGISTERED)
+    return found.removeprefix(f"{GEMINI}:")
 
 
 def _optional_address() -> str | None:
@@ -151,7 +180,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901, PLR0912 - com
             if result is not None:
                 print(serialize(result, str(command), str(args["format"])))
             return 0
-        kind, session_id = host_identity(dict(os.environ))
+        kind, session_id = host_identity(dict(os.environ), store)
         require_main_agent(f"{kind}:{session_id}")
         project = str(Path.cwd().resolve())
         if command in {"coordinate", "join", "coordination"}:
@@ -160,7 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901, PLR0912 - com
                     kind,
                     session_id,
                     project,
-                    messaging_socket=claude_socket(kind),
+                    messaging_socket=native_endpoint(kind),
                     host=host_process(kind),
                 )
             if command == "coordination" and args["action"] == "approve":
@@ -174,7 +203,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901, PLR0912 - com
                 kind,
                 session_id,
                 project,
-                messaging_socket=claude_socket(kind),
+                messaging_socket=native_endpoint(kind),
                 label=cast("str | None", args.get("label")) if command == "whoami" else None,
                 host=host_process(kind),
             )

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 from llm_bus.coordination.store import end_session_consents
+from llm_bus.hosts.kinds import ENDPOINT_KINDS
 from llm_bus.hosts.sessions import is_subagent
 from llm_bus.mailbox import labels
 from llm_bus.mailbox.models import (
@@ -63,7 +64,7 @@ def register(  # noqa: PLR0913 - explicit optional registration metadata
         labels.claim(db, scope, agent_address, label)
     db.execute(
         "UPDATE agents SET messaging_socket = ? WHERE address = ?",
-        (messaging_socket if kind == "claude" else None, agent_address),
+        (messaging_socket if kind in ENDPOINT_KINDS else None, agent_address),
     )
     if host is not None:
         db.execute(
@@ -71,6 +72,19 @@ def register(  # noqa: PLR0913 - explicit optional registration metadata
             (host.pid, host.started, agent_address),
         )
     return agent_address
+
+
+def host_session(db: sqlite3.Connection, kind: str, host: HostProcess) -> str | None:
+    """The live session a host hook registered for this exact host process, newest first."""
+    row = cast(
+        "tuple[str] | None",
+        db.execute(
+            "SELECT address FROM agents WHERE kind = ? AND host_pid = ? AND host_started = ? "
+            "AND ended_at IS NULL ORDER BY last_seen DESC LIMIT 1",
+            (kind, host.pid, host.started),
+        ).fetchone(),
+    )
+    return row[0] if row is not None else None
 
 
 def read_messaging_socket(db: sqlite3.Connection, agent_address: str) -> str | None:

@@ -7,12 +7,20 @@ import subprocess  # nosec B404 - fixed ps arguments, no shell
 from pathlib import Path
 from typing import NamedTuple
 
+from llm_bus.hosts.kinds import HOST_KINDS
+
 PS_TIMEOUT_SECONDS = 2
 # Fixed locale and zone keep start times comparable between the recording and checking runs.
 PS_ENVIRONMENT = {"LC_ALL": "C", "TZ": "UTC", "PATH": "/bin:/usr/bin"}
 ID_FIELDS = 2  # pid and ppid
 START_FIELDS = 5  # lstart, such as "Thu Nov 12 01:00:00 2026"
-HOST_KINDS = frozenset({"claude", "codex"})
+PID_AND_ARGS = 2
+# Gemini CLI runs as `node .../bin/gemini` (or a relaunched child of it), so its executable
+# name is `node`; its script argument identifies it instead.
+GEMINI = "gemini"
+SCRIPT_RUNTIMES = frozenset({"node", "nodejs"})
+GEMINI_SCRIPTS = frozenset({"gemini", "gemini.js"})
+GEMINI_PACKAGE = "/@google/gemini-cli/"
 
 
 class HostProcess(NamedTuple):
@@ -38,13 +46,44 @@ def _ps(arguments: list[str]) -> str | None:
 def host_process(kind: str) -> HostProcess | None:
     """Find the nearest ancestor whose executable is the host CLI, such as `claude`."""
     ancestors = _ancestors()
-    return next((process for name, process in ancestors or [] if name == kind), None)
+    return next((process for name, process in _named(ancestors or []) if name == kind), None)
+
+
+def nearest_host() -> tuple[str, HostProcess] | None:
+    """The nearest agent-host ancestor and its kind; None if there is none or ps failed."""
+    ancestors = _ancestors()
+    return next((item for item in _named(ancestors or []) if item[0] in HOST_KINDS), None)
 
 
 def under_agent_host() -> bool:
-    """Whether any ancestor is a Claude Code or Codex process; unknown counts as yes."""
+    """Whether any ancestor is a Claude Code, Codex or Gemini process; unknown counts as yes."""
     ancestors = _ancestors()
-    return ancestors is None or any(name in HOST_KINDS for name, _process in ancestors)
+    return ancestors is None or any(name in HOST_KINDS for name, _process in _named(ancestors))
+
+
+def _named(ancestors: list[tuple[str, HostProcess]]) -> list[tuple[str, HostProcess]]:
+    """Rename script-runtime ancestors that run Gemini CLI to `gemini`."""
+    runtimes = [process.pid for name, process in ancestors if name in SCRIPT_RUNTIMES]
+    if not runtimes:
+        return ancestors
+    output = _ps(["-ww", "-o", "pid=,args=", "-p", ",".join(str(pid) for pid in runtimes)])
+    gemini: set[int] = set()
+    for line in (output or "").splitlines():
+        fields = line.split(maxsplit=PID_AND_ARGS - 1)
+        if len(fields) == PID_AND_ARGS and fields[0].isdigit() and is_gemini_command(fields[1]):
+            gemini.add(int(fields[0]))
+    return [(GEMINI if process.pid in gemini else name, process) for name, process in ancestors]
+
+
+def is_gemini_command(arguments: str) -> bool:
+    """Whether a runtime command line runs the Gemini CLI script, skipping runtime options."""
+    words = arguments.split()
+    if not words:
+        return False
+    if Path(words[0]).name in GEMINI_SCRIPTS:
+        return True
+    script = next((word for word in words[1:] if not word.startswith("-")), "")
+    return Path(script).name in GEMINI_SCRIPTS or GEMINI_PACKAGE in script
 
 
 def _ancestors() -> list[tuple[str, HostProcess]] | None:

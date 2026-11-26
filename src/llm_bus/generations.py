@@ -29,7 +29,7 @@ from llm_bus import maintenance as gate
 from llm_bus.cli import upgrade as build
 from llm_bus.errors import BusError
 from llm_bus.hosts import files
-from llm_bus.hosts.hooks import EVENTS, is_bus_handler, update_claude_permission, update_hooks
+from llm_bus.hosts.hooks import apply_bus_settings, host_events, is_bus_handler, settings_kind
 from llm_bus.hosts.settings import CODEX_HOME_ENV, remember_codex_home
 
 # Journal fields and boundary diagnostics are explicit protocol vocabulary.
@@ -220,11 +220,8 @@ def _settings_paths(runtime: gate.Runtime, state: dict[str, object]) -> list[Pat
 def _write_hooks(paths: list[Path], snapshots: list[dict[str, object]]) -> None:
     for path, snapshot in zip(paths, snapshots, strict=True):
         before = None if snapshot["bytes"] is None else base64.b64decode(str(snapshot["bytes"]))
-        kind = "codex" if path.name == "hooks.json" else "claude"
         settings = files.parse_settings(path, before)
-        updated = update_hooks(settings, path, kind, install=True)
-        if kind == "claude":
-            updated = update_claude_permission(updated, path, install=True)
+        updated = apply_bus_settings(settings, path, settings_kind(path), install=True)
         if updated != settings:
             files.write_settings(path, updated, before, int(str(snapshot["mode"])))
 
@@ -336,8 +333,8 @@ def _verify_hook_events(path: Path) -> None:
     hooks = _object(
         files.parse_settings(path, files.current_bytes(path)).get("hooks"), "host hooks"
     )
-    kind = "codex" if path.name == "hooks.json" else "claude"
-    for event in EVENTS:
+    kind = settings_kind(path)
+    for event in host_events(kind):
         groups = hooks.get(event)
         if not isinstance(groups, list):
             raise BusError(f"Missing {event} hooks: {path}")
@@ -954,9 +951,7 @@ def _remove_settings(runtime: gate.Runtime, state: dict[str, object]) -> None:
 
 
 def _without_bus_settings(path: Path, settings: dict[str, object]) -> dict[str, object]:
-    kind = "codex" if path.name == "hooks.json" else "claude"
-    removed = update_hooks(settings, path, kind, install=False)
-    return update_claude_permission(removed, path, install=False) if kind == "claude" else removed
+    return apply_bus_settings(settings, path, settings_kind(path), install=False)
 
 
 def _unregister(uv: str, runtime: gate.Runtime, state: dict[str, object]) -> None:

@@ -8,9 +8,10 @@ from typing import TYPE_CHECKING, cast
 from llm_bus.hosts import files
 from llm_bus.hosts.hooks import (
     CLAUDE_ALLOW_RULE,
-    EVENTS,
+    host_events,
     is_bus_handler,
     object_at,
+    settings_kind,
     update_claude_permission,
     update_hooks,
     without_bus_handler,
@@ -82,7 +83,7 @@ def restore_bus_entries(
     restored = update_hooks(current, path, kind, install=False)
     hooks = object_at(restored, "hooks", path)
     original_hooks = object_at(original, "hooks", path)
-    for event in EVENTS:
+    for event in host_events(kind):
         groups = restore_hook_groups(
             cast("list[object]", hooks.get(event, [])),
             cast("list[object]", original_hooks.get(event, [])),
@@ -99,11 +100,11 @@ def restore_bus_entries(
 
 def restore_bus_settings(snapshots: files.SettingsSnapshot) -> None:
     """Restore prior bus hooks into current settings after failed tool removal."""
-    for index, (path, original_content, _) in enumerate(snapshots):
+    for path, original_content, _ in snapshots:
         current_content = files.current_bytes(path)
         current = files.parse_settings(path, current_content)
         original = files.parse_settings(path, original_content)
-        kind = "codex" if index == 0 else "claude"
+        kind = settings_kind(path)
         restored = restore_bus_entries(current, original, path, kind)
         if restored != current:
             mode = stat.S_IMODE(path.stat().st_mode) if current_content is not None else 0o600

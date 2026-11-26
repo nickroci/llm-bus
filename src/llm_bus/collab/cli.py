@@ -115,7 +115,7 @@ def _setup(state: CollabState, args: dict[str, object]) -> dict[str, object]:
 
 def _send(state: CollabState, args: dict[str, object], session: str | None) -> dict[str, object]:
     if session is None:
-        raise CollabError("Run collab send inside a Claude Code or Codex session")
+        raise CollabError("Run collab send inside a Claude Code, Codex or Gemini CLI session")
     user = github_user(cast("str", args["user"]).lstrip("@"))
     scope = routing_scope(_repository())
     peers = [

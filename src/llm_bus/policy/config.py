@@ -12,12 +12,13 @@ from typing import cast
 
 from llm_bus.coordination.models import GATE_OPERATIONS
 from llm_bus.errors import BusError
+from llm_bus.hosts.kinds import KIND_PATTERN
 from llm_bus.policy.fields import array_values, identifier, object_fields, required_text
 from llm_bus.reports.protocol import REPORT_REASONS
 from llm_bus.routing import routing_scope
 
 CONFIG_ENV = "LLM_BUS_CONFIG"
-NATIVE = re.compile(r"(claude|codex):[A-Za-z0-9_-]{1,128}")
+NATIVE = re.compile(rf"({KIND_PATTERN}):[A-Za-z0-9_-]{{1,128}}")
 POLICY_VERSION = 2
 
 

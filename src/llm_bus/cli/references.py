@@ -6,6 +6,7 @@ import re
 from typing import TYPE_CHECKING
 
 from llm_bus.errors import BusError
+from llm_bus.hosts.kinds import KIND_PATTERN
 from llm_bus.mailbox.labels import validate_label
 from llm_bus.policy.config import optional_config
 from llm_bus.remote.discovery import remote_peers
@@ -19,7 +20,7 @@ QUALIFIED_PARTS = 3
 
 def resolve_reference(store: Store, value: str, project: str) -> str:
     """Return one native identity; labels convey no authorization."""
-    if re.fullmatch(r"(?:[^/:\s]+/[^/:\s]+/)?(?:codex|claude):[^/:\s]+", value):
+    if re.fullmatch(rf"(?:[^/:\s]+/[^/:\s]+/)?(?:{KIND_PATTERN}):[^/:\s]+", value):
         return value
     if "/" not in value:
         return store.resolve_label(value, project)

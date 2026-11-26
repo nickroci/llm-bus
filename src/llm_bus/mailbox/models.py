@@ -4,6 +4,7 @@ import re
 from typing import Literal, NamedTuple, NotRequired, TypedDict
 
 from llm_bus.errors import BusError
+from llm_bus.hosts.kinds import HOST_KINDS
 
 SESSION_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 MAX_MESSAGE_BYTES = 64 * 1024
@@ -73,8 +74,8 @@ class PendingRow(NamedTuple):
 
 def address(kind: str, session_id: str) -> str:
     """Build stable address from host session ID."""
-    if kind not in {"claude", "codex"}:
-        raise BusError("Agent kind must be claude or codex")
+    if kind not in HOST_KINDS:
+        raise BusError("Agent kind must be claude, codex or gemini")
     if not SESSION_ID.fullmatch(session_id):
         raise BusError("Host session ID has invalid characters or length")
     return f"{kind}:{session_id}"

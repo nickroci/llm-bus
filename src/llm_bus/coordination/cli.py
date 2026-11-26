@@ -39,6 +39,7 @@ from llm_bus.coordination.models import (
     uuid4_string,
 )
 from llm_bus.errors import BusError
+from llm_bus.hosts.kinds import KIND_PATTERN
 from llm_bus.locks import notices
 from llm_bus.routing import routing_scope
 from llm_bus.wake.dispatch import dispatch_pending
@@ -328,7 +329,7 @@ def text_reference(value: object) -> str:
 
 def _address(value: object) -> str:
     address = text_reference(value)
-    if re.fullmatch(r"(?:[^/:\s]+/[^/:\s]+/)?(?:codex|claude):[^/:\s]+", address) is None:
+    if re.fullmatch(rf"(?:[^/:\s]+/[^/:\s]+/)?(?:{KIND_PATTERN}):[^/:\s]+", address) is None:
         raise BusError("Expected exact native or machine/repository qualified address")
     return address
 

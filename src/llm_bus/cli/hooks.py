@@ -19,6 +19,17 @@ if TYPE_CHECKING:
     from llm_bus.mailbox.store import Store
 
 CLAUDE_SOCKET_ENV = "CLAUDE_CODE_MESSAGING_SOCKET"
+# Herdr sets HERDR_PANE_ID in each pane. Gemini hooks inherit it via the Gemini process.
+HERDR_PANE_ENV = "HERDR_PANE_ID"
+# Gemini's BeforeAgent runs where Claude and Codex run UserPromptSubmit.
+PROMPT_EVENTS = {"UserPromptSubmit": "UserPromptSubmit", "BeforeAgent": "UserPromptSubmit"}
+# Codex and Gemini read structured hook output; Claude reads plain text.
+JSON_OUTPUT_KINDS = frozenset({"codex", "gemini"})
+ACKNOWLEDGED_WAKE_NOTICE = (
+    "This bus wake refers to an already acknowledged message, "
+    "and the inbox is empty. No action is needed for this notice. "
+    "Do not retry or acknowledge it again."
+)
 # Claude Code caps hook output at 10,000 characters (unit undocumented) and silently saves an
 # oversized one to a file; Codex caps at 2,500 tokens, about 4 UTF-8 bytes each. Bytes are never
 # fewer than characters, and the slack covers the newline.
@@ -42,18 +53,22 @@ def _guard(notice: str, address: str) -> str:
     return notice
 
 
-def hook(store: Store, kind: str) -> None:
+def _hook_input() -> dict[str, object]:
     hook_input = cast("object", json.load(sys.stdin))
     if not isinstance(hook_input, dict):
         raise BusError("Hook input must be a JSON object")
-    hook_data = cast("dict[str, object]", hook_input)
+    return cast("dict[str, object]", hook_input)
+
+
+def hook(store: Store, kind: str) -> None:
+    hook_data = _hook_input()
     session_id = hook_data.get("session_id")
-    event = hook_data.get("hook_event_name")
-    if not isinstance(session_id, str) or event not in {
-        "SessionStart",
-        "UserPromptSubmit",
-        "SessionEnd",
-    }:
+    host_event = hook_data.get("hook_event_name")
+    if not isinstance(session_id, str) or not isinstance(host_event, str):
+        raise BusError("Hook input lacks a valid session_id or event")
+    # The host's own event name goes back in its output; bus logic uses the common name.
+    event = PROMPT_EVENTS.get(host_event, host_event)
+    if event not in {"SessionStart", "UserPromptSubmit", "SessionEnd"}:
         raise BusError("Hook input lacks a valid session_id or event")
     agent_id = hook_data.get("agent_id")
     # Sub-agent hooks on both hosts carry the root session_id plus the child's agent_id.
@@ -67,20 +82,14 @@ def hook(store: Store, kind: str) -> None:
             "Sub-agent: do not use llm-bus. "
             "Report only to your parent through native agent communication."
         )
-        print(
-            json.dumps(
-                {"hookSpecificOutput": {"hookEventName": event, "additionalContext": notice}}
-            )
-            if kind == "codex"
-            else notice
-        )
+        _emit(kind, host_event, notice)
         return
     project = hook_data.get("cwd")
     if not isinstance(project, str):
         project = str(Path.cwd())
     project = str(Path(project).resolve())
     agent_address = store.register(
-        kind, session_id, project, messaging_socket=claude_socket(kind), host=host_process(kind)
+        kind, session_id, project, messaging_socket=native_endpoint(kind), host=host_process(kind)
     )
     prompt = hook_data.get("prompt")
     if event == "UserPromptSubmit":
@@ -92,31 +101,22 @@ def hook(store: Store, kind: str) -> None:
         record_turn(store, agent_address, owner_started=owner_started)
     count = store.pending_count(agent_address, limit=HOOK_COUNT_LIMIT)
     if (
-        kind == "codex"
+        kind in JSON_OUTPUT_KINDS
         and event == "UserPromptSubmit"
         and count == 0
         and _acknowledged_wake(store, agent_address, prompt)
     ):
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": event,
-                        "additionalContext": (
-                            "This bus wake refers to an already acknowledged message, "
-                            "and the inbox is empty. No action is needed for this notice. "
-                            "Do not retry or acknowledge it again."
-                        ),
-                    },
-                }
-            )
-        )
+        _emit(kind, host_event, ACKNOWLEDGED_WAKE_NOTICE)
         return
     full = store.guidance_needed(agent_address, GUIDANCE_VERSION, reset=event == "SessionStart")
     notice = _guard(
         guidance(store, agent_address, project, full=full, delivery=Delivery.HOOK), agent_address
     )
-    if kind == "codex":
+    _emit(kind, host_event, notice)
+
+
+def _emit(kind: str, event: str, notice: str) -> None:
+    if kind in JSON_OUTPUT_KINDS:
         print(
             json.dumps(
                 {"hookSpecificOutput": {"hookEventName": event, "additionalContext": notice}}
@@ -126,5 +126,10 @@ def hook(store: Store, kind: str) -> None:
         print(notice)
 
 
-def claude_socket(kind: str) -> str | None:
-    return os.environ.get(CLAUDE_SOCKET_ENV) if kind == "claude" else None
+def native_endpoint(kind: str) -> str | None:
+    """The wake endpoint a session's own process reports: Claude's socket or Gemini's pane."""
+    if kind == "claude":
+        return os.environ.get(CLAUDE_SOCKET_ENV)
+    if kind == "gemini":
+        return os.environ.get(HERDR_PANE_ENV) or None
+    return None

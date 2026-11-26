@@ -187,6 +187,16 @@ draft. No terminal input is sent, no messaging tokens are stored, and
 `herdr agent prompt` is never used. Missing sockets and Windows named pipes
 return `unsupported`; unreachable sockets return `failed`.
 
+Gemini CLI has no native inbox. When a Gemini session runs in a
+[Herdr](https://herdr.dev) pane, its hook records the pane from `HERDR_PANE_ID`.
+A wake checks with `herdr agent get` that the pane still runs Gemini, then
+submits the notice with `herdr agent prompt`. It needs `herdr` on the sender's
+`PATH` and the same Herdr server as the recipient. Herdr types the notice and
+Enter into the terminal, so a wake that arrives while the owner is typing can
+append to and submit that unfinished prompt; Claude wakes avoid Herdr for this
+reason. Outside Herdr, or when the pane runs something else, the wake returns
+`unsupported` or `failed` and the next turn hook reports the pending message.
+
 The wake notice contains the bus message ID and sender address, never its body.
 Claude may label its approval dialog “Another Claude session”; that label does
 not identify the sender. `requested` means the frame was written to the socket,
@@ -218,8 +228,9 @@ See [inbound setting precedence](https://code.claude.com/docs/en/settings-refere
 ### Stale notices and sub-agents
 
 Acknowledgement does not cancel an already queued notice. With the trusted
-Codex UserPromptSubmit hook enabled, an exact bus wake matching an acknowledged
-message's ID, sender, and recipient gets no-op context if the inbox is empty.
+Codex UserPromptSubmit hook or the Gemini BeforeAgent hook enabled, an exact bus
+wake matching an acknowledged message's ID, sender, and recipient gets no-op
+context if the inbox is empty.
 The hook allows the prompt, avoiding repeated rejections; Codex may still show
 it and run a redundant turn. Pending-work notices and Claude wakes are unchanged.
 

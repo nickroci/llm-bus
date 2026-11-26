@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from llm_bus.errors import BusError
+from llm_bus.hosts.hooks import settings_kind
 from llm_bus.hosts.restore import restore_bus_settings
 from llm_bus.hosts.settings import configure_hosts, snapshot_host_settings
 
@@ -30,4 +31,6 @@ def configure_host_hooks(*, install: bool) -> dict[str, object]:
     }
     if install:
         result["codex_next_step"] = "Restart Codex, then review and trust llm-bus hooks in /hooks"
+        if any(settings_kind(path) == "gemini" for path in paths):
+            result["gemini_next_step"] = "Restart Gemini CLI to load llm-bus hooks"
     return result

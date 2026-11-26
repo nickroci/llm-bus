@@ -83,6 +83,11 @@ class Store:  # pylint: disable=too-many-public-methods
             agents.expire_idle_agents(db)
             return labels.lookup(db, routing_scope(project), label)
 
+    def host_session(self, kind: str, host: HostProcess) -> str | None:
+        """The live session a host hook registered for this host process, if any."""
+        with closing(self._connect()) as db:
+            return agents.host_session(db, kind, host)
+
     def messaging_socket(self, agent_address: str) -> str | None:
         """Read the native endpoint reported by the recipient's own hook."""
         with closing(self._connect()) as db:

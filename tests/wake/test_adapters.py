@@ -64,7 +64,7 @@ def test_claude_native_wake_uses_socket_and_targets_exact_session(
         server.listen(1)
         server.settimeout(2)
         assert llm_bus.wake.adapters.wake(
-            "claude:target", 7, "codex:source", claude_socket=str(endpoint)
+            "claude:target", 7, "codex:source", endpoint=str(endpoint)
         ) == {
             "status": "requested",
             "via": "Claude inbox socket",
@@ -84,7 +84,7 @@ def test_claude_native_wake_uses_socket_and_targets_exact_session(
             "priority": "next",
         }
     assert (
-        llm_bus.wake.adapters.wake("claude:target", 8, "codex:source", claude_socket=str(endpoint))[
+        llm_bus.wake.adapters.wake("claude:target", 8, "codex:source", endpoint=str(endpoint))[
             "status"
         ]
         == "failed"
@@ -99,7 +99,7 @@ def test_claude_wake_refuses_non_socket_and_symlink(tmp_path: Path) -> None:
     link.symlink_to(endpoint)
     for path in (endpoint, link):
         assert (
-            llm_bus.wake.adapters.wake("claude:target", 7, "codex:source", claude_socket=str(path))[
+            llm_bus.wake.adapters.wake("claude:target", 7, "codex:source", endpoint=str(path))[
                 "status"
             ]
             == "failed"

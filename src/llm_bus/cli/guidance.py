@@ -26,7 +26,7 @@ HOOK_COUNT_LIMIT = 101
 
 
 REMOTE_GUIDANCE = (
-    "Remote peers use `MACHINE/REPO/claude:SESSION_ID` or `MACHINE/REPO/codex:SESSION_ID`; "
+    "Remote peers use `MACHINE/REPO/KIND:SESSION_ID` (claude, codex or gemini); "
     "send to remote labels with `MACHINE/REPO/NAME`. "
     "`list` includes permitted cached remote peers. Both machines need running bridges. "
     "Remote sends return `queued_local`; check `llm-bus remote-status` for synchronized "
@@ -456,7 +456,7 @@ def guidance(
     count = store.pending_count(agent_address, limit=HOOK_COUNT_LIMIT)
     pending = "100+" if count == HOOK_COUNT_LIMIT else str(count)
     notice = (
-        "Only main agents use llm-bus, in both Codex and Claude Code. "
+        "Only main agents use llm-bus, in Codex, Claude Code and Gemini CLI. "
         "Sub-agents must report only to their parent through native agent communication; "
         "the parent handles bus messages and locks. "
         f"Local agent bus address: {agent_address}; folder: {project}. "

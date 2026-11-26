@@ -7,13 +7,16 @@ from pathlib import Path
 
 import llm_bus.collab.cli
 import llm_bus.coordination.cli
+from llm_bus.hosts.kinds import HOST_KINDS
 from llm_bus.locks.models import FORCE_AUTHORITY
 from llm_bus.reports.protocol import REPORT_REASONS
 
 
 def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - explicit CLI declarations
     # pylint: disable=too-many-statements
-    parser = argparse.ArgumentParser(description="Local durable mailbox for Claude and Codex")
+    parser = argparse.ArgumentParser(
+        description="Local durable mailbox for Claude, Codex and Gemini"
+    )
     parser.add_argument(
         "--format",
         choices=("json", "agent"),
@@ -72,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - explicit CLI d
     acknowledge = commands.add_parser("ack", help="Acknowledge handled messages")
     acknowledge.add_argument("ids", type=int, nargs="+")
     hook = commands.add_parser("hook", help="Register session and notify agent at turn boundary")
-    hook.add_argument("kind", choices=("claude", "codex"))
+    hook.add_argument("kind", choices=HOST_KINDS)
     commands.add_parser(
         "install", help="Establish managed CLI, skill and host integration"
     ).add_argument("--skills-dir", type=Path, help="Real parent of the installed llm-bus skill")

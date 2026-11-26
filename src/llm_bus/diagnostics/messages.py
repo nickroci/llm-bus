@@ -19,6 +19,7 @@ WAKE_STATUSES = frozenset({"requested", "coalesced", "failed", "unknown", "unsup
 WAKE_ADAPTERS = {
     "codex queue": "codex_queue",
     "Claude inbox socket": "claude_inbox_socket",
+    "herdr agent prompt": "herdr_agent_prompt",
     "host wake": "host_wake",
     "wake coordinator": "wake_coordinator",
     "none": "none",

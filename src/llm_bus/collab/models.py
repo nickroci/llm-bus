@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import NamedTuple, TypedDict
 
+from llm_bus.hosts.kinds import KIND_PATTERN
+
 HOME_ENV = "LLM_BUS_COLLAB_HOME"
 MODES = ("monitor", "isolated", "readonly", "readwrite", "full")
 RESPONDER_MODES = frozenset({"isolated", "readonly", "readwrite"})
@@ -32,7 +34,7 @@ MESSAGE_SENT = "sent"
 MESSAGE_REJECTED = "rejected"
 GITHUB_USER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 TOKEN = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
-SESSION = re.compile(r"^(?:claude|codex):[A-Za-z0-9_-]{1,128}$")
+SESSION = re.compile(rf"^(?:{KIND_PATTERN}):[A-Za-z0-9_-]{{1,128}}$")
 TIME_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 MAX_STATUS_SUMMARY = 4000
 

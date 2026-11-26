@@ -12,9 +12,22 @@ from typing import cast
 from llm_bus.errors import BusError
 
 EVENTS = ("SessionStart", "UserPromptSubmit", "SessionEnd")
+# Gemini CLI names its prompt-submission event BeforeAgent.
+GEMINI_EVENTS = ("SessionStart", "BeforeAgent", "SessionEnd")
 
 
 CLAUDE_ALLOW_RULE = "Bash(llm-bus *)"
+
+
+def host_events(kind: str) -> tuple[str, ...]:
+    return GEMINI_EVENTS if kind == "gemini" else EVENTS
+
+
+def settings_kind(path: Path) -> str:
+    """The host owning a settings file: Codex `hooks.json`, `.gemini/settings.json`, or Claude."""
+    if path.name == "hooks.json":
+        return "codex"
+    return "gemini" if path.parent.name == ".gemini" else "claude"
 
 
 MISSING_EXECUTABLE_MESSAGE = (
@@ -120,7 +133,7 @@ def update_hooks(
     updated = dict(settings)
     hooks = object_at(settings, "hooks", path)
     canonical = hook_group(kind) if install else {}
-    for event in EVENTS:
+    for event in host_events(kind):
         groups = hooks.get(event, [])
         if not isinstance(groups, list):
             raise BusError(f"hooks.{event} must be a JSON array in {path}")
@@ -167,3 +180,11 @@ def update_claude_permission(
     else:
         updated["permissions"] = permissions
     return updated
+
+
+def apply_bus_settings(
+    settings: dict[str, object], path: Path, kind: str, *, install: bool
+) -> dict[str, object]:
+    """Install or remove the bus hooks, and Claude's llm-bus allow rule, in one host's settings."""
+    updated = update_hooks(settings, path, kind, install=install)
+    return update_claude_permission(updated, path, install=install) if kind == "claude" else updated

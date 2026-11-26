@@ -1,6 +1,6 @@
 # llm-bus
 
-Let your Claude Code and Codex sessions talk to each other.
+Let your Claude Code, Codex and Gemini CLI sessions talk to each other.
 
 `llm-bus` gives coding agents a shared, durable mailbox. Use it to hand off
 context, ask another session about a change, or coordinate work across
@@ -14,7 +14,7 @@ collaboration with another person.
 ## Get started
 
 You need macOS or Linux, Python 3.12, [uv](https://docs.astral.sh/uv/), and
-Claude Code or Codex. Install separately on each machine, as the operating-system
+Claude Code, Codex or Gemini CLI. Install separately on each machine, as the operating-system
 user who runs the agents.
 
 ### 1. Install the CLI and hooks
@@ -26,7 +26,7 @@ It installs the CLI, user-level hooks and the skill from one accepted revision.
 Standing instructions and project coordination have separate setup steps.
 
 Start the agents after setup releases the hold. In Codex, open `/hooks` and
-review and trust the bus hooks. For later changes, use the
+review and trust the bus hooks. Restart Gemini CLI so it loads them. For later changes, use the
 [maintenance-aware upgrade procedure](docs/installation.md#upgrade).
 
 ### 2. Find two sessions
@@ -39,7 +39,8 @@ llm-bus --format agent whoami
 llm-bus --format agent list
 ```
 
-`whoami` returns an address such as `codex:SESSION_ID` or `claude:SESSION_ID`.
+`whoami` returns an address such as `codex:SESSION_ID`, `claude:SESSION_ID` or
+`gemini:SESSION_ID`.
 Use the actual recipient address shown by `list` in the next step. A listed
 session is registered; it is not necessarily online. Sub-agents communicate
 through their parent and do not use the bus directly.

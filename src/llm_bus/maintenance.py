@@ -40,6 +40,8 @@ OFFLINE_MESSAGE = (
     "while this message appears. Stop retrying once the command responds normally."
 )
 OFFLINE_EXIT = 75
+# Mirrors llm_bus.hosts.kinds.HOST_KINDS; this module imports no application modules.
+HOOK_COMMANDS = (["hook", "claude"], ["hook", "codex"], ["hook", "gemini"])
 PHASES = frozenset({"preparing", "held", "verified", "active"})
 STATE_VERSION = 1
 PROCESS_IDENTITY_FIELDS = 8
@@ -271,9 +273,7 @@ def command_words(arguments: Sequence[str]) -> list[str]:
 
 def offline(arguments: Sequence[str]) -> int:
     sys.stdout.write(OFFLINE_MESSAGE + "\n")
-    return (
-        0 if command_words(arguments) in (["hook", "claude"], ["hook", "codex"]) else OFFLINE_EXIT
-    )
+    return 0 if command_words(arguments) in HOOK_COMMANDS else OFFLINE_EXIT
 
 
 def entrypoint(arguments: Sequence[str] | None = None) -> int:
@@ -496,6 +496,19 @@ def _control(arguments: Sequence[str]) -> None:
         )
 
 
+def is_host_command(words: Sequence[str]) -> bool:
+    """Claude Code, Codex, or Gemini CLI, which runs as `node .../gemini` (see hosts.processes)."""
+    if not words:
+        return False
+    name = Path(words[0]).name.lower()
+    if name in {"codex", "claude", "gemini"}:
+        return True
+    script = next((word for word in words[1:] if not word.startswith("-")), "")
+    return name in {"node", "nodejs"} and (
+        Path(script).name in {"gemini", "gemini.js"} or "/@google/gemini-cli/" in script
+    )
+
+
 def process_inventory() -> list[dict[str, object]]:
     """Snapshot exact owner process identities; hash argv to avoid retaining command secrets."""
     output = _inspect(
@@ -524,7 +537,7 @@ def process_inventory() -> list[dict[str, object]]:
                 "started": " ".join(fields[2:7]),
                 "command_sha256": hashlib.sha256(command.encode()).hexdigest(),
                 "bus": is_bus,
-                "host": bool(words) and Path(words[0]).name.lower() in {"codex", "claude"},
+                "host": is_host_command(words),
             }
         )
     return result
@@ -1089,11 +1102,7 @@ def json_object(path: Path) -> dict[str, object]:
 
 def _hook_executable(command: str, path: Path) -> Path:
     words = shlex.split(command)
-    if (
-        not words
-        or Path(words[0]).name != "llm-bus"
-        or words[1:] not in (["hook", "codex"], ["hook", "claude"])
-    ):
+    if not words or Path(words[0]).name != "llm-bus" or words[1:] not in HOOK_COMMANDS:
         raise MaintenanceError(f"Ambiguous bus hook command in {path}")
     executable = Path(words[0])
     if executable.is_absolute():
@@ -1154,6 +1163,10 @@ def host_settings(home: Path, host_homes: Sequence[Path]) -> set[Path]:
         Path(os.environ.get("CODEX_HOME", str(home / ".codex"))) / "hooks.json",
         Path(os.environ.get("CLAUDE_CONFIG_DIR", str(home / ".claude"))) / "settings.json",
     }
+    # Gemini CLI settings count only once Gemini has made its folder. The bus never makes it.
+    gemini = Path(os.environ.get("GEMINI_CLI_HOME", str(home))).expanduser() / ".gemini"
+    if gemini.is_dir():
+        settings.add(gemini / "settings.json")
     metadata = home / ".local/share/llm-bus/native-hosts.json"
     if metadata.exists():
         homes = json_object(metadata).get("codex_homes")
