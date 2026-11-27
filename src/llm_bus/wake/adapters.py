@@ -23,9 +23,10 @@ CLAUDE_WAKE_REASON = (
 CLAUDE_WAKE_VIA = "Claude inbox socket"
 CLAUDE_SOCKET_FAILURE_REASON = "Claude inbox socket could not be reached; message remains pending"
 HERDR_WAKE_VIA = "herdr agent prompt"
-GEMINI_PANE_CHANGED = "Herdr pane no longer runs Gemini; message remains pending"
-GEMINI_WAKE_REASON = (
-    "Gemini wake needs the session to run in a Herdr pane with herdr on PATH; "
+HERDR_HOST_NAMES = {"gemini": "Gemini", "agy": "Antigravity"}
+HERDR_PANE_CHANGED = "Herdr pane no longer runs {host}; message remains pending"
+HERDR_WAKE_REASON = (
+    "{host} wake needs the session to run in a Herdr pane with herdr on PATH; "
     "pending messages are reported by the next turn hook"
 )
 WAKE_NOTICE = re.compile(
@@ -176,22 +177,28 @@ def _herdr_agent(binary: str, pane: str) -> object:
     return response
 
 
-def _wake_gemini(notice: str, pane: str | None) -> WakeResult:
-    """Submit the notice to the session's Herdr pane after checking it still runs Gemini.
+def _wake_herdr(kind: str, notice: str, pane: str | None) -> WakeResult:
+    """Submit the notice to the session's Herdr pane after checking it still runs that host.
 
-    Herdr types the notice and Enter into the terminal, so a wake that races an unsubmitted
-    owner prompt can append to and submit it. Gemini exposes no other way to start a turn.
+    Herdr names Gemini CLI and Antigravity panes by the bus kinds `gemini` and `agy`. It types
+    the notice and Enter into the terminal, so a wake that races an unsubmitted owner prompt
+    can append to and submit it. Neither host exposes another way to start a turn.
     """
+    host = HERDR_HOST_NAMES[kind]
     binary = shutil.which("herdr")
     if not pane or binary is None:
-        return {"status": "unsupported", "via": "none", "reason": GEMINI_WAKE_REASON}
+        return {
+            "status": "unsupported",
+            "via": "none",
+            "reason": HERDR_WAKE_REASON.format(host=host),
+        }
     try:
         agent = _herdr_agent(binary, pane)
-        if not isinstance(agent, dict) or cast("dict[str, object]", agent).get("agent") != "gemini":
+        if not isinstance(agent, dict) or cast("dict[str, object]", agent).get("agent") != kind:
             return {
                 "status": WAKE_FAILED,
                 "via": HERDR_WAKE_VIA,
-                "reason": GEMINI_PANE_CHANGED,
+                "reason": HERDR_PANE_CHANGED.format(host=host),
             }
         result = _run([binary, "agent", "prompt", pane, notice])
     except subprocess.TimeoutExpired:
@@ -221,6 +228,6 @@ def wake(
         return _wake_codex(session_id, notice)
     if kind == "claude":
         return _wake_claude(session_id, notice, endpoint)
-    if kind == "gemini":
-        return _wake_gemini(notice, endpoint)
+    if kind in HERDR_HOST_NAMES:
+        return _wake_herdr(kind, notice, endpoint)
     return {"status": "unsupported", "via": "none", "reason": "Unknown recipient kind"}

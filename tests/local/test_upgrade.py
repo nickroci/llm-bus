@@ -1161,3 +1161,20 @@ generations.resume(home)
     if snapshots is not None:
         assert managed.state()["integration_snapshots"] == snapshots
     assert generations.resume(managed.home)["phase"] == "active"
+
+
+def test_managed_install_binds_antigravity_hooks_and_allow_rule(managed: Managed) -> None:
+    hooks = managed.home / ".gemini/config/hooks.json"
+    settings = managed.home / ".gemini/antigravity-cli/settings.json"
+    hooks.parent.mkdir(parents=True)
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"agentMode": "auto"}))
+    assert managed.install()["phase"] == "held"
+    installed = cast("dict[str, dict[str, list[dict[str, str]]]]", json.loads(hooks.read_text()))
+    assert set(installed["llm-bus"]) == {"SessionStart", "PreInvocation"}
+    assert installed["llm-bus"]["PreInvocation"][0]["command"].endswith("llm-bus' hook agy")
+    allowed = cast("dict[str, dict[str, list[str]]]", json.loads(settings.read_text()))
+    assert allowed["permissions"]["allow"] == ["command(llm-bus)"]
+    native = managed.home / ".local/share/llm-bus/native-hosts.json"
+    assert str(hooks.parent) not in native.read_text()
+    assert generations.resume(managed.home)["phase"] == "active"

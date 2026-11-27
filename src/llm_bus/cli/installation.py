@@ -33,4 +33,6 @@ def configure_host_hooks(*, install: bool) -> dict[str, object]:
         result["codex_next_step"] = "Restart Codex, then review and trust llm-bus hooks in /hooks"
         if any(settings_kind(path) == "gemini" for path in paths):
             result["gemini_next_step"] = "Restart Gemini CLI to load llm-bus hooks"
+        if any(settings_kind(path) == "agy" for path in paths):
+            result["agy_next_step"] = "Restart Antigravity (agy) to load llm-bus hooks"
     return result

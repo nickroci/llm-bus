@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 from typing import TYPE_CHECKING
 
 import pytest
+
+import llm_bus.wake.adapters
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -48,3 +51,27 @@ def settings_paths(tmp_path: Path) -> tuple[Path, Path]:
     codex.parent.mkdir()
     claude.parent.mkdir()
     return codex, claude
+
+
+def _bin_path(name: str) -> str:
+    return f"/bin/{name}"
+
+
+def fake_herdr(
+    monkeypatch: pytest.MonkeyPatch, agent: str, *, prompt_code: int = 0
+) -> list[list[str]]:
+    """Record herdr commands; `agent get` reports `agent`, `agent prompt` exits `prompt_code`."""
+    commands: list[list[str]] = []
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[1:3] == ["agent", "get"]:
+            payload = {"result": {"agent": {"agent": agent, "pane_id": command[3]}}}
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+        return subprocess.CompletedProcess(
+            command, prompt_code, "{}", "busy" if prompt_code else ""
+        )
+
+    monkeypatch.setattr(shutil, "which", _bin_path)
+    monkeypatch.setattr(llm_bus.wake.adapters, "_run", run)
+    return commands

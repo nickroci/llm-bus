@@ -41,7 +41,7 @@ OFFLINE_MESSAGE = (
 )
 OFFLINE_EXIT = 75
 # Mirrors llm_bus.hosts.kinds.HOST_KINDS; this module imports no application modules.
-HOOK_COMMANDS = (["hook", "claude"], ["hook", "codex"], ["hook", "gemini"])
+HOOK_COMMANDS = (["hook", "claude"], ["hook", "codex"], ["hook", "gemini"], ["hook", "agy"])
 PHASES = frozenset({"preparing", "held", "verified", "active"})
 STATE_VERSION = 1
 PROCESS_IDENTITY_FIELDS = 8
@@ -497,11 +497,11 @@ def _control(arguments: Sequence[str]) -> None:
 
 
 def is_host_command(words: Sequence[str]) -> bool:
-    """Claude Code, Codex, or Gemini CLI, which runs as `node .../gemini` (see hosts.processes)."""
+    """Claude Code, Codex, Antigravity (`agy`), or Gemini CLI, which runs as `node .../gemini`."""
     if not words:
         return False
     name = Path(words[0]).name.lower()
-    if name in {"codex", "claude", "gemini"}:
+    if name in {"codex", "claude", "gemini", "agy"}:
         return True
     script = next((word for word in words[1:] if not word.startswith("-")), "")
     return name in {"node", "nodejs"} and (
@@ -1167,6 +1167,11 @@ def host_settings(home: Path, host_homes: Sequence[Path]) -> set[Path]:
     gemini = Path(os.environ.get("GEMINI_CLI_HOME", str(home))).expanduser() / ".gemini"
     if gemini.is_dir():
         settings.add(gemini / "settings.json")
+    # Antigravity's shared hooks file and the settings carrying its llm-bus allow rule, once
+    # Antigravity has made each folder.
+    for agy in (home / ".gemini/config/hooks.json", home / ".gemini/antigravity-cli/settings.json"):
+        if agy.parent.is_dir():
+            settings.add(agy)
     metadata = home / ".local/share/llm-bus/native-hosts.json"
     if metadata.exists():
         homes = json_object(metadata).get("codex_homes")

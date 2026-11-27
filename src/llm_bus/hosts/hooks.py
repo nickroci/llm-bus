@@ -17,6 +17,16 @@ GEMINI_EVENTS = ("SessionStart", "BeforeAgent", "SessionEnd")
 
 
 CLAUDE_ALLOW_RULE = "Bash(llm-bus *)"
+# Antigravity runs agent commands in a terminal sandbox that hides the bus mailbox. A command
+# allow rule runs matching commands, by token prefix, without prompting and outside the sandbox.
+AGY_ALLOW_RULE = "command(llm-bus)"
+# Antigravity hooks.json maps hook names to event handlers; the bus owns this name.
+AGY_HOOK_NAME = "llm-bus"
+# Antigravity runs PreInvocation before every model call; the bus hook ignores all but the first
+# of each turn. It has no session-end event.
+AGY_EVENTS = ("SessionStart", "PreInvocation")
+# Settings kind of Antigravity's own settings.json, which carries only the allow rule.
+AGY_SETTINGS = "agy-settings"
 
 
 def host_events(kind: str) -> tuple[str, ...]:
@@ -24,7 +34,17 @@ def host_events(kind: str) -> tuple[str, ...]:
 
 
 def settings_kind(path: Path) -> str:
-    """The host owning a settings file: Codex `hooks.json`, `.gemini/settings.json`, or Claude."""
+    """The host owning a settings file.
+
+    Antigravity keeps hooks in `.gemini/config/hooks.json` and permissions in
+    `.gemini/antigravity-cli/settings.json`; Codex uses any other `hooks.json`; Gemini CLI uses
+    `.gemini/settings.json`; anything else is Claude's.
+    """
+    if path.parent.parent.name == ".gemini":
+        if path.name == "hooks.json" and path.parent.name == "config":
+            return "agy"
+        if path.name == "settings.json" and path.parent.name == "antigravity-cli":
+            return AGY_SETTINGS
     if path.name == "hooks.json":
         return "codex"
     return "gemini" if path.parent.name == ".gemini" else "claude"
@@ -158,9 +178,27 @@ def update_hooks(
     return updated
 
 
+def update_agy_hooks(settings: dict[str, object], *, install: bool) -> dict[str, object]:
+    """Install or remove the bus-owned named hook in Antigravity's hooks.json."""
+    updated = dict(settings)
+    if not install:
+        updated.pop(AGY_HOOK_NAME, None)
+        return updated
+    handler = cast("list[object]", hook_group("agy")["hooks"])[0]
+    updated[AGY_HOOK_NAME] = {event: [handler] for event in AGY_EVENTS}
+    return updated
+
+
 def update_claude_permission(
     settings: dict[str, object], path: Path, *, install: bool
 ) -> dict[str, object]:
+    return update_allow_rule(settings, path, CLAUDE_ALLOW_RULE, install=install)
+
+
+def update_allow_rule(
+    settings: dict[str, object], path: Path, rule: str, *, install: bool
+) -> dict[str, object]:
+    """Add or remove one bus allow rule in a host's `permissions.allow` array."""
     updated = dict(settings)
     permissions = object_at(settings, "permissions", path)
     allowed = permissions.get("allow", [])
@@ -168,9 +206,9 @@ def update_claude_permission(
         not isinstance(rule, str) for rule in cast("list[object]", allowed)
     ):
         raise BusError(f"permissions.allow must be an array of strings in {path}")
-    rules = [rule for rule in cast("list[str]", allowed) if rule != CLAUDE_ALLOW_RULE]
+    rules = [item for item in cast("list[str]", allowed) if item != rule]
     if install:
-        rules.append(CLAUDE_ALLOW_RULE)
+        rules.append(rule)
     if rules:
         permissions["allow"] = rules
     else:
@@ -185,6 +223,10 @@ def update_claude_permission(
 def apply_bus_settings(
     settings: dict[str, object], path: Path, kind: str, *, install: bool
 ) -> dict[str, object]:
-    """Install or remove the bus hooks, and Claude's llm-bus allow rule, in one host's settings."""
+    """Install or remove the bus hooks, or the host's llm-bus allow rule, in one settings file."""
+    if kind == "agy":
+        return update_agy_hooks(settings, install=install)
+    if kind == AGY_SETTINGS:
+        return update_allow_rule(settings, path, AGY_ALLOW_RULE, install=install)
     updated = update_hooks(settings, path, kind, install=install)
     return update_claude_permission(updated, path, install=install) if kind == "claude" else updated

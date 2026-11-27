@@ -15,7 +15,7 @@ from llm_bus.reports.protocol import REPORT_REASONS
 def build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915 - explicit CLI declarations
     # pylint: disable=too-many-statements
     parser = argparse.ArgumentParser(
-        description="Local durable mailbox for Claude, Codex and Gemini"
+        description="Local durable mailbox for Claude, Codex, Gemini and Antigravity"
     )
     parser.add_argument(
         "--format",

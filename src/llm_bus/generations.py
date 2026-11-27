@@ -29,7 +29,16 @@ from llm_bus import maintenance as gate
 from llm_bus.cli import upgrade as build
 from llm_bus.errors import BusError
 from llm_bus.hosts import files
-from llm_bus.hosts.hooks import apply_bus_settings, host_events, is_bus_handler, settings_kind
+from llm_bus.hosts.hooks import (
+    AGY_ALLOW_RULE,
+    AGY_EVENTS,
+    AGY_HOOK_NAME,
+    AGY_SETTINGS,
+    apply_bus_settings,
+    host_events,
+    is_bus_handler,
+    settings_kind,
+)
 from llm_bus.hosts.settings import CODEX_HOME_ENV, remember_codex_home
 
 # Journal fields and boundary diagnostics are explicit protocol vocabulary.
@@ -230,7 +239,7 @@ def _remember_homes(home: Path, paths: list[Path]) -> None:
     previous = os.environ.get(CODEX_HOME_ENV)
     try:
         for path in paths:
-            if path.name == "hooks.json":
+            if settings_kind(path) == "codex":
                 os.environ[CODEX_HOME_ENV] = str(path.parent)
                 remember_codex_home(home)
     finally:
@@ -329,11 +338,34 @@ def _integrations(
     return state
 
 
+def _verify_agy_settings(path: Path) -> None:
+    """Antigravity's settings carry only the allow rule that runs bus commands unsandboxed."""
+    settings = files.parse_settings(path, files.current_bytes(path))
+    allowed = _object(settings.get("permissions"), "Antigravity permissions").get("allow")
+    if not isinstance(allowed, list) or AGY_ALLOW_RULE not in cast("list[object]", allowed):
+        raise BusError(f"Missing llm-bus allow rule: {path}")
+
+
+def _verify_agy_hook_events(path: Path) -> None:
+    """Antigravity hooks.json names hooks; the bus-owned one lists handlers per event."""
+    settings = files.parse_settings(path, files.current_bytes(path))
+    hook = _object(settings.get(AGY_HOOK_NAME), "Antigravity bus hook")
+    for event in AGY_EVENTS:
+        handlers = hook.get(event)
+        if not isinstance(handlers, list) or not any(
+            is_bus_handler(handler, "agy") for handler in cast("list[object]", handlers)
+        ):
+            raise BusError(f"Missing {event} bus handler: {path}")
+
+
 def _verify_hook_events(path: Path) -> None:
+    kind = settings_kind(path)
+    if kind == "agy":
+        _verify_agy_hook_events(path)
+        return
     hooks = _object(
         files.parse_settings(path, files.current_bytes(path)).get("hooks"), "host hooks"
     )
-    kind = settings_kind(path)
     for event in host_events(kind):
         groups = hooks.get(event)
         if not isinstance(groups, list):
@@ -351,10 +383,13 @@ def _verify_hook_events(path: Path) -> None:
 def _verify_integrations(runtime: gate.Runtime, state: dict[str, object]) -> None:
     gate.verify_aliases(runtime, state)
     for path in _settings_paths(runtime, state):
-        aliases = gate.hook_aliases(path)
-        if not aliases or aliases != {runtime.root / "llm-bus"}:
-            raise BusError(f"Host hooks are not bound to the stable launcher: {path}")
-        _verify_hook_events(path)
+        if settings_kind(path) == AGY_SETTINGS:
+            _verify_agy_settings(path)
+        else:
+            aliases = gate.hook_aliases(path)
+            if not aliases or aliases != {runtime.root / "llm-bus"}:
+                raise BusError(f"Host hooks are not bound to the stable launcher: {path}")
+            _verify_hook_events(path)
         with path.open("rb") as stream:
             os.fsync(stream.fileno())
         files.sync_parent_directories(path)

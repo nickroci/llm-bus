@@ -34,7 +34,7 @@ def _now() -> datetime:
 def _capability(store: Store, recipient: str) -> str:
     if recipient.startswith("claude:"):
         return store.messaging_socket(recipient) or "no socket"
-    if recipient.startswith("gemini:"):
+    if recipient.startswith(("gemini:", "agy:")):
         pane = store.messaging_socket(recipient)
         return f"{shutil.which('herdr') or 'no herdr'}:{pane}" if pane else "no pane"
     return shutil.which("codex") or "no binary"
@@ -124,7 +124,7 @@ def _snapshot(store: Store, recipient: str, claim: Claim) -> Batch:
 
 def _native(store: Store, recipient: str, members: list[tuple[int, str]]) -> WakeResult:
     try:
-        endpoint_kind = recipient.startswith(("claude:", "gemini:"))
+        endpoint_kind = recipient.startswith(("claude:", "gemini:", "agy:"))
         endpoint = store.messaging_socket(recipient) if endpoint_kind else None
         # Keep coverage identical to the permitted native batch. A later revocation cannot
         # recall an already submitted wake; subsequent exposure still checks current policy.

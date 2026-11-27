@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -21,7 +19,7 @@ from llm_bus.mailbox.models import SenderContext
 from llm_bus.mailbox.store import Store
 from tests.support import hook_input
 
-from .support import settings_paths
+from .support import fake_herdr, settings_paths
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -31,10 +29,6 @@ GEMINI_HOST = HostProcess(4242, "Thu Nov 26 09:00:00 2026")
 
 def _gemini_host(_kind: str) -> HostProcess:
     return GEMINI_HOST
-
-
-def _bin_path(name: str) -> str:
-    return f"/bin/{name}"
 
 
 def _gemini_hook(monkeypatch: pytest.MonkeyPatch, event: str, cwd: Path, **extra: object) -> None:
@@ -199,25 +193,8 @@ def test_offline_launcher_lets_gemini_hooks_pass() -> None:
     assert ["hook", "gemini"] in maintenance.HOOK_COMMANDS
 
 
-def _herdr(monkeypatch: pytest.MonkeyPatch, agent: str, *, prompt_code: int = 0) -> list[list[str]]:
-    commands: list[list[str]] = []
-
-    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
-        commands.append(command)
-        if command[1:3] == ["agent", "get"]:
-            payload = {"result": {"agent": {"agent": agent, "pane_id": command[3]}}}
-            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
-        return subprocess.CompletedProcess(
-            command, prompt_code, "{}", "busy" if prompt_code else ""
-        )
-
-    monkeypatch.setattr(shutil, "which", _bin_path)
-    monkeypatch.setattr(llm_bus.wake.adapters, "_run", run)
-    return commands
-
-
 def test_gemini_wake_prompts_its_herdr_pane(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands = _herdr(monkeypatch, "gemini")
+    commands = fake_herdr(monkeypatch, "gemini")
     result = llm_bus.wake.adapters.wake("gemini:gem-1", 9, "claude:peer", endpoint="w1:p3")
     assert result == {"status": "requested", "via": "herdr agent prompt"}
     notice = "llm-bus message #9 from claude:peer. Read and handle it with `llm-bus inbox`."
@@ -230,14 +207,14 @@ def test_gemini_wake_prompts_its_herdr_pane(monkeypatch: pytest.MonkeyPatch) -> 
 def test_gemini_wake_never_types_into_a_pane_running_another_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    commands = _herdr(monkeypatch, "claude")
+    commands = fake_herdr(monkeypatch, "claude")
     result = llm_bus.wake.adapters.wake("gemini:gem-1", 9, "claude:peer", endpoint="w1:p3")
     assert result["status"] == "failed"
     assert [command[1:3] for command in commands] == [["agent", "get"]]
 
 
 def test_gemini_wake_reports_herdr_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
-    _herdr(monkeypatch, "gemini", prompt_code=1)
+    fake_herdr(monkeypatch, "gemini", prompt_code=1)
     result = llm_bus.wake.adapters.wake("gemini:gem-1", 9, "claude:peer", endpoint="w1:p3")
     assert result == {"status": "failed", "via": "herdr agent prompt", "reason": "busy"}
 
@@ -245,7 +222,7 @@ def test_gemini_wake_reports_herdr_rejection(monkeypatch: pytest.MonkeyPatch) ->
 def test_gemini_wake_without_herdr_pane_waits_for_next_hook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    commands = _herdr(monkeypatch, "gemini")
+    commands = fake_herdr(monkeypatch, "gemini")
     result = llm_bus.wake.adapters.wake("gemini:gem-1", 9, "claude:peer")
     assert result["status"] == "unsupported"
     assert "next turn hook" in result.get("reason", "")

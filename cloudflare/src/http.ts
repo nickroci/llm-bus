@@ -1,7 +1,7 @@
 export const MAX_BODY_BYTES = 64 * 1024;
 const MAX_REQUEST_BYTES = MAX_BODY_BYTES * 6 + 4096;
 export const ID = /^[A-Za-z0-9_-]{1,128}$/;
-export const NATIVE = /^(claude|codex|gemini):[A-Za-z0-9_-]{1,128}$/;
+export const NATIVE = /^(claude|codex|gemini|agy):[A-Za-z0-9_-]{1,128}$/;
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export class HttpError extends Error {
   constructor(readonly status: number, message: string) { super(message); }

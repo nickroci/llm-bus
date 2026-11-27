@@ -44,6 +44,9 @@ CODEX_SESSION_ENV = "CODEX_SESSION_ID"
 
 # Gemini CLI sets this in its shell tool's environment but exposes no session ID there.
 GEMINI_CLI_ENV = "GEMINI_CLI"
+# Antigravity puts the conversation ID its hooks receive as conversationId in its shell tools.
+AGY = "agy"
+AGY_CONVERSATION_ENV = "ANTIGRAVITY_CONVERSATION_ID"
 GEMINI_UNREGISTERED = (
     "This Gemini session is not registered; run `llm-bus install`, restart Gemini CLI, then retry"
 )
@@ -54,12 +57,22 @@ LOCK_WAITING_EXIT = 3
 
 
 def host_identity(environment: dict[str, str], store: Store | None = None) -> tuple[str, str]:
-    """Read native session identity from Claude, Codex or Gemini shell tools.
+    """Read native session identity from Claude, Codex, Gemini or Antigravity shell tools.
 
     Gemini's shell tool carries no session ID, and it inherits any ID of the session that
     started Gemini. When the nearest host ancestor is Gemini, the session is the one its own
     hook registered for that exact Gemini process.
+
+    Antigravity's shell tool carries its conversation ID but also inherits the IDs of a Claude
+    or Codex session that started it, and vice versa. Its ID wins unless the nearest host
+    ancestor is known to be another host. When `ps` is unavailable the nearest host is unknown,
+    and the Antigravity ID still wins: it is set only by Antigravity, which is the innermost
+    host unless another host was started from inside it.
     """
+    if conversation := environment.get(AGY_CONVERSATION_ENV):
+        nearest = nearest_host()
+        if nearest is None or nearest[0] == AGY:
+            return AGY, conversation
     if environment.get(GEMINI_CLI_ENV):
         nearest = nearest_host()
         if nearest is not None and nearest[0] == GEMINI:
@@ -73,7 +86,8 @@ def host_identity(environment: dict[str, str], store: Store | None = None) -> tu
     if codex_id:
         return "codex", codex_id
     raise BusError(
-        "No host session ID found; run inside a Claude Code, Codex or Gemini CLI agent session"
+        "No host session ID found; run inside a Claude Code, Codex, Gemini CLI or Antigravity "
+        "agent session"
     )
 
 

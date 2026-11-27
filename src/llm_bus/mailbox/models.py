@@ -75,7 +75,7 @@ class PendingRow(NamedTuple):
 def address(kind: str, session_id: str) -> str:
     """Build stable address from host session ID."""
     if kind not in HOST_KINDS:
-        raise BusError("Agent kind must be claude, codex or gemini")
+        raise BusError("Agent kind must be claude, codex, gemini or agy")
     if not SESSION_ID.fullmatch(session_id):
         raise BusError("Host session ID has invalid characters or length")
     return f"{kind}:{session_id}"

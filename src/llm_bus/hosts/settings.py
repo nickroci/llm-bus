@@ -66,13 +66,20 @@ def gemini_settings_path(home: Path) -> Path:
     return (Path(gemini_home).expanduser() if gemini_home else home) / ".gemini" / "settings.json"
 
 
+def agy_settings_paths(home: Path) -> list[Path]:
+    """Antigravity's shared hooks file and CLI settings, once Antigravity made each folder."""
+    folder = home / ".gemini"
+    candidates = (folder / "config" / "hooks.json", folder / "antigravity-cli" / "settings.json")
+    return [path for path in candidates if path.parent.is_dir()]
+
+
 def host_settings_paths(home: Path) -> list[Path]:
-    """Codex and Claude settings always; Gemini settings once Gemini CLI has created its folder."""
+    """Codex and Claude settings always; Gemini and Antigravity once each has made its folder."""
     paths = [codex_settings_path(home), claude_settings_path(home)]
     gemini = gemini_settings_path(home)
     if gemini.parent.is_dir():
         paths.append(gemini)
-    return paths
+    return paths + agy_settings_paths(home)
 
 
 def snapshot_host_settings(home: Path) -> files.SettingsSnapshot:

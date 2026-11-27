@@ -197,6 +197,10 @@ append to and submit that unfinished prompt; Claude wakes avoid Herdr for this
 reason. Outside Herdr, or when the pane runs something else, the wake returns
 `unsupported` or `failed` and the next turn hook reports the pending message.
 
+Antigravity (`agy`) is woken the same way: its hook records `HERDR_PANE_ID`,
+and a wake proceeds only while `herdr agent get` reports `agy` in that pane.
+The same risk to an unfinished owner prompt applies.
+
 The wake notice contains the bus message ID and sender address, never its body.
 Claude may label its approval dialog “Another Claude session”; that label does
 not identify the sender. `requested` means the frame was written to the socket,
@@ -228,7 +232,8 @@ See [inbound setting precedence](https://code.claude.com/docs/en/settings-refere
 ### Stale notices and sub-agents
 
 Acknowledgement does not cancel an already queued notice. With the trusted
-Codex UserPromptSubmit hook or the Gemini BeforeAgent hook enabled, an exact bus
+Codex UserPromptSubmit hook, the Gemini BeforeAgent hook or the Antigravity
+PreInvocation hook enabled, an exact bus
 wake matching an acknowledged message's ID, sender, and recipient gets no-op
 context if the inbox is empty.
 The hook allows the prompt, avoiding repeated rejections; Codex may still show
