@@ -471,7 +471,7 @@ def guidance(
     if full:
         notice += (
             "Use `llm-bus list` for same-repository or folder peers, "
-            "and `llm-bus send ADDRESS` with message text on stdin to send. "
+            "and `llm-bus send ADDRESS --body TEXT` (or text on stdin) to send. "
             "Use `list --all` and `send --cross-folder` for other repositories or folders. "
             "Local sends store then request a wake; inspect JSON `wake.status`. "
             "Coalesced wakes retain individual messages; request does not prove delivery. "

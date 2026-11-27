@@ -30,9 +30,8 @@ OPENING = (
 )
 COMPACT = OPENING + "Full recovery: `llm-bus guidance`. "
 FULL = (
-    OPENING
-    + "Use `llm-bus list` for same-repository or folder peers, and `llm-bus send ADDRESS` with "
-    "message text on stdin to send. Use `list --all` and `send --cross-folder` for other "
+    OPENING + "Use `llm-bus list` for same-repository or folder peers, and `llm-bus send ADDRESS "
+    "--body TEXT` (or text on stdin) to send. Use `list --all` and `send --cross-folder` for other "
     "repositories or folders. Local sends store then request a wake; inspect JSON "
     "`wake.status`. Coalesced wakes retain individual messages; request does not prove "
     "delivery. Before using a resource other sessions may share, such as a database, run "

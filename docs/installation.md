@@ -61,7 +61,15 @@ PreInvocation before every model call; the hook acts only on the first call of
 each user turn (`invocationNum` 0) and returns `{}` for the rest. Antigravity
 has no session-end event, so an Antigravity session stays listed until its
 `agy` process exits or the inactivity cutoff ends it. Resuming a conversation
-runs no SessionStart; its first prompt registers it.
+runs no SessionStart; its first prompt registers it. If you start using
+Antigravity after installing the bus, run `reinstall` so it adds the hooks and
+allow rule.
+
+Two Antigravity behaviors are unverified. The hooks file sits in
+`~/.gemini/config`, outside the CLI's own folder, so the Antigravity app or IDE
+may also read it, run the bus hooks and register its sessions as `agy:` peers. Whether Antigravity subagents run hooks under their own
+conversation IDs, and so register as separate peers instead of staying off the
+bus, is also untested. Check `llm-bus list` after using either.
 
 The installer discovers `llm-bus` on its process's `PATH` and writes an absolute,
 shell-quoted executable path. These paths belong to that machine; do not copy
