@@ -46,33 +46,48 @@ def _ps(arguments: list[str]) -> str | None:
 def host_process(kind: str) -> HostProcess | None:
     """Find the nearest ancestor whose executable is the host CLI, such as `claude`."""
     ancestors = _ancestors()
-    return next((process for name, process in _named(ancestors or []) if name == kind), None)
+    for name, process in _named(ancestors or []):
+        if name is None:
+            return None
+        if name == kind:
+            return process
+    return None
 
 
 def nearest_host() -> tuple[str, HostProcess] | None:
     """The nearest agent-host ancestor and its kind; None if there is none or ps failed."""
     ancestors = _ancestors()
-    return next((item for item in _named(ancestors or []) if item[0] in HOST_KINDS), None)
+    for name, process in _named(ancestors or []):
+        if name is None:
+            return None
+        if name in HOST_KINDS:
+            return name, process
+    return None
 
 
 def under_agent_host() -> bool:
-    """Whether any ancestor is a Claude Code, Codex or Gemini process; unknown counts as yes."""
+    """Whether any ancestor is an agent host; unknown counts as yes."""
     ancestors = _ancestors()
-    return ancestors is None or any(name in HOST_KINDS for name, _process in _named(ancestors))
+    return ancestors is None or any(
+        name is None or name in HOST_KINDS for name, _process in _named(ancestors)
+    )
 
 
-def _named(ancestors: list[tuple[str, HostProcess]]) -> list[tuple[str, HostProcess]]:
-    """Rename script-runtime ancestors that run Gemini CLI to `gemini`."""
+def _named(ancestors: list[tuple[str, HostProcess]]) -> list[tuple[str | None, HostProcess]]:
+    """Identify Gemini CLI runtimes, marking runtimes with unreadable arguments as unknown."""
     runtimes = [process.pid for name, process in ancestors if name in SCRIPT_RUNTIMES]
     if not runtimes:
-        return ancestors
+        return list(ancestors)
     output = _ps(["-ww", "-o", "pid=,args=", "-p", ",".join(str(pid) for pid in runtimes)])
-    gemini: set[int] = set()
+    runtime_names: dict[int, str] = {}
     for line in (output or "").splitlines():
         fields = line.split(maxsplit=PID_AND_ARGS - 1)
-        if len(fields) == PID_AND_ARGS and fields[0].isdigit() and is_gemini_command(fields[1]):
-            gemini.add(int(fields[0]))
-    return [(GEMINI if process.pid in gemini else name, process) for name, process in ancestors]
+        if len(fields) == PID_AND_ARGS and fields[0].isdigit():
+            runtime_names[int(fields[0])] = GEMINI if is_gemini_command(fields[1]) else "node"
+    return [
+        (runtime_names.get(process.pid) if name in SCRIPT_RUNTIMES else name, process)
+        for name, process in ancestors
+    ]
 
 
 def is_gemini_command(arguments: str) -> bool:

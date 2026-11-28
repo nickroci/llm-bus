@@ -10,7 +10,7 @@ import socket
 import stat
 import subprocess
 from pathlib import Path
-from typing import NotRequired, TypedDict, cast
+from typing import NotRequired, TypedDict
 
 from llm_bus.hosts.sessions import is_subagent
 
@@ -22,13 +22,7 @@ CLAUDE_WAKE_REASON = (
 )
 CLAUDE_WAKE_VIA = "Claude inbox socket"
 CLAUDE_SOCKET_FAILURE_REASON = "Claude inbox socket could not be reached; message remains pending"
-HERDR_WAKE_VIA = "herdr agent prompt"
-HERDR_HOST_NAMES = {"gemini": "Gemini", "agy": "Antigravity"}
-HERDR_PANE_CHANGED = "Herdr pane no longer runs {host}; message remains pending"
-HERDR_WAKE_REASON = (
-    "{host} wake needs the session to run in a Herdr pane with herdr on PATH; "
-    "pending messages are reported by the next turn hook"
-)
+HOOK_WAKE_REASON = "Pending messages are reported by the next turn hook"
 WAKE_NOTICE = re.compile(
     r"llm-bus message #([1-9][0-9]{0,18}) from (\S+)\. "
     r"Read and handle it with `llm-bus inbox`\."
@@ -161,59 +155,8 @@ def _wake_claude(session_id: str, notice: str, socket_path: str | None) -> WakeR
     return {"status": "requested", "via": CLAUDE_WAKE_VIA}
 
 
-def _herdr_agent(binary: str, pane: str) -> object:
-    """The agent Herdr currently detects in a pane, or None."""
-    result = _run([binary, "agent", "get", pane])
-    if result.returncode != 0:
-        return None
-    try:
-        response = cast("object", json.loads(result.stdout))
-    except json.JSONDecodeError:
-        return None
-    for key in ("result", "agent"):
-        if not isinstance(response, dict):
-            return None
-        response = cast("dict[str, object]", response).get(key)
-    return response
-
-
-def _wake_herdr(kind: str, notice: str, pane: str | None) -> WakeResult:
-    """Submit the notice to the session's Herdr pane after checking it still runs that host.
-
-    Herdr names Gemini CLI and Antigravity panes by the bus kinds `gemini` and `agy`. It types
-    the notice and Enter into the terminal, so a wake that races an unsubmitted owner prompt
-    can append to and submit it. Neither host exposes another way to start a turn.
-    """
-    host = HERDR_HOST_NAMES[kind]
-    binary = shutil.which("herdr")
-    if not pane or binary is None:
-        return {
-            "status": "unsupported",
-            "via": "none",
-            "reason": HERDR_WAKE_REASON.format(host=host),
-        }
-    try:
-        agent = _herdr_agent(binary, pane)
-        if not isinstance(agent, dict) or cast("dict[str, object]", agent).get("agent") != kind:
-            return {
-                "status": WAKE_FAILED,
-                "via": HERDR_WAKE_VIA,
-                "reason": HERDR_PANE_CHANGED.format(host=host),
-            }
-        result = _run([binary, "agent", "prompt", pane, notice])
-    except subprocess.TimeoutExpired:
-        return {"status": "unknown", "via": HERDR_WAKE_VIA, "reason": "wake request timed out"}
-    except OSError as exc:
-        return {"status": WAKE_FAILED, "via": HERDR_WAKE_VIA, "reason": str(exc)}
-    return (
-        {"status": "requested", "via": HERDR_WAKE_VIA}
-        if result.returncode == 0
-        else _failure(result, HERDR_WAKE_VIA)
-    )
-
-
 def wake(
-    recipient: str, message_id: int, sender: str, *, endpoint: str | None = None
+    recipient: str, message_id: int, sender: str, *, claude_socket: str | None = None
 ) -> WakeResult:
     """Request a host turn without risking the already-committed bus message."""
     if is_subagent(recipient):
@@ -227,7 +170,7 @@ def wake(
     if kind == "codex":
         return _wake_codex(session_id, notice)
     if kind == "claude":
-        return _wake_claude(session_id, notice, endpoint)
-    if kind in HERDR_HOST_NAMES:
-        return _wake_herdr(kind, notice, endpoint)
+        return _wake_claude(session_id, notice, claude_socket)
+    if kind in {"gemini", "agy"}:
+        return {"status": "unsupported", "via": "none", "reason": HOOK_WAKE_REASON}
     return {"status": "unsupported", "via": "none", "reason": "Unknown recipient kind"}

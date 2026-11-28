@@ -1,4 +1,4 @@
-"""Antigravity (`agy`) as a native host: hooks, identity, settings and Herdr wake."""
+"""Antigravity (`agy`) hooks, identity and settings."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-import llm_bus.wake.adapters
 from llm_bus import maintenance
 from llm_bus.cli.app import host_identity, main
 from llm_bus.hosts.hooks import AGY_ALLOW_RULE, settings_kind
@@ -15,9 +14,10 @@ from llm_bus.hosts.restore import restore_bus_settings
 from llm_bus.hosts.settings import configure_hosts, snapshot_host_settings
 from llm_bus.mailbox.models import SenderContext
 from llm_bus.mailbox.store import Store
+from llm_bus.wake.dispatch import dispatch_pending
 from tests.support import hook_input
 
-from .support import fake_herdr, settings_paths
+from .support import settings_paths
 
 if TYPE_CHECKING:
     import pytest
@@ -55,12 +55,11 @@ def _registered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, 
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setenv("LLM_BUS_DB", str(path))
-    monkeypatch.setenv("HERDR_PANE_ID", "w1:p6")
     monkeypatch.setattr("llm_bus.cli.hooks.host_process", _agy_host)
     return path, project.resolve()
 
 
-def test_agy_hooks_register_conversation_pane_and_host_with_injected_steps(
+def test_agy_hooks_register_conversation_and_report_pending_messages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path, project = _registered(tmp_path, monkeypatch)
@@ -68,10 +67,12 @@ def test_agy_hooks_register_conversation_pane_and_host_with_injected_steps(
     assert ADDRESS in _injected(capsys.readouterr().out)
 
     store = Store(path)
-    assert store.messaging_socket(ADDRESS) == "w1:p6"
+    assert store.messaging_socket(ADDRESS) is None
     assert store.host_session("agy", AGY_HOST) == ADDRESS
 
-    store.send(SenderContext("claude", "peer", str(project)), ADDRESS, "secret body")
+    sent = store.send(SenderContext("claude", "peer", str(project)), ADDRESS, "secret body")
+    wake = dispatch_pending(store, ADDRESS, trigger_id=sent["id"])
+    assert wake["status"] == "unsupported"
     _agy_hook(monkeypatch, "PreInvocation", project, invocationNum=0, initialNumSteps=3)
     notice = _injected(capsys.readouterr().out)
     assert "1 pending message(s)" in notice
@@ -95,23 +96,6 @@ def test_agy_resumed_conversation_registers_on_its_first_prompt(
     _agy_hook(monkeypatch, "PreInvocation", project, invocationNum=0, initialNumSteps=9)
     assert ADDRESS in _injected(capsys.readouterr().out)
     assert Store(path).host_session("agy", AGY_HOST) == ADDRESS
-
-
-def test_agy_acknowledged_wake_gets_no_op_context(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    path, project = _registered(tmp_path, monkeypatch)
-    _agy_hook(monkeypatch, "SessionStart", project)
-    capsys.readouterr()
-    store = Store(path)
-    sent = store.send(SenderContext("claude", "peer", str(project)), ADDRESS, "body")
-    message_id = sent["id"]
-    store.acknowledge(ADDRESS, [message_id])
-    notice = (
-        f"llm-bus message #{message_id} from claude:peer. Read and handle it with `llm-bus inbox`."
-    )
-    _agy_hook(monkeypatch, "PreInvocation", project, invocationNum=0, lastUserInput=notice)
-    assert "No action is needed" in _injected(capsys.readouterr().out)
 
 
 def test_agy_hook_rejects_payload_without_conversation(
@@ -217,27 +201,3 @@ def test_failed_uninstall_restores_agy_hooks_and_allow_rule(tmp_path: Path) -> N
 def test_offline_launcher_and_maintenance_know_agy() -> None:
     assert ["hook", "agy"] in maintenance.HOOK_COMMANDS
     assert maintenance.is_host_command(["/Users/me/.local/bin/agy", "--continue"])
-
-
-def test_agy_wake_prompts_its_herdr_pane(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands = fake_herdr(monkeypatch, "agy")
-    result = llm_bus.wake.adapters.wake(ADDRESS, 9, "claude:peer", endpoint="w1:p6")
-    assert result == {"status": "requested", "via": "herdr agent prompt"}
-    assert commands[-1][:4] == ["/bin/herdr", "agent", "prompt", "w1:p6"]
-
-
-def test_agy_wake_never_types_into_a_pane_running_another_agent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    commands = fake_herdr(monkeypatch, "gemini")
-    result = llm_bus.wake.adapters.wake(ADDRESS, 9, "claude:peer", endpoint="w1:p6")
-    assert result["status"] == "failed"
-    assert "Antigravity" in result.get("reason", "")
-    assert [command[1:3] for command in commands] == [["agent", "get"]]
-
-
-def test_agy_wake_without_herdr_pane_waits_for_next_hook(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands = fake_herdr(monkeypatch, "agy")
-    result = llm_bus.wake.adapters.wake(ADDRESS, 9, "claude:peer")
-    assert result["status"] == "unsupported"
-    assert commands == []

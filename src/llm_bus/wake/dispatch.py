@@ -34,10 +34,9 @@ def _now() -> datetime:
 def _capability(store: Store, recipient: str) -> str:
     if recipient.startswith("claude:"):
         return store.messaging_socket(recipient) or "no socket"
-    if recipient.startswith(("gemini:", "agy:")):
-        pane = store.messaging_socket(recipient)
-        return f"{shutil.which('herdr') or 'no herdr'}:{pane}" if pane else "no pane"
-    return shutil.which("codex") or "no binary"
+    if recipient.startswith("codex:"):
+        return shutil.which("codex") or "no binary"
+    return "no native wake"
 
 
 class Claim(NamedTuple):
@@ -124,8 +123,7 @@ def _snapshot(store: Store, recipient: str, claim: Claim) -> Batch:
 
 def _native(store: Store, recipient: str, members: list[tuple[int, str]]) -> WakeResult:
     try:
-        endpoint_kind = recipient.startswith(("claude:", "gemini:", "agy:"))
-        endpoint = store.messaging_socket(recipient) if endpoint_kind else None
+        socket = store.messaging_socket(recipient) if recipient.startswith("claude:") else None
         # Keep coverage identical to the permitted native batch. A later revocation cannot
         # recall an already submitted wake; subsequent exposure still checks current policy.
         # pylint: disable=clean-code-output-argument-mutation
@@ -133,8 +131,8 @@ def _native(store: Store, recipient: str, members: list[tuple[int, str]]) -> Wak
         if not members:
             return COALESCED.copy()
         key, sender = members[0]
-        if endpoint_kind:
-            return wake(recipient, key, sender, endpoint=endpoint)
+        if recipient.startswith("claude:"):
+            return wake(recipient, key, sender, claude_socket=socket)
         return wake(recipient, key, sender)
     except Exception as error:  # pylint: disable=broad-exception-caught
         return {

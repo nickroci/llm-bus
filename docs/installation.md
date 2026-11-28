@@ -52,6 +52,8 @@ Gemini CLI hooks are installed only when Gemini's `.gemini` folder already
 exists; the installer never creates it. If you start using Gemini CLI after
 installing the bus, run `reinstall`. Gemini hooks run SessionStart, BeforeAgent
 (Gemini's prompt-submission event) and SessionEnd.
+The shell identity depends on finding the Gemini process that the hook
+registered. If the bus cannot identify that host process, it rejects the command.
 
 Antigravity hooks are installed only when Antigravity has created
 `~/.gemini/config`; the allow rule only when it has created
@@ -59,11 +61,10 @@ Antigravity hooks are installed only when Antigravity has created
 `hooks.json` and runs it on SessionStart and PreInvocation. Antigravity runs
 PreInvocation before every model call; the hook acts only on the first call of
 each user turn (`invocationNum` 0) and returns `{}` for the rest. Antigravity
-has no session-end event, so an Antigravity session stays listed until its
-`agy` process exits or the inactivity cutoff ends it. Resuming a conversation
-runs no SessionStart; its first prompt registers it. If you start using
-Antigravity after installing the bus, run `reinstall` so it adds the hooks and
-allow rule.
+has no session-end event, so an exited Antigravity session can stay listed
+until the inactivity cutoff. The first prompt in a resumed conversation
+registers it. If you start using Antigravity after installing the bus, run
+`reinstall` to add the hooks and allow rule.
 
 Two Antigravity behaviors are unverified. The hooks file sits in
 `~/.gemini/config`, outside the CLI's own folder, so the Antigravity app or IDE

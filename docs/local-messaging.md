@@ -187,19 +187,10 @@ draft. No terminal input is sent, no messaging tokens are stored, and
 `herdr agent prompt` is never used. Missing sockets and Windows named pipes
 return `unsupported`; unreachable sockets return `failed`.
 
-Gemini CLI has no native inbox. When a Gemini session runs in a
-[Herdr](https://herdr.dev) pane, its hook records the pane from `HERDR_PANE_ID`.
-A wake checks with `herdr agent get` that the pane still runs Gemini, then
-submits the notice with `herdr agent prompt`. It needs `herdr` on the sender's
-`PATH` and the same Herdr server as the recipient. Herdr types the notice and
-Enter into the terminal, so a wake that arrives while the owner is typing can
-append to and submit that unfinished prompt; Claude wakes avoid Herdr for this
-reason. Outside Herdr, or when the pane runs something else, the wake returns
-`unsupported` or `failed` and the next turn hook reports the pending message.
-
-Antigravity (`agy`) is woken the same way: its hook records `HERDR_PANE_ID`,
-and a wake proceeds only while `herdr agent get` reports `agy` in that pane.
-The same risk to an unfinished owner prompt applies.
+Gemini CLI and Antigravity (`agy`) report pending messages on the recipient's
+next turn. Sends store the message and return `wake.status: unsupported`. This
+also applies inside Herdr, where prompt submission targets a pane that can
+change sessions and can submit an unfinished prompt.
 
 The wake notice contains the bus message ID and sender address, never its body.
 Claude may label its approval dialog “Another Claude session”; that label does

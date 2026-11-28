@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, cast
 import llm_bus.collab.cli
 import llm_bus.coordination.cli
 from llm_bus.cli.commands import human_command, owner_force_release, registered_command, send
-from llm_bus.cli.hooks import hook, native_endpoint
+from llm_bus.cli.hooks import claude_socket, hook
 from llm_bus.cli.installation import configure_host_hooks
 from llm_bus.cli.output import serialize
 from llm_bus.cli.parser import build_parser
@@ -50,6 +50,7 @@ AGY_CONVERSATION_ENV = "ANTIGRAVITY_CONVERSATION_ID"
 GEMINI_UNREGISTERED = (
     "This Gemini session is not registered; run `llm-bus install`, restart Gemini CLI, then retry"
 )
+GEMINI_AMBIGUOUS = "Cannot identify the host process with GEMINI_CLI set"
 
 
 # Queued, not holding: `lock acquire NAME && use-resource` must not run the second command.
@@ -65,20 +66,24 @@ def host_identity(environment: dict[str, str], store: Store | None = None) -> tu
 
     Antigravity's shell tool carries its conversation ID but also inherits the IDs of a Claude
     or Codex session that started it, and vice versa. Its ID wins unless the nearest host
-    ancestor is known to be another host. When `ps` is unavailable the nearest host is unknown,
-    and the Antigravity ID still wins: it is set only by Antigravity, which is the innermost
-    host unless another host was started from inside it.
+    ancestor is known to be another host. An Antigravity shell can use its conversation ID
+    when its sandbox blocks `ps` and no Gemini marker makes the identity ambiguous.
     """
-    if conversation := environment.get(AGY_CONVERSATION_ENV):
-        nearest = nearest_host()
-        if nearest is None or nearest[0] == AGY:
-            return AGY, conversation
-    if environment.get(GEMINI_CLI_ENV):
-        nearest = nearest_host()
-        if nearest is not None and nearest[0] == GEMINI:
-            return GEMINI, _gemini_session(store, nearest[1])
+    conversation = environment.get(AGY_CONVERSATION_ENV)
+    gemini = environment.get(GEMINI_CLI_ENV)
+    nearest = nearest_host() if gemini or conversation else None
+    if gemini and nearest is None:
+        raise BusError(GEMINI_AMBIGUOUS)
+    if conversation and (nearest is None or nearest[0] == AGY):
+        return AGY, conversation
     claude_id = environment.get(CLAUDE_SESSION_ENV)
     codex_id = environment.get(CODEX_THREAD_ENV) or environment.get(CODEX_SESSION_ENV)
+    if nearest is not None:
+        kind, process = nearest
+        if kind == GEMINI:
+            return GEMINI, _gemini_session(store, process)
+        claude_id = claude_id if kind == "claude" else None
+        codex_id = codex_id if kind == "codex" else None
     if claude_id and codex_id:
         raise BusError("Both Claude and Codex session IDs are set; cannot choose sender")
     if claude_id:
@@ -203,7 +208,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901, PLR0912 - com
                     kind,
                     session_id,
                     project,
-                    messaging_socket=native_endpoint(kind),
+                    messaging_socket=claude_socket(kind),
                     host=host_process(kind),
                 )
             if command == "coordination" and args["action"] == "approve":
@@ -217,7 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # noqa: C901, PLR0912 - com
                 kind,
                 session_id,
                 project,
-                messaging_socket=native_endpoint(kind),
+                messaging_socket=claude_socket(kind),
                 label=cast("str | None", args.get("label")) if command == "whoami" else None,
                 host=host_process(kind),
             )

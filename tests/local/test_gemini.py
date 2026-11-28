@@ -1,4 +1,4 @@
-"""Gemini CLI as a native host: hooks, identity, settings and Herdr wake."""
+"""Gemini CLI hooks, identity and settings."""
 
 from __future__ import annotations
 
@@ -7,19 +7,20 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 
-import llm_bus.wake.adapters
 from llm_bus import maintenance
 from llm_bus.cli.app import host_identity, main
 from llm_bus.errors import BusError
+from llm_bus.hosts import processes
 from llm_bus.hosts.hooks import settings_kind
 from llm_bus.hosts.processes import HostProcess, is_gemini_command
 from llm_bus.hosts.restore import restore_bus_settings
 from llm_bus.hosts.settings import configure_hosts, snapshot_host_settings
 from llm_bus.mailbox.models import SenderContext
 from llm_bus.mailbox.store import Store
+from llm_bus.wake.dispatch import dispatch_pending
 from tests.support import hook_input
 
-from .support import fake_herdr, settings_paths
+from .support import settings_paths
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -47,12 +48,11 @@ def _registered(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, 
     project = tmp_path / "project"
     project.mkdir()
     monkeypatch.setenv("LLM_BUS_DB", str(path))
-    monkeypatch.setenv("HERDR_PANE_ID", "w1:p3")
     monkeypatch.setattr("llm_bus.cli.hooks.host_process", _gemini_host)
     return path, project.resolve()
 
 
-def test_gemini_hooks_register_session_pane_and_host_with_json_output(
+def test_gemini_hooks_register_session_and_report_pending_messages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path, project = _registered(tmp_path, monkeypatch)
@@ -62,10 +62,12 @@ def test_gemini_hooks_register_session_pane_and_host_with_json_output(
     assert "gemini:gem-1" in started["hookSpecificOutput"]["additionalContext"]
 
     store = Store(path)
-    assert store.messaging_socket("gemini:gem-1") == "w1:p3"
+    assert store.messaging_socket("gemini:gem-1") is None
     assert store.host_session("gemini", GEMINI_HOST) == "gemini:gem-1"
 
-    store.send(SenderContext("claude", "peer", str(project)), "gemini:gem-1", "secret body")
+    sent = store.send(SenderContext("claude", "peer", str(project)), "gemini:gem-1", "secret body")
+    wake = dispatch_pending(store, "gemini:gem-1", trigger_id=sent["id"])
+    assert wake["status"] == "unsupported"
     _gemini_hook(monkeypatch, "BeforeAgent", project, prompt="Continue")
     prompted = cast("dict[str, dict[str, str]]", json.loads(capsys.readouterr().out))
     assert prompted["hookSpecificOutput"]["hookEventName"] == "BeforeAgent"
@@ -113,6 +115,40 @@ def test_gemini_identity_requires_a_registered_session(
     monkeypatch.setattr("llm_bus.cli.app.nearest_host", lambda: ("gemini", GEMINI_HOST))
     with pytest.raises(BusError, match="Gemini session is not registered"):
         host_identity({"GEMINI_CLI": "1"})
+
+
+@pytest.mark.parametrize(
+    "inherited",
+    [
+        {"CLAUDE_CODE_SESSION_ID": "parent"},
+        {"CODEX_THREAD_ID": "parent"},
+        {"ANTIGRAVITY_CONVERSATION_ID": "parent"},
+    ],
+)
+def test_gemini_identity_rejects_inherited_sessions_when_ancestry_is_unavailable(
+    inherited: dict[str, str],
+) -> None:
+    with pytest.raises(BusError, match="Cannot identify the host process"):
+        host_identity({"GEMINI_CLI": "1", **inherited})
+
+
+def test_unreadable_node_ancestor_prevents_fallback_to_outer_claude(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def ps(arguments: list[str]) -> str | None:
+        if arguments[0] == "-A":
+            return (
+                "30 20 Thu Nov 26 09:00:00 2026 /usr/bin/node\n"
+                "20 1 Thu Nov 26 08:00:00 2026 /usr/bin/claude\n"
+            )
+        return None
+
+    monkeypatch.setattr(processes, "_ps", ps)
+    monkeypatch.setattr("os.getppid", lambda: 30)
+    monkeypatch.setattr("llm_bus.cli.app.nearest_host", processes.nearest_host)
+    environment = {"GEMINI_CLI": "1", "CLAUDE_CODE_SESSION_ID": "parent"}
+    with pytest.raises(BusError, match="Cannot identify the host process"):
+        host_identity(environment)
 
 
 def test_nearest_non_gemini_host_keeps_its_own_identity(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,39 +227,3 @@ def test_failed_uninstall_restores_gemini_hooks(tmp_path: Path) -> None:
 
 def test_offline_launcher_lets_gemini_hooks_pass() -> None:
     assert ["hook", "gemini"] in maintenance.HOOK_COMMANDS
-
-
-def test_gemini_wake_prompts_its_herdr_pane(monkeypatch: pytest.MonkeyPatch) -> None:
-    commands = fake_herdr(monkeypatch, "gemini")
-    result = llm_bus.wake.adapters.wake("gemini:gem-1", 9, "claude:peer", endpoint="w1:p3")
-    assert result == {"status": "requested", "via": "herdr agent prompt"}
-    notice = "llm-bus message #9 from claude:peer. Read and handle it with `llm-bus inbox`."
-    assert commands == [
-        ["/bin/herdr", "agent", "get", "w1:p3"],
-        ["/bin/herdr", "agent", "prompt", "w1:p3", notice],
-    ]
-
-
-def test_gemini_wake_never_types_into_a_pane_running_another_agent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    commands = fake_herdr(monkeypatch, "claude")
-    result = llm_bus.wake.adapters.wake("gemini:gem-1", 9, "claude:peer", endpoint="w1:p3")
-    assert result["status"] == "failed"
-    assert [command[1:3] for command in commands] == [["agent", "get"]]
-
-
-def test_gemini_wake_reports_herdr_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_herdr(monkeypatch, "gemini", prompt_code=1)
-    result = llm_bus.wake.adapters.wake("gemini:gem-1", 9, "claude:peer", endpoint="w1:p3")
-    assert result == {"status": "failed", "via": "herdr agent prompt", "reason": "busy"}
-
-
-def test_gemini_wake_without_herdr_pane_waits_for_next_hook(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    commands = fake_herdr(monkeypatch, "gemini")
-    result = llm_bus.wake.adapters.wake("gemini:gem-1", 9, "claude:peer")
-    assert result["status"] == "unsupported"
-    assert "next turn hook" in result.get("reason", "")
-    assert commands == []

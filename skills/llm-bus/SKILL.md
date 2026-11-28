@@ -319,8 +319,8 @@ For local wake problems, check `wake.via` and `wake.reason`. Codex wake needs
 `codex` on `PATH` and reachable session. Claude wake needs registered
 native inbox socket and inbound permission; `requested` can still mean host
 holds frame for approval. No auto-loosening inbound permissions. Gemini and
-Antigravity wakes need the recipient in a Herdr pane and `herdr` on `PATH`; they
-type the notice into that pane.
+Antigravity report pending messages on the recipient's next turn and return
+`unsupported` for automatic wake.
 
 Use `llm-bus --help` and subcommand `--help` to resolve syntax differences.
 For explicit install or config request, consult upstream

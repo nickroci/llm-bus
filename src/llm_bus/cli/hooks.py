@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, cast
 from llm_bus.cli.guidance import GUIDANCE_VERSION, HOOK_COUNT_LIMIT, Delivery, guidance
 from llm_bus.coordination.decisions import record_turn
 from llm_bus.errors import BusError
-from llm_bus.hosts.kinds import HERDR_KINDS
 from llm_bus.hosts.processes import host_process
 from llm_bus.hosts.sessions import is_subagent
 from llm_bus.wake.adapters import contains_wake_notice, parse_wake_notice
@@ -20,8 +19,6 @@ if TYPE_CHECKING:
     from llm_bus.mailbox.store import Store
 
 CLAUDE_SOCKET_ENV = "CLAUDE_CODE_MESSAGING_SOCKET"
-# Herdr sets HERDR_PANE_ID in each pane. Gemini and Antigravity hooks inherit it via their host.
-HERDR_PANE_ENV = "HERDR_PANE_ID"
 # Gemini's BeforeAgent and Antigravity's PreInvocation run where Claude and Codex run
 # UserPromptSubmit.
 PROMPT_EVENTS = {
@@ -124,7 +121,7 @@ def hook(store: Store, kind: str) -> None:
         project = str(Path.cwd())
     project = str(Path(project).resolve())
     agent_address = store.register(
-        kind, session_id, project, messaging_socket=native_endpoint(kind), host=host_process(kind)
+        kind, session_id, project, messaging_socket=claude_socket(kind), host=host_process(kind)
     )
     prompt = hook_data.get("prompt")
     if event == "UserPromptSubmit":
@@ -136,7 +133,7 @@ def hook(store: Store, kind: str) -> None:
         record_turn(store, agent_address, owner_started=owner_started)
     count = store.pending_count(agent_address, limit=HOOK_COUNT_LIMIT)
     if (
-        kind in JSON_OUTPUT_KINDS
+        kind == "codex"
         and event == "UserPromptSubmit"
         and count == 0
         and _acknowledged_wake(store, agent_address, prompt)
@@ -163,10 +160,5 @@ def _emit(kind: str, event: str, notice: str) -> None:
         print(notice)
 
 
-def native_endpoint(kind: str) -> str | None:
-    """The wake endpoint a session's own process reports: Claude's socket or a Herdr pane."""
-    if kind == "claude":
-        return os.environ.get(CLAUDE_SOCKET_ENV)
-    if kind in HERDR_KINDS:
-        return os.environ.get(HERDR_PANE_ENV) or None
-    return None
+def claude_socket(kind: str) -> str | None:
+    return os.environ.get(CLAUDE_SOCKET_ENV) if kind == "claude" else None
